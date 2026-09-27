@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The iOS app's Info.plist, configured by CMake from the wowee target's
+  MACOSX_BUNDLE_* properties (see CMakeLists.txt). Xcode adds the keys it owns
+  itself - MinimumOSVersion from the deployment target, UIDeviceFamily from
+  TARGETED_DEVICE_FAMILY, the icon entries from the asset catalog.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+
+    <!-- Without a launch screen iOS runs the app letterboxed, at the size of
+         a phone from 2012. The empty dictionary is enough to be given the
+         whole display, and needs no storyboard to compile. -->
+    <key>UILaunchScreen</key>
+    <dict/>
+
+    <!-- Vulkan is MoltenVK over Metal, and MoltenVK is built for arm64. -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+        <string>metal</string>
+    </array>
+
+    <!-- Landscape only, as on Android, and the same two orientations SDL is
+         told in window.cpp. Full screen on an iPad because a landscape-only
+         app may not take part in Split View. -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UIRequiresFullScreen</key>
+    <true/>
+    <key>UIStatusBarHidden</key>
+    <true/>
+
+    <!-- The player's extraction is copied into Documents/Data. These two put
+         the app's Documents folder in the Files app and in the Finder's Files
+         tab for a connected device, the two ways to get gigabytes onto it. -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+
+    <!-- A realm on the player's own network is the common case for a private
+         server, and iOS refuses connections to the local network without
+         asking - and cannot ask without this sentence. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>WoWee connects to World of Warcraft servers on your local network when you choose one.</string>
+
+    <!-- iPad trackpads and mice arrive as pointer events rather than as
+         touches, which is what SDL turns into mouse motion and buttons. -->
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+    <!-- A game controller drives the game, not the system's own focus. -->
+    <key>GCSupportsControllerUserInteraction</key>
+    <true/>
+    <!-- ProMotion iPhones are held to 60 Hz unless an app opts out. -->
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
+</dict>
+</plist>

@@ -6,7 +6,7 @@ WoWee is a native C++ World of Warcraft client that connects to private servers.
 
 - **World of Warcraft Game Data** (Vanilla 1.12, TBC 2.4.3, or WotLK 3.3.5a)
 - **A Private Server** (AzerothCore, TrinityCore, Mangos, or Turtle WoW compatible)
-- **System Requirements**: Linux, macOS, or Windows with a GPU and driver that support Vulkan 1.3 (MoltenVK on macOS), or Android 13+ on arm64
+- **System Requirements**: Linux, macOS, or Windows with a GPU and driver that support Vulkan 1.3 (MoltenVK on macOS), or Android 13+ on arm64 (an iOS 16+ build exists and is untested; see [docs/ios.md](docs/ios.md))
 
 ## Installation
 

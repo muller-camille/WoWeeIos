@@ -25,7 +25,14 @@ endif()
 
 # Options
 option(BUILD_SHARED_LIBS "Build shared libraries" OFF)
-option(WOWEE_BUILD_TESTS "Build tests" ON)
+# Off for iOS: a test there is an app bundle that has to be signed and run on a
+# device, which ctest cannot do. The same sources are tested on the macOS build.
+if(IOS)
+    set(_wowee_tests_default OFF)
+else()
+    set(_wowee_tests_default ON)
+endif()
+option(WOWEE_BUILD_TESTS "Build tests" ${_wowee_tests_default})
 option(WOWEE_ENABLE_ASAN "Enable AddressSanitizer + UBSan (applied to all build configs; pairs well with Debug)" OFF)
 option(WOWEE_ENABLE_TRACY "Enable Tracy profiler instrumentation" OFF)
 # AMD's FidelityFX SDK backends, off by default.
@@ -303,10 +310,79 @@ if(ANDROID)
     # rather than patched out of the header.
     set_source_files_properties(src/audio/audio_engine.cpp PROPERTIES
                                 COMPILE_OPTIONS "-Wno-unused-parameter")
+elseif(IOS)
+    # iOS, the same way: nothing to find_package, so SDL and glm are fetched and
+    # built with the client. Configure with
+    #   cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS ...
+    # after tools/build-ios-deps.sh; docs/ios.md has the whole of it.
+    include(FetchContent)
+    # Static: linked into the app rather than embedded beside it, which leaves
+    # one binary to sign instead of two.
+    set(SDL_SHARED       OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC       ON  CACHE BOOL "" FORCE)
+    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(SDL_TESTS        OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SDL3
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+        GIT_TAG        release-3.2.24
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(SDL3)
+
+    FetchContent_Declare(glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG        1.0.1
+        GIT_SHALLOW    TRUE)
+    FetchContent_MakeAvailable(glm)
+    include_directories(${glm_SOURCE_DIR})
+
+    # Vulkan is MoltenVK, linked into the executable. iOS has no loader and no
+    # system driver to load, so there is nothing for find_package(Vulkan) to
+    # find - and what it would find instead, through the host's pkg-config, is
+    # Homebrew's macOS loader. Vulkan::Vulkan is made here, from MoltenVK's own
+    # release package, and the search below is skipped.
+    #
+    # SDL finds vkGetInstanceProcAddr among the executable's exported symbols
+    # (see UIKit_Vulkan_LoadLibrary), which is why the target below keeps its
+    # global symbols through Xcode's strip.
+    set(WOWEE_MOLTENVK_DIR "${CMAKE_SOURCE_DIR}/build-ios-deps/MoltenVK" CACHE PATH
+        "MoltenVK's iOS release package, as tools/build-ios-deps.sh unpacks it")
+    set(WOWEE_MOLTENVK_LIBRARY
+        "${WOWEE_MOLTENVK_DIR}/MoltenVK/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a"
+        CACHE FILEPATH "The static MoltenVK library the iOS client links")
+    if(NOT EXISTS "${WOWEE_MOLTENVK_LIBRARY}")
+        message(FATAL_ERROR
+            "MoltenVK not found at ${WOWEE_MOLTENVK_LIBRARY}.\n"
+            "Run tools/build-ios-deps.sh first, or point WOWEE_MOLTENVK_DIR at an "
+            "unpacked MoltenVK-ios.tar from github.com/KhronosGroup/MoltenVK/releases.")
+    endif()
+    add_library(Vulkan::Vulkan INTERFACE IMPORTED)
+    set_target_properties(Vulkan::Vulkan PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${WOWEE_MOLTENVK_DIR}/MoltenVK/include"
+        INTERFACE_LINK_LIBRARIES
+            "${WOWEE_MOLTENVK_LIBRARY};-framework Metal;-framework QuartzCore;-framework IOSurface;-framework CoreGraphics;-framework UIKit;-framework Foundation")
+    set(Vulkan_FOUND TRUE)
+    message(STATUS "MoltenVK: ${WOWEE_MOLTENVK_LIBRARY}")
+
+    # OpenSSL from tools/build-ios-deps.sh unless told otherwise. CMake confines
+    # an iOS build's searches to the SDK, so the prefix has to be named as a
+    # root as well, exactly as the Android build does with its NDK sysroot.
+    if(NOT OPENSSL_ROOT_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/build-ios-deps/iphoneos/include/openssl/ssl.h")
+        set(OPENSSL_ROOT_DIR "${CMAKE_SOURCE_DIR}/build-ios-deps/iphoneos")
+    endif()
+    if(OPENSSL_ROOT_DIR)
+        list(APPEND CMAKE_FIND_ROOT_PATH "${OPENSSL_ROOT_DIR}")
+    endif()
+
+    # miniaudio's iOS half is Objective-C; see src/audio/miniaudio_impl.mm.
+    # Vendored, so its warnings are not this build's to police.
+    set_source_files_properties(src/audio/miniaudio_impl.mm PROPERTIES
+                                COMPILE_OPTIONS "-w")
 else()
     find_package(SDL3 REQUIRED CONFIG)
 endif()
-find_package(Vulkan QUIET)
+if(NOT IOS)
+    find_package(Vulkan QUIET)
+endif()
 if(NOT Vulkan_FOUND)
     # For Windows cross-compilation the host pkg-config finds the Linux libvulkan-dev
     # and injects /usr/include as an INTERFACE_INCLUDE_DIRECTORY, which causes
@@ -403,12 +479,14 @@ endif()
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
-if(WIN32)
+if(WIN32 OR IOS)
     find_package(PkgConfig QUIET)
 else()
     find_package(PkgConfig REQUIRED)
 endif()
-if(ANDROID)
+# iOS skips it for the same reason as Android: the host's pkg-config answers
+# with Homebrew's macOS FFmpeg, which an iOS link cannot use.
+if(ANDROID OR IOS)
     # Not through pkg-config. There is no Android FFmpeg to find and the host's
     # copy answers with the host's include path, which puts glibc headers in
     # front of the NDK sysroot and fails on the first system header. The same
@@ -439,9 +517,17 @@ else()
 endif()
 
 # Unicorn Engine (x86 emulator for cross-platform Warden module execution)
-find_library(UNICORN_LIBRARY NAMES unicorn)
-find_path(UNICORN_INCLUDE_DIR unicorn/unicorn.h)
-if(NOT UNICORN_LIBRARY OR NOT UNICORN_INCLUDE_DIR)
+#
+# Never on iOS. Unicorn is a JIT, and an iOS app may not map executable memory;
+# the stub branch is the one Android runs too.
+if(NOT IOS)
+    find_library(UNICORN_LIBRARY NAMES unicorn)
+    find_path(UNICORN_INCLUDE_DIR unicorn/unicorn.h)
+endif()
+if(IOS)
+    message(STATUS "Warden emulation: disabled on iOS")
+    set(HAVE_UNICORN FALSE)
+elseif(NOT UNICORN_LIBRARY OR NOT UNICORN_INCLUDE_DIR)
     message(WARNING "Unicorn Engine not found. Install with: sudo apt-get install libunicorn-dev")
     message(WARNING "Warden emulation will be disabled")
     set(HAVE_UNICORN FALSE)
@@ -565,8 +651,14 @@ function(compile_shaders TARGET_NAME)
 endfunction()
 
 # StormLib for MPQ extraction tool (not needed for main executable)
-find_library(STORMLIB_LIBRARY NAMES StormLib stormlib storm)
-find_path(STORMLIB_INCLUDE_DIR StormLib.h PATH_SUFFIXES StormLib)
+#
+# Not looked for on iOS, which leaves out every tool built on it and the asset
+# builder inside the client: the extraction is made on a computer, where the
+# game install is, and copied to the device.
+if(NOT IOS)
+    find_library(STORMLIB_LIBRARY NAMES StormLib stormlib storm)
+    find_path(STORMLIB_INCLUDE_DIR StormLib.h PATH_SUFFIXES StormLib)
+endif()
 
 # Include ImGui as a static library (Vulkan backend)
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/extern/imgui)
@@ -1199,7 +1291,9 @@ set(WOWEE_HEADERS
 set(WOWEE_MACOS_SOURCES)
 if(APPLE)
     enable_language(OBJCXX)
-    set(WOWEE_MACOS_SOURCES src/core/macos_platform.mm)
+    if(NOT IOS)
+        set(WOWEE_MACOS_SOURCES src/core/macos_platform.mm)
+    endif()
 endif()
 
 set(WOWEE_PLATFORM_SOURCES)
@@ -1215,6 +1309,22 @@ if(WIN32)
     )
     set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -I ${CMAKE_CURRENT_BINARY_DIR} -I ${CMAKE_CURRENT_SOURCE_DIR}")
     list(APPEND WOWEE_PLATFORM_SOURCES resources/wowee.rc)
+endif()
+if(IOS)
+    # The sandbox's three roots, and miniaudio's implementation, which on iOS
+    # has to be compiled as Objective-C.
+    list(APPEND WOWEE_PLATFORM_SOURCES
+        src/core/ios_platform.mm
+        src/audio/miniaudio_impl.mm)
+    # The app icon, compiled by Xcode's actool into the bundle. Only Xcode
+    # knows what to do with an asset catalog; another generator gets an app
+    # with the blank icon rather than a build that fails over it.
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        set(WOWEE_IOS_ASSET_CATALOG ${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets)
+        list(APPEND WOWEE_PLATFORM_SOURCES ${WOWEE_IOS_ASSET_CATALOG})
+        set_source_files_properties(${WOWEE_IOS_ASSET_CATALOG} PROPERTIES
+                                    MACOSX_PACKAGE_LOCATION Resources)
+    endif()
 endif()
 
 # ---- Lua 5.1.5 (vendored, static library) ----
@@ -1248,6 +1358,13 @@ if(ANDROID)
     # it. The bound is wrong, not the read.
     target_compile_options(lua51 PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
 endif()
+if(IOS)
+    # The iOS SDK declares system() unavailable, which is an error rather than a
+    # warning, and os.execute is Lua's one call to it. The shim answers the way a
+    # platform with no shell does. See the header for why it is a forced include.
+    set_source_files_properties(${LUA_DIR}/loslib.c PROPERTIES
+        COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/ios/lua_ios_compat.h")
+endif()
 
 # Create executable
 # On Android the client is a shared library, not a program: SDLActivity loads
@@ -1255,8 +1372,88 @@ endif()
 # an executable link asks for a main that no longer exists.
 if(ANDROID)
     add_library(wowee SHARED ${WOWEE_SOURCES} ${WOWEE_HEADERS} ${WOWEE_PLATFORM_SOURCES} ${WOWEE_MACOS_SOURCES})
+elseif(IOS)
+    # An app bundle, flat as iOS has them: the executable, Info.plist and the
+    # client's assets/, Data/ and addons/ side by side at its root, which is
+    # the layout of a desktop install and what main() enters.
+    add_executable(wowee MACOSX_BUNDLE ${WOWEE_SOURCES} ${WOWEE_HEADERS} ${WOWEE_PLATFORM_SOURCES})
 else()
     add_executable(wowee ${WOWEE_SOURCES} ${WOWEE_HEADERS} ${WOWEE_PLATFORM_SOURCES} ${WOWEE_MACOS_SOURCES})
+endif()
+
+if(IOS)
+    # Who signs the app and under which identifier. A free Apple ID can sign
+    # for a device it owns, but only under an identifier nobody else has taken,
+    # so the default is expected to be changed.
+    set(WOWEE_IOS_BUNDLE_ID "com.wowee.client" CACHE STRING
+        "The iOS app's bundle identifier; must be unique to the signing team")
+    set(WOWEE_IOS_TEAM_ID "" CACHE STRING
+        "Apple development team ID for signing (Xcode > Settings > Accounts)")
+    set(WOWEE_IOS_DISPLAY_NAME "WoWee" CACHE STRING "The name under the home screen icon")
+    # com.apple.developer.kernel.increased-memory-limit raises the ceiling iOS
+    # kills the app at. It has to be in the provisioning profile as well, which
+    # a free account's is not, so it is asked for rather than assumed.
+    option(WOWEE_IOS_INCREASED_MEMORY_LIMIT
+           "Sign with the Increased Memory Limit entitlement (needs a paid team)" OFF)
+
+    set(WOWEE_IOS_DEPLOYMENT_TARGET "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    if(NOT WOWEE_IOS_DEPLOYMENT_TARGET)
+        set(WOWEE_IOS_DEPLOYMENT_TARGET "16.0")
+    endif()
+
+    # The version the plist carries, from the same place as the one the client
+    # shows. CFBundleVersion must be dotted digits and nothing else.
+    set(WOWEE_IOS_VERSION "${PROJECT_VERSION}")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=0
+                        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                        OUTPUT_VARIABLE _wowee_git_tag
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_QUIET)
+        if(_wowee_git_tag MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)")
+            set(WOWEE_IOS_VERSION "${CMAKE_MATCH_1}")
+        endif()
+    endif()
+
+    set_target_properties(wowee PROPERTIES
+        OUTPUT_NAME "WoWee"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ios/Info.plist.in"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${WOWEE_IOS_BUNDLE_ID}"
+        MACOSX_BUNDLE_BUNDLE_NAME "${WOWEE_IOS_DISPLAY_NAME}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${WOWEE_IOS_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${WOWEE_IOS_VERSION}"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${WOWEE_IOS_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${WOWEE_IOS_DEPLOYMENT_TARGET}"
+        # iPhone and iPad.
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${WOWEE_IOS_TEAM_ID}"
+        # SDL looks vkGetInstanceProcAddr up by name in the executable, and a
+        # full strip - what Xcode does to an app it archives - takes the name
+        # away with the rest. Local symbols still go.
+        XCODE_ATTRIBUTE_STRIP_STYLE "non-global"
+        # The app runs its own code, and the Release configuration below
+        # already optimises it; Xcode's own debug dylib split would move all of
+        # it into a second image for nothing.
+        XCODE_ATTRIBUTE_ENABLE_DEBUG_DYLIB "NO"
+    )
+    if(WOWEE_IOS_INCREASED_MEMORY_LIMIT)
+        set_target_properties(wowee PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
+                "${CMAKE_CURRENT_SOURCE_DIR}/ios/wowee.entitlements")
+    endif()
+    # The other half of what SDL's lookup needs, for builds outside Xcode's
+    # strip settings: keep the symbol in the export table however it is linked.
+    target_link_options(wowee PRIVATE "-Wl,-exported_symbol,_vkGetInstanceProcAddr"
+                                      "-Wl,-exported_symbol,_main")
+    # miniaudio's implementation comes from miniaudio_impl.mm, not from
+    # audio_engine.cpp, and links CoreAudio directly on iOS, where it cannot
+    # open frameworks at run time; AVFoundation is the session it watches.
+    target_compile_definitions(wowee PRIVATE WOWEE_MINIAUDIO_IMPL_SEPARATE)
+    target_link_libraries(wowee PRIVATE
+        "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio")
 endif()
 
 # Tracy profiler - zero overhead when WOWEE_ENABLE_TRACY is OFF
@@ -1596,6 +1793,11 @@ endif()
 # Copy assets next to the executable (runs every build, not just configure).
 # Uses $<TARGET_FILE_DIR:wowee> so MSVC multi-config generators place assets
 # in bin/Debug/ or bin/Release/ alongside the exe, not the common bin/ parent.
+#
+# On iOS that directory is the app bundle's root, and the copy lands in the
+# app - before Xcode signs it, since signing is the last step of the target.
+# Everything the bundle carries has to be in it by then, so iOS makes its own
+# copies below rather than using the symlink and the separate addons target.
 add_custom_command(TARGET wowee POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/assets
@@ -1605,7 +1807,42 @@ add_custom_command(TARGET wowee POST_BUILD
 
 # Symlink Data/ next to the executable so expansion profiles, opcode tables,
 # and other runtime data files are found when running from the build directory.
-if(NOT WIN32)
+if(IOS)
+    # A link would point at this checkout, which is not on the phone. The
+    # git-tracked tables are copied instead - exactly those, as the Android
+    # build and the macOS bundle do, because a local extraction under Data/
+    # would otherwise go into the app with them.
+    file(GLOB WOWEE_IOS_DATA_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/expansions/*/dbc_layouts.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/expansions/*/expansion.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/expansions/*/opcodes.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/expansions/*/update_fields.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/expansions/*/movement_sequences.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/opcodes/aliases.json
+        ${CMAKE_CURRENT_SOURCE_DIR}/Data/opcodes/canonical.json)
+    foreach(_wowee_data_file ${WOWEE_IOS_DATA_FILES})
+        add_custom_command(TARGET wowee POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/${_wowee_data_file}
+                $<TARGET_FILE_DIR:wowee>/${_wowee_data_file}
+            VERBATIM)
+    endforeach()
+    # The addons, as copy_bundled_addons does elsewhere - that target runs
+    # after this one, which on iOS is after the bundle has been signed.
+    add_custom_command(TARGET wowee POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_FILE_DIR:wowee>/addons
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_SOURCE_DIR}/addons $<TARGET_FILE_DIR:wowee>/addons
+        COMMAND ${CMAKE_COMMAND} -DDIR=$<TARGET_FILE_DIR:wowee>/addons
+                -P ${CMAKE_SOURCE_DIR}/cmake/strip_saved_vars.cmake
+        COMMENT "Copying bundled addons into the app"
+        VERBATIM)
+    # The soundtrack ships with debug builds only, as on every other platform.
+    add_custom_command(TARGET wowee POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E
+            $<IF:$<CONFIG:Debug>,true,rm> -rf "$<TARGET_FILE_DIR:wowee>/assets/Original Music"
+        VERBATIM)
+elseif(NOT WIN32)
     add_custom_command(TARGET wowee POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E create_symlink
             ${CMAKE_CURRENT_SOURCE_DIR}/Data
@@ -1633,11 +1870,16 @@ if(WIN32)
 endif()
 
 # Install targets
+if(IOS)
+    # The app is the whole install; tools/ios/package_ipa.sh wraps it for a device.
+    install(TARGETS wowee BUNDLE DESTINATION .)
+else()
 install(TARGETS wowee
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
 )
+endif()
 
 # Note: tool install rules are placed next to each target definition below.
 
@@ -2018,6 +2260,10 @@ if(TARGET wowee AND STORMLIB_LIBRARY AND STORMLIB_INCLUDE_DIR AND EXISTS ${IMGUI
 else()
     message(STATUS "  asset panel in the client: DISABLED (needs StormLib and extern/imgui)")
 endif()
+
+# The desktop tools below are programs to run on a computer, and an iOS build
+# would make each one an app bundle that nobody could launch. Left out there.
+if(NOT IOS)
 
 # ---- Tool: dbc_to_csv (DBC → CSV text) ----
 add_executable(dbc_to_csv
@@ -2635,6 +2881,8 @@ else()
     message(STATUS "  wowee_editor tool: on demand only (--target wowee_editor)")
 endif()
 
+endif()  # NOT IOS - the desktop tools
+
 # Print configuration summary
 message(STATUS "")
 message(STATUS "Wowee Configuration:")
@@ -2644,7 +2892,10 @@ message(STATUS "  SDL3: ${SDL3_VERSION}")
 message(STATUS "  OpenSSL: ${OPENSSL_VERSION}")
 message(STATUS "  ImGui: ${IMGUI_DIR}")
 message(STATUS "  ASAN: ${WOWEE_ENABLE_ASAN}")
-if(APPLE)
+if(IOS)
+    message(STATUS "  iOS target: ${WOWEE_IOS_DEPLOYMENT_TARGET}, bundle ${WOWEE_IOS_BUNDLE_ID}, "
+                   "team ${WOWEE_IOS_TEAM_ID}")
+elseif(APPLE)
     # Release CI pins this (13.0); a local build that leaves it unset is stamped
     # with the build host's own OS version and will not launch on anything
     # older. Worth seeing which one you got.
@@ -2741,6 +2992,7 @@ include(CPack)
 # addons/ stays in every build tree that already had it and ships from there --
 # which is how WoweeWidgetDemo and WoweeXmlDemo kept going out after 3182e4fed
 # deleted them.
+if(NOT IOS)
 add_custom_target(copy_bundled_addons ALL
     COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_FILE_DIR:wowee>/addons
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -2751,4 +3003,5 @@ add_custom_target(copy_bundled_addons ALL
             -P ${CMAKE_SOURCE_DIR}/cmake/strip_saved_vars.cmake
     COMMENT "Copying bundled addons")
 add_dependencies(copy_bundled_addons wowee)
+endif()
 

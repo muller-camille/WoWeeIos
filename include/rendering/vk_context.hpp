@@ -85,6 +85,19 @@ public:
     /// True between the two, when there is nothing to draw to.
     [[nodiscard]] bool isSurfaceLost() const { return surfaceLost_; }
 
+    /// Stops drawing without giving anything up.
+    ///
+    /// iOS keeps the view and its layer under a backgrounded app, so there is
+    /// nothing to rebuild - but it refuses GPU work from the background and
+    /// kills the app that tries. Releasing the surface as Android does would
+    /// cost more than it saves there: SDL makes a new Metal view for every
+    /// surface it creates and has no way to give the old one back.
+    void pausePresentation();
+    void resumePresentation();
+
+    /// True between the two, when the frame has to be skipped.
+    [[nodiscard]] bool isPresentationPaused() const { return presentationPaused_; }
+
     // Frame operations
     VkCommandBuffer beginFrame(uint32_t& imageIndex);
     void endFrame(VkCommandBuffer cmd, uint32_t imageIndex);
@@ -411,6 +424,7 @@ private:
     std::vector<VkFramebuffer> swapchainFramebuffers;
     bool swapchainDirty = false;
     bool surfaceLost_ = false;
+    bool presentationPaused_ = false;
     bool deviceLost_ = false;
     bool vsync_ = true;
     /// The vsync state the present-mode line last reported, so a rebuild

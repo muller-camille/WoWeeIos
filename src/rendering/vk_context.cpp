@@ -7,6 +7,7 @@
 #include <fstream>
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#include "core/platform.hpp"
 #include "pipeline/blp_loader.hpp"
 #include <VkBootstrap.h>
 #include <SDL3/SDL_vulkan.h>
@@ -386,7 +387,15 @@ bool VkContext::createInstance([[maybe_unused]] SDL_Window* window) {
     const char* const* sdlExtNames = SDL_Vulkan_GetInstanceExtensions(&sdlExtCount);
     std::vector<const char*> sdlExts(sdlExtNames, sdlExtNames + sdlExtCount);
 
+#ifdef WOWEE_IOS
+    // No loader to open on iOS. MoltenVK is linked into the executable, where
+    // SDL found vkGetInstanceProcAddr when it loaded Vulkan; vk-bootstrap left
+    // to itself would go looking for libvulkan.dylib and find nothing.
+    vkb::InstanceBuilder builder(reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        SDL_Vulkan_GetVkGetInstanceProcAddr()));
+#else
     vkb::InstanceBuilder builder;
+#endif
     builder.set_app_name("Wowee")
            .set_app_version(VK_MAKE_VERSION(1, 0, 0))
            // 1.3, which is what synchronization2 and dynamic rendering are
@@ -1100,6 +1109,9 @@ static std::string getPipelineCachePath() {
         return std::string(appdata) + "\\wowee\\pipeline_cache.bin";
     return ".\\pipeline_cache.bin";
 #elif defined(__APPLE__)
+    // The sandbox's home on iOS, where Library/Caches is the app's own and is
+    // the directory the system empties first when space runs short - which a
+    // cache can afford.
     if (const char* home = std::getenv("HOME"))
         return std::string(home) + "/Library/Caches/wowee/pipeline_cache.bin";
     return "./pipeline_cache.bin";
@@ -2574,6 +2586,20 @@ void VkContext::releaseSurface() {
     }
     surfaceLost_ = true;
     LOG_INFO("Vulkan surface and swapchain released for the background");
+}
+
+void VkContext::pausePresentation() {
+    // Nothing of this frame's may still be running on the GPU once the app is
+    // in the background, and nothing new is submitted until resume.
+    if (device) vkDeviceWaitIdle(device);
+    presentationPaused_ = true;
+    LOG_INFO("Presentation paused for the background");
+}
+
+void VkContext::resumePresentation() {
+    if (!presentationPaused_) return;
+    presentationPaused_ = false;
+    LOG_INFO("Presentation resumed");
 }
 
 bool VkContext::restoreSurface(SDL_Window* window, int width, int height) {

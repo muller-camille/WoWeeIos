@@ -73,6 +73,7 @@
 #include "core/gamepad.hpp"
 #include "addons/lua_api_registrations.hpp"
 #include "core/data_paths.hpp"
+#include "core/platform.hpp"
 #include "ui/ui_services.hpp"
 #include "auth/auth_handler.hpp"
 #include "game/game_handler.hpp"
@@ -1473,7 +1474,7 @@ void Application::run() {
             // queue - its sticks and buttons are sampled once a frame rather
             // than accumulated out of events.
             core::gamepad().handleEvent(event);
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
             // The stick and the pinch read the finger events SDL sends
             // alongside the mouse ones. They claim nothing else: every panel,
             // slider and action button keeps working through the mouse SDL
@@ -1490,6 +1491,24 @@ void Application::run() {
             // a black screen it never came back from. SDL sends these on the
             // same thread as the loop, so the teardown happens before the
             // window is gone rather than after.
+            //
+            // iOS keeps the view but not the right to draw into it: Metal work
+            // submitted from the background is refused and the app is killed
+            // for trying. WILL_ENTER_BACKGROUND is UIKit's resign-active, which
+            // comes before that line - and is also what a pulled-down Control
+            // Center sends - so drawing stops there and starts again at
+            // become-active. Nothing is torn down; see pausePresentation.
+#ifdef WOWEE_IOS
+            if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+                if (window && window->getVkContext()) {
+                    window->getVkContext()->pausePresentation();
+                }
+            } else if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                if (window && window->getVkContext()) {
+                    window->getVkContext()->resumePresentation();
+                }
+            }
+#else
             if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
                 if (window && window->getVkContext()) {
                     window->getVkContext()->releaseSurface();
@@ -1506,7 +1525,8 @@ void Application::run() {
                     }
                 }
             }
-#endif
+#endif  // WOWEE_IOS
+#endif  // WOWEE_MOBILE
             // Pass event to UI manager first
             if (uiManager) {
                 uiManager->processEvent(event);
@@ -3640,7 +3660,7 @@ void Application::updateInGame(float deltaTime, const char*& updateCheckpoint) {
     };
     inGameStep = "gameHandler update";
     updateCheckpoint = "in_game: gameHandler update";
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     ui::touchControls().update();
     if (renderer && renderer->getCameraController()) {
         auto* cam = renderer->getCameraController();
@@ -4012,7 +4032,7 @@ void Application::beatWatchdog() {
 }
 
 void Application::render() {
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // Nothing to draw to between the activity leaving the foreground and coming
     // back. Acquiring an image from a destroyed swapchain is undefined, and the
     // frame would be thrown away regardless.
@@ -4021,7 +4041,12 @@ void Application::render() {
     // every frame closed before the next is opened - returning without doing so
     // aborted on the following NewFrame rather than on anything to do with the
     // surface. EndFrame closes it without drawing it.
-    if (window && window->getVkContext() && window->getVkContext()->isSurfaceLost()) {
+    //
+    // On iOS the surface survives and the right to draw does not; the frame is
+    // skipped for the same span, for that reason instead.
+    if (window && window->getVkContext() &&
+        (window->getVkContext()->isSurfaceLost() ||
+         window->getVkContext()->isPresentationPaused())) {
         if (ImGui::GetCurrentContext() && ImGui::GetFrameCount() > 0) {
             ImGui::EndFrame();
         }
@@ -4050,7 +4075,7 @@ void Application::render() {
         }
     };
 
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // Drawn into the background list, under everything the interface puts on
     // screen, and only while a thumb is holding it.
     ui::touchControls().setInWorld(state == AppState::IN_GAME);

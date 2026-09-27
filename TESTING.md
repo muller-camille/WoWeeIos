@@ -477,6 +477,7 @@ What the GitHub workflows actually run:
 | `Build` → macOS (arm64, x86-64) | Configures with `-DWOWEE_BUILD_TESTS=ON`, builds, then `cd build && ctest --output-on-failure` |
 | `Build` → Windows (x86-64, arm64) | Builds the client and the tests (tests are on by default); does not run them |
 | `Build` → Android (arm64) | Builds the APK; no tests |
+| `Build` → iOS (arm64) | Builds the app with Xcode, unsigned, and packages it as an `.ipa`; no tests |
 | `Security` → Sanitizer Build (ASan/UBSan) | `RelWithDebInfo` build with `-fsanitize=address,undefined` passed through `CMAKE_C_FLAGS`, `CMAKE_CXX_FLAGS` and the linker flags, then `ctest --test-dir build --output-on-failure` with `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and `UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1` |
 | `Security` → CodeQL, Semgrep | Static analysis; no tests |
 

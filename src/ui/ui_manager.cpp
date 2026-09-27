@@ -13,6 +13,7 @@
 #include "core/window.hpp"
 #include "core/application.hpp"
 #include "core/logger.hpp"
+#include "core/platform.hpp"
 #include "auth/auth_handler.hpp"
 #include "game/game_handler.hpp"
 #include "rendering/vk_context.hpp"
@@ -48,8 +49,13 @@ namespace {
 /// against a desktop monitor, and at 1:1 on a 420 dpi phone the login dialog is
 /// too small to read and far too small to hit.
 ///
+/// iOS asks the opposite question. Its windows are measured in points, which
+/// are already about the size Android's density scales up to, so the answer
+/// there is never above 1 - but a phone in landscape is only 375 to 440 points
+/// tall, and the same layouts need 620. There the scale goes below 1.
+///
 /// 1.0 everywhere else, where the layouts are already the right size.
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
 /// The shortest the interface can be, in the units its layouts are written in.
 ///
 /// The client's dialogs are sized in pixels against a desktop monitor, and the
@@ -82,6 +88,16 @@ float interfaceScale([[maybe_unused]] SDL_Window* window) {
         density = std::min(density, static_cast<float>(height) / kMinLogicalHeight);
     }
     return std::max(1.0f, density);
+#elif defined(WOWEE_IOS)
+    // Points, not pixels, and SDL reports a content scale of 1 for them: the
+    // Retina factor is the framebuffer scale, which ImGui applies to its fonts
+    // by itself. So only the height decides. An iPad is tall enough for 1:1.
+    int height = 0;
+    if (window) {
+        SDL_GetWindowSize(window, nullptr, &height);
+    }
+    if (height <= 0) return 1.0f;
+    return std::clamp(static_cast<float>(height) / kMinLogicalHeight, 0.5f, 1.0f);
 #else
     return 1.0f;
 #endif
@@ -114,7 +130,7 @@ bool UIManager::initialize(core::Window* win) {
     // Fonts are scaled where the atlas is built, so they stay crisp rather than
     // being magnified from a desktop-sized atlas.
     interfaceScale_ = interfaceScale(window->getSDLWindow());
-    if (const float scale = interfaceScale_; scale > 1.0f) {
+    if (const float scale = interfaceScale_; scale != 1.0f) {
         style.ScaleAllSizes(scale);
         LOG_INFO("Interface scaled by ", scale, " for this display");
     }

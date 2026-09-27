@@ -5,6 +5,7 @@
 #include <iterator>
 #include "addons/lua_api_registrations.hpp"
 #include "core/env_flag.hpp"
+#include "core/platform.hpp"
 #include "rendering/sky_params_from_lighting.hpp"
 #include "core/coordinates.hpp"
 #include "rendering/camera.hpp"
@@ -743,7 +744,7 @@ bool Renderer::initialize(core::Window* win) {
         // reaches the top for anyone who wants to spend it.
         //
         // A phone starts lower again: its GPU memory is the system's memory.
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
         constexpr const char* kDefaultShadowLevel = "1";   // 1024, 8 MB the pair
 #else
         constexpr const char* kDefaultShadowLevel = "2";   // 2048, 32 MB the pair

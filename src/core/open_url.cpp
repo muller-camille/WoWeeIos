@@ -1,6 +1,11 @@
 #include "core/open_url.hpp"
+#include "core/platform.hpp"
 
-#if defined(_WIN32)
+#if defined(WOWEE_IOS)
+// No process to spawn on iOS: an app may not start one. UIApplication opens
+// the URL, and SDL is the way to it that needs no Objective-C here.
+#  include <SDL3/SDL_misc.h>
+#elif defined(_WIN32)
 // Guarded, because the build already defines it: CMakeLists adds
 // WIN32_LEAN_AND_MEAN to add_compile_definitions, and redefining it is an
 // error under -Werror. The five other places that reach for windows.h all
@@ -47,7 +52,9 @@ bool openExternalUrl(const std::string& url) {
         }
     }
 
-#if defined(_WIN32)
+#if defined(WOWEE_IOS)
+    return SDL_OpenURL(url.c_str());
+#elif defined(_WIN32)
     HINSTANCE rc = ShellExecuteA(nullptr, "open", url.c_str(),
                                  nullptr, nullptr, SW_SHOWNORMAL);
     return reinterpret_cast<INT_PTR>(rc) > 32;
