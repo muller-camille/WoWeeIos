@@ -163,6 +163,13 @@ public:
      */
     void clearDBCCache();
 
+    /**
+     * Drop the raw file cache and nothing else; returns the bytes it held.
+     * For the operating system's low-memory warning: every byte of it can be
+     * read from disk again.
+     */
+    size_t clearFileCache();
+
 
     /**
      * Resolve a normalized WoW path to its on-disk location. Checks the

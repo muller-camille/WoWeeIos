@@ -1,4 +1,5 @@
 #include "rendering/collision_geometry.hpp"
+#include "core/platform.hpp"
 #include "rendering/pom_quality.hpp"
 #include "rendering/placement_transform.hpp"
 #include "rendering/spatial_grid.hpp"
@@ -34,6 +35,15 @@
 #include <limits>
 #include <thread>
 #include <unordered_set>
+
+
+#ifdef WOWEE_IOS
+// Sized to iOS's per-app memory ceiling, which a desktop budget is far past;
+// see kDefaultViewDistance.
+static constexpr size_t kTextureCacheDefaultMB = 192;
+#else
+static constexpr size_t kTextureCacheDefaultMB = 8192;
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -298,7 +308,7 @@ bool WMORenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayou
     flatNormalTexture_->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                                        VK_SAMPLER_ADDRESS_MODE_REPEAT);
     textureCacheBudgetBytes_ =
-        envSizeMBOrDefault("WOWEE_WMO_TEX_CACHE_MB", 8192) * 1024ull * 1024ull;
+        envSizeMBOrDefault("WOWEE_WMO_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     modelCacheLimit_ = envSizeMBOrDefault("WOWEE_WMO_MODEL_LIMIT", 4000);
     core::Logger::getInstance().info("WMO texture cache budget: ",
                                      textureCacheBudgetBytes_ / (1024 * 1024), " MB");

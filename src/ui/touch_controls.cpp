@@ -161,6 +161,10 @@ void TouchControls::handleEvent(const SDL_Event& event, int windowWidth, int win
 }
 
 void TouchControls::update() {
+    if (interactStep_ > 0) {
+        core::Input::getInstance().setVirtualMouseButton(SDL_BUTTON_RIGHT, interactStep_ == 2);
+        --interactStep_;
+    }
     if (!inWorld_ || stickFingerId_ == kNoFinger) {
         wasForward_ = wasBack_ = wasLeft_ = wasRight_ = false;
         setMovementKeys(false, false, false, false);
@@ -200,6 +204,10 @@ void TouchControls::reset() {
     lookTravel_ = 0.0f;
     pinchA_ = pinchB_ = kNoFinger;
     pinching_ = false;
+    if (interactStep_ > 0) {
+        core::Input::getInstance().setVirtualMouseButton(SDL_BUTTON_RIGHT, false);
+        interactStep_ = 0;
+    }
     stickX_ = stickY_ = 0.0f;
     wasForward_ = wasBack_ = wasLeft_ = wasRight_ = false;
     // Everything the stick could be holding, not just the four it uses now.

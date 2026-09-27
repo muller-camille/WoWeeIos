@@ -1,5 +1,6 @@
 #include "core/ios_platform.hpp"
 
+#include "core/data_paths.hpp"
 #include "core/env.hpp"
 
 #import <Foundation/Foundation.h>
@@ -66,7 +67,15 @@ void prepareIosSandbox() {
     const fs::path data = documents / "Data";
     fs::create_directories(data, ec);
     excludeFromBackup(data);
-    setEnvVar("WOW_DATA_PATH", data.c_str(), /*overwrite=*/false);
+    // An extraction the build put into the app (WOWEE_IOS_GAME_DATA) is read
+    // from the bundle, unless the player has copied one of their own into
+    // Documents/Data, which wins.
+    const fs::path bundledData = bundle / "Data";
+    if (!holdsExtraction(data) && !bundle.empty() && holdsExtraction(bundledData)) {
+        setEnvVar("WOW_DATA_PATH", bundledData.c_str(), /*overwrite=*/false);
+    } else {
+        setEnvVar("WOW_DATA_PATH", data.c_str(), /*overwrite=*/false);
+    }
 
     const fs::path config = documents / "config";
     fs::create_directories(config, ec);

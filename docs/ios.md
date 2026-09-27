@@ -4,12 +4,11 @@ The iOS client is the same tree built for iPhone and iPad on arm64, the way the
 Android client is. It is a UIKit app through SDL3, Vulkan through MoltenVK
 linked into the executable, and the touch controls Android already has.
 
-> [!WARNING]
-> **Not yet built or run.** This port was written on a machine with neither a
-> Mac nor an iOS device, so nothing below has been compiled for iOS, let alone
-> started on a phone. The desktop build it shares code with was rebuilt and is
-> unchanged. The `build-ios` CI job is the first thing that will compile it;
-> expect a round of fixes the first time it runs, as Android needed.
+> [!NOTE]
+> **Early.** Built with Xcode 26 and played on an iPad Air (4th generation,
+> 4 GB): it logs in, enters the world and plays. Memory is the constraint -
+> see [Memory](#how-it-differs-from-the-other-platforms) - and nothing has been
+> tried on an iPhone yet.
 
 ## What you need
 
@@ -51,11 +50,28 @@ From the command line instead of Xcode:
 
 ```bash
 cmake --build build-ios --config Release --target wowee -- -allowProvisioningUpdates
-tools/ios/package_ipa.sh build-ios/bin/Release-iphoneos/WoWee.app WoWee.ipa
+tools/ios/package_ipa.sh build-ios/bin/Release/WoWee.app WoWee.ipa
 ```
 
 Debug builds carry this project's own music; Release builds leave it out, the
 same split every other platform's release makes.
+
+### Game data inside the app
+
+For a device of your own, the build can put an extraction into the app, so it
+starts with game data and nothing has to be copied across:
+
+```bash
+cmake -S . -B build-ios -DWOWEE_IOS_GAME_DATA=$PWD/Data \
+      -DWOWEE_IOS_GAME_DATA_EXPANSIONS=wotlk
+```
+
+`WOWEE_IOS_GAME_DATA` is the folder `extract_assets.sh` wrote, the one holding
+`expansions/<id>/manifest.json`; the second option names which expansions go
+in, all of them when empty. The client's Windows and Mac executables that an
+extraction carries are left out. It is gigabytes, so every build signs and
+every install copies all of it, and the app is then yours alone: never hand
+it to anyone else. Data copied into `Documents/Data` wins over it.
 
 ### The unsigned .ipa
 
@@ -117,7 +133,8 @@ The same as on Android:
 | Left thumb, lower left | Move and strafe |
 | Right thumb, drag | Turn the view; the character faces where it looks |
 | Two fingers | Zoom the camera |
-| Tap | Target, interact, and everything in the interface |
+| Tap | Target, and everything in the interface |
+| Tap the target again | Talk, trade, loot or attack: what a right-click does |
 
 A game controller works through SDL, as on every platform. An iPad's keyboard,
 trackpad or mouse arrive the way they do on a desktop.
@@ -133,9 +150,16 @@ trackpad or mouse arrive the way they do on a desktop.
 - **No cinematics.** There is no FFmpeg in the build, as on Android.
 - **Landscape only**, and full screen on an iPad.
 - **Memory.** iOS kills an app that passes a per-app ceiling well below the
-  device's memory. The client measures its room under that ceiling rather than
-  free memory, and keeps its file cache to the 384 MB Android uses. With a paid
-  team, `-DWOWEE_IOS_INCREASED_MEMORY_LIMIT=ON` signs the app with the
+  device's memory - about 2.9 GB on a 4 GB iPad, with graphics memory counted
+  in it - and says nothing in the app's own log when it does; the device's
+  crash reports show a `JetsamEvent`. The client measures its room under that
+  ceiling rather than free memory, and starts smaller than on a desktop: a
+  view distance of 700, texture caches of 192/192/128/96 MB (models,
+  buildings, terrain, characters), a 128 MB file cache, a 96 MB terrain tile
+  cache, two terrain workers and 32 MB allocator blocks. A low-memory warning
+  from the system drops the file cache. `WOWEE_MEMORY_REPORT=1` logs the
+  process footprint, graphics, heap and what is loaded every few seconds. With
+  a paid team, `-DWOWEE_IOS_INCREASED_MEMORY_LIMIT=ON` signs the app with the
   Increased Memory Limit entitlement, which raises the ceiling.
 - **Textures.** Devices whose GPU has no BC formats get their DXT textures
   unpacked to RGBA8, through the path written for Android.

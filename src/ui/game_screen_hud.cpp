@@ -1,4 +1,5 @@
 #include "ui/game_screen.hpp"
+#include "core/config_paths.hpp"
 #include "ui/sight_cache.hpp"
 #include "addons/lua_api_registrations.hpp"
 #include "ui/ui_texture_load.hpp"
@@ -1722,13 +1723,10 @@ void GameScreen::setGamma(float gamma) {
 
 namespace {
 
-/// ~/.wowee/<folder>/WoWee_YYYYMMDD_HHMMSS.<extension>, the name a screenshot
-/// or a recording is saved under.
+/// <config root>/<folder>/WoWee_YYYYMMDD_HHMMSS.<extension>, the name a
+/// screenshot or a recording is saved under - ~/.wowee/<folder> on a desktop.
 std::string capturePath(const char* folder, const char* extension) {
-    const char* home = std::getenv("HOME");
-    if (!home) home = std::getenv("USERPROFILE");
-    if (!home) home = "/tmp";
-    std::string dir = std::string(home) + "/.wowee/" + folder;
+    std::string dir = core::getConfigRoot() + "/" + folder;
 
     auto now = std::chrono::system_clock::now();
     auto tt  = std::chrono::system_clock::to_time_t(now);

@@ -130,7 +130,7 @@ if [ ! -f "$BINARY" ]; then
             )
             export PKG_CONFIG_PATH="$BREW/lib/pkgconfig:$(brew --prefix ffmpeg)/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix vulkan-loader 2>/dev/null)/lib/pkgconfig:$(brew --prefix shaderc 2>/dev/null)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
         fi
-        cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release "${CMAKE_EXTRA_ARGS[@]}"
+        cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release ${CMAKE_EXTRA_ARGS[@]+"${CMAKE_EXTRA_ARGS[@]}"}
     fi
     NPROC=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
     cmake --build "$BUILD_DIR" --target asset_extract -- -j"$NPROC"
@@ -156,7 +156,9 @@ if [ "$EXPANSION" != "auto" ] && [ -d "${OUTPUT_DIR}/expansions/${EXPANSION}/db"
     EXTRA_ARGS+=(--skip-dbc)
 fi
 
-"$BINARY" --mpq-dir "$MPQ_DIR" --output "$OUTPUT_DIR" --expansion-subdir "${EXTRA_ARGS[@]}"
+# Empty when the expansion is auto-detected, and bash 3.2 calls an empty
+# array unbound under `set -u` - see the note beside POSITIONAL above.
+"$BINARY" --mpq-dir "$MPQ_DIR" --output "$OUTPUT_DIR" --expansion-subdir ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 echo ""
 if [ "$EXPANSION" = "auto" ]; then

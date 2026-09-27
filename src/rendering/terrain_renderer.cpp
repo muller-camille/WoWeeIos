@@ -1,4 +1,5 @@
 #include "rendering/terrain_vertex.hpp"
+#include "core/platform.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/terrain_renderer.hpp"
 #include "rendering/rt_scene.hpp"
@@ -20,6 +21,15 @@
 #include <unordered_set>
 #include <limits>
 #include <cstring>
+
+
+#ifdef WOWEE_IOS
+// Sized to iOS's per-app memory ceiling, which a desktop budget is far past;
+// see kDefaultViewDistance.
+static constexpr size_t kTextureCacheDefaultMB = 128;
+#else
+static constexpr size_t kTextureCacheDefaultMB = 4096;
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -211,7 +221,7 @@ bool TerrainRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameL
     opaqueAlphaTexture->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     textureCacheBudgetBytes_ =
-        envSizeMBOrDefault("WOWEE_TERRAIN_TEX_CACHE_MB", 4096) * 1024ull * 1024ull;
+        envSizeMBOrDefault("WOWEE_TERRAIN_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     LOG_INFO("Terrain texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
 
     // Allocate mega vertex/index buffers and indirect draw buffer.

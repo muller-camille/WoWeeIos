@@ -11,6 +11,7 @@
 #include "game/expansion_profile.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "core/logger.hpp"
+#include "core/platform.hpp"
 #include "game/warden_constants.hpp"
 #include <algorithm>
 #include <cctype>
@@ -27,6 +28,22 @@ namespace wowee {
 namespace game {
 
 namespace {
+
+// Where downloaded Warden modules and their .cr tables are kept.
+std::string wardenCacheDir() {
+#if defined(_WIN32)
+    if (const char* h = std::getenv("APPDATA")) return std::string(h) + "\\wowee\\warden_cache";
+    return ".\\warden_cache";
+#elif defined(WOWEE_IOS)
+    // The sandbox's home itself is not writable on iOS; Library/Caches is the
+    // app's own, as for the pipeline cache.
+    if (const char* h = std::getenv("HOME")) return std::string(h) + "/Library/Caches/wowee/warden_cache";
+    return "./warden_cache";
+#else
+    if (const char* h = std::getenv("HOME")) return std::string(h) + "/.local/share/wowee/warden_cache";
+    return "./warden_cache";
+#endif
+}
 
 std::string asciiLower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
@@ -227,14 +244,7 @@ bool WardenHandler::loadWardenCRFile(const std::string& moduleHashHex) {
     wardenCREntries_.clear();
 
     // Look for .cr file in warden cache
-    std::string cacheBase;
-#ifdef _WIN32
-    if (const char* h = std::getenv("APPDATA")) cacheBase = std::string(h) + "\\wowee\\warden_cache";
-    else cacheBase = ".\\warden_cache";
-#else
-    if (const char* h = std::getenv("HOME")) cacheBase = std::string(h) + "/.local/share/wowee/warden_cache";
-    else cacheBase = "./warden_cache";
-#endif
+    const std::string cacheBase = wardenCacheDir();
     std::string crPath = cacheBase + "/" + moduleHashHex + ".cr";
 
     std::ifstream crFile(crPath, std::ios::binary);
@@ -424,16 +434,9 @@ void WardenHandler::handleWardenData(network::Packet& packet) {
 
                 // Cache raw module to disk
                 {
-#ifdef _WIN32
-                    std::string cacheDir;
-                    if (const char* h = std::getenv("APPDATA")) cacheDir = std::string(h) + "\\wowee\\warden_cache";
-                    else cacheDir = ".\\warden_cache";
-#else
-                    std::string cacheDir;
-                    if (const char* h = std::getenv("HOME")) cacheDir = std::string(h) + "/.local/share/wowee/warden_cache";
-                    else cacheDir = "./warden_cache";
-#endif
-                    std::filesystem::create_directories(cacheDir);
+                    const std::string cacheDir = wardenCacheDir();
+                    std::error_code dirEc;
+                    std::filesystem::create_directories(cacheDir, dirEc);
 
                     std::string hashHex;
                     for (auto b : wardenModuleHash_) { char s[4]; snprintf(s, 4, "%02x", b); hashHex += s; }

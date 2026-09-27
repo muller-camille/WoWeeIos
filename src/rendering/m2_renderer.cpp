@@ -1,4 +1,5 @@
 #include <atomic>
+#include "core/platform.hpp"
 #include "rendering/placement_transform.hpp"
 #include "rendering/m2_renderer.hpp"
 #include "rendering/rt_bvh.hpp"
@@ -39,6 +40,15 @@
 #include <set>
 
 #include <string_view>
+
+
+#ifdef WOWEE_IOS
+// Sized to iOS's per-app memory ceiling, which a desktop budget is far past;
+// see kDefaultViewDistance.
+static constexpr size_t kTextureCacheDefaultMB = 192;
+#else
+static constexpr size_t kTextureCacheDefaultMB = 4096;
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -1057,7 +1067,7 @@ bool M2Renderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayout
         }
     }
     textureCacheBudgetBytes_ =
-        envSizeMBOrDefault("WOWEE_M2_TEX_CACHE_MB", 4096) * 1024ull * 1024ull;
+        envSizeMBOrDefault("WOWEE_M2_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     modelCacheLimit_ = envSizeMBOrDefault("WOWEE_M2_MODEL_LIMIT", 6000);
     LOG_INFO("M2 texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
     LOG_INFO("M2 model cache limit: ", modelCacheLimit_);

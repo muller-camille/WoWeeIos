@@ -127,7 +127,13 @@ void AssetManager::setupFileCacheBudget() {
     // 8 GB was handing this cache 840 MB, which is both more than the app may
     // hold and a good way to be killed the moment it goes to the background.
     // iOS works the same way, with its own per-app ceiling.
+#ifdef WOWEE_IOS
+    // Less again on iOS, where the ceiling is lower than a phone's and the
+    // world's textures take most of it; see kDefaultViewDistance.
+    const size_t defaultMaxBudgetBytes = 128ull * 1024ull * 1024ull;
+#else
     const size_t defaultMaxBudgetBytes = 384ull * 1024ull * 1024ull;
+#endif
 #else
     const size_t defaultMaxBudgetBytes = 12288ull * 1024ull * 1024ull;  // 12 GB max for file cache
 #endif
@@ -778,6 +784,14 @@ void AssetManager::clearCache() {
     fileCacheAccessCounter = 0;
     LOG_INFO("Cleared asset cache (DBC + file cache)");
 }
+size_t AssetManager::clearFileCache() {
+    std::lock_guard<std::shared_mutex> lock(cacheMutex);
+    const size_t freed = fileCacheTotalBytes;
+    fileCache.clear();
+    fileCacheTotalBytes = 0;
+    return freed;
+}
+
 std::string AssetManager::normalizePath(const std::string& path) const {
     std::string normalized = path;
     std::replace(normalized.begin(), normalized.end(), '/', '\\');

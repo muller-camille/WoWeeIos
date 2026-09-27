@@ -1,4 +1,5 @@
 #include "rendering/terrain_manager.hpp"
+#include "core/platform.hpp"
 
 #include <vector>
 
@@ -112,6 +113,13 @@ int computeTerrainWorkerCount() {
         }
     }
 
+#ifdef WOWEE_IOS
+    // Each tile being prepared holds its decoded data until it is uploaded,
+    // and on iOS that comes out of a per-app ceiling the textures already
+    // come close to. Two keep up with a view distance that loads three tiles
+    // out.
+    return 2;
+#endif
     unsigned hc = std::thread::hardware_concurrency();
     if (hc > 0) {
         // Keep terrain workers conservative by default. Over-subscribing loader
@@ -159,6 +167,11 @@ bool TerrainManager::initialize(pipeline::AssetManager* assets, TerrainRenderer*
     // Keep this lower so decompressed MPQ file cache can stay very aggressive.
     auto& memMonitor = core::MemoryMonitor::getInstance();
     tileCacheBudgetBytes_ = memMonitor.getRecommendedCacheBudget() / 4;
+#ifdef WOWEE_IOS
+    // A quarter of half the headroom is over 300 MB at startup, taken out of
+    // an app ceiling that the world's textures already come close to.
+    tileCacheBudgetBytes_ = std::min<size_t>(tileCacheBudgetBytes_, 96ull * 1024 * 1024);
+#endif
     LOG_INFO("Terrain tile cache budget: ", tileCacheBudgetBytes_ / (1024 * 1024), " MB (dynamic)");
 
     // Start background worker pool (dynamic: scales with available cores)

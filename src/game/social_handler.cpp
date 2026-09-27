@@ -1,4 +1,5 @@
 #include "game/group_defines.hpp"
+#include "core/config_paths.hpp"
 #include "core/local_time.hpp"
 #include "game/item_text.hpp"
 #include "game/social_handler.hpp"
@@ -31,16 +32,7 @@ namespace game {
 namespace {
 
 std::filesystem::path guildNameCachePath() {
-#ifdef _WIN32
-    if (const char* appData = std::getenv("APPDATA")) {
-        return std::filesystem::path(appData) / "wowee" / "guild_names.tsv";
-    }
-#else
-    if (const char* home = std::getenv("HOME")) {
-        return std::filesystem::path(home) / ".wowee" / "guild_names.tsv";
-    }
-#endif
-    return std::filesystem::path("guild_names.tsv");
+    return std::filesystem::path(core::getConfigRoot()) / "guild_names.tsv";
 }
 
 } // namespace

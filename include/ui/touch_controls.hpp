@@ -45,6 +45,11 @@ public:
 
     void handleEvent(const SDL_Event& event, int windowWidth, int windowHeight);
 
+    /// A right-click where the finger last was: the button goes down on the
+    /// next update and up on the one after, so the click reaches the world
+    /// through the same path a mouse's does.
+    void requestInteract() { interactStep_ = 2; }
+
     /// Applies the stick to the movement keys. Once a frame, after events.
     void update();
 
@@ -113,6 +118,9 @@ private:
     mutable bool wasForward_ = false, wasBack_ = false, wasLeft_ = false, wasRight_ = false;
 
     mutable float cachedRadius_ = 0.0f;
+
+    // 2: press the virtual right button on the next update; 1: release it.
+    int interactStep_ = 0;
 };
 
 /// The one the client uses. One screen, one pair of thumbs.

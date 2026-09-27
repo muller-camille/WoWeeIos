@@ -1,4 +1,8 @@
 #include "ui/graphics_choices.hpp"
+#include "core/platform.hpp"
+#ifdef WOWEE_MOBILE
+#include "ui/touch_controls.hpp"
+#endif
 #include "ui/game_screen.hpp"
 #include "ui/gamepad_controls.hpp"
 #include "core/gamepad.hpp"
@@ -1989,6 +1993,16 @@ void GameScreen::processTargetInput(game::GameHandler& gameHandler) {
                     auto picked = gameHandler.getEntityManager().getEntity(closestGuid);
                     if (picked && picked->getType() == game::ObjectType::GAMEOBJECT) {
                         gameHandler.interactWithGameObject(closestGuid);
+#ifdef WOWEE_MOBILE
+                    } else if (ui::touchControls().isInWorld() &&
+                               closestGuid == gameHandler.getTargetGuid()) {
+                        // A finger has no right button, so talking to an NPC,
+                        // opening a vendor, looting and attacking were out of
+                        // reach. Tapping the unit already targeted does what a
+                        // right-click on it does: the first tap selects, the
+                        // second acts.
+                        ui::touchControls().requestInteract();
+#endif
                     } else {
                         gameHandler.setTarget(closestGuid);
                     }

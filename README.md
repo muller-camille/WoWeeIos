@@ -323,7 +323,8 @@ for the profiles and how to check one.
 | Left thumb, lower left | Move and strafe |
 | Right thumb, drag | Turn the view; the character faces where it looks |
 | Two fingers | Zoom the camera |
-| Tap | Target, interact, and everything in the interface |
+| Tap | Target, and everything in the interface |
+| Tap the target again | Talk, trade, loot or attack: what a right-click does |
 
 A keyboard and mouse should work when attached, since SDL delivers them the same
 way, but that is untested.

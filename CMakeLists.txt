@@ -1452,6 +1452,12 @@ if(IOS)
     # audio_engine.cpp, and links CoreAudio directly on iOS, where it cannot
     # open frameworks at run time; AVFoundation is the session it watches.
     target_compile_definitions(wowee PRIVATE WOWEE_MINIAUDIO_IMPL_SEPARATE)
+    # Xcode turns -Wshorten-64-to-32 on for iOS, after the target's own flags,
+    # where no other platform's build has it, so under -Werror every size_t
+    # narrowed to uint32_t stopped the build. The other platforms are the
+    # reference here.
+    set_target_properties(wowee PROPERTIES
+        XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION "NO")
     target_link_libraries(wowee PRIVATE
         "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio")
 endif()
@@ -1837,6 +1843,22 @@ if(IOS)
                 -P ${CMAKE_SOURCE_DIR}/cmake/strip_saved_vars.cmake
         COMMENT "Copying bundled addons into the app"
         VERBATIM)
+    # An extraction built into the app, for a device of your own: the app then
+    # starts with game data and nothing has to be copied through Files. Off by
+    # default - it is gigabytes, and it makes the app one nobody else may be
+    # given. Data the player copies into Documents/Data still wins over it.
+    set(WOWEE_IOS_GAME_DATA "" CACHE PATH
+        "Data root of an extraction to put into the app (holds expansions/<id>/manifest.json)")
+    set(WOWEE_IOS_GAME_DATA_EXPANSIONS "" CACHE STRING
+        "Which extracted expansions to put into the app (e.g. wotlk); empty for all")
+    if(WOWEE_IOS_GAME_DATA)
+        add_custom_command(TARGET wowee POST_BUILD
+            COMMAND ${CMAKE_SOURCE_DIR}/tools/ios/bundle_game_data.sh
+                    ${WOWEE_IOS_GAME_DATA} $<TARGET_FILE_DIR:wowee>
+                    ${WOWEE_IOS_GAME_DATA_EXPANSIONS}
+            COMMENT "Copying game data into the app"
+            VERBATIM)
+    endif()
     # The soundtrack ships with debug builds only, as on every other platform.
     add_custom_command(TARGET wowee POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E

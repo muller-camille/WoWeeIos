@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/platform.hpp"
+
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -407,7 +409,14 @@ public:
     /// Rays streaming from the sun across the finished picture. See SunShafts.
     void setSunShaftsEnabled(bool enabled) { sunShaftsEnabled_ = enabled; }
     int getTerrainLoadRadius() const;
+#ifdef WOWEE_IOS
+    // One tile of slack rather than three: every tile kept past the view
+    // distance is terrain, models and textures held against iOS's per-app
+    // memory ceiling.
+    int getTerrainUnloadRadius() const { return getTerrainLoadRadius() + 1; }
+#else
     int getTerrainUnloadRadius() const { return getTerrainLoadRadius() + 3; }
+#endif
     void setMsaaSamples(VkSampleCountFlagBits samples);
 
     // Post-process pipeline API - delegates to PostProcessPipeline (§4.3)

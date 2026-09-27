@@ -18,7 +18,9 @@ namespace core {
  *                        install, and it is read-only on a device.
  *   WOW_DATA_PATH        Documents/Data. The player's extraction goes here,
  *                        copied in through the Files app or a Mac's Finder, so
- *                        it has to be somewhere they can reach.
+ *                        it has to be somewhere they can reach. With nothing
+ *                        there, the bundle's Data/, if the build put an
+ *                        extraction into the app.
  *   WOWEE_CONFIG_ROOT    Documents/config, for settings and logs. Beside the
  *                        data for the same reason: a log is only useful to a
  *                        bug report if the player can get at it.

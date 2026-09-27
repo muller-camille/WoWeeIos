@@ -15,6 +15,7 @@
  * the original WoW Model Viewer (charcontrol.h, REGION_FAC=2).
  */
 #include <atomic>
+#include "core/platform.hpp"
 #include "rendering/character_renderer.hpp"
 #include "rendering/pom_quality.hpp"
 #include "rendering/shadow_params.hpp"
@@ -54,6 +55,15 @@
 #include <cstdlib>
 #include <limits>
 #include <cstring>
+
+
+#ifdef WOWEE_IOS
+// Sized to iOS's per-app memory ceiling, which a desktop budget is far past;
+// see kDefaultViewDistance.
+static constexpr size_t kTextureCacheDefaultMB = 96;
+#else
+static constexpr size_t kTextureCacheDefaultMB = 4096;
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -473,7 +483,7 @@ bool CharacterRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFram
     createFallbackTextures(device);
 
     // Diagnostics-only: cache lifetime is currently tied to renderer lifetime.
-    textureCacheBudgetBytes_ = envSizeMBOrDefault("WOWEE_CHARACTER_TEX_CACHE_MB", 4096) * 1024ull * 1024ull;
+    textureCacheBudgetBytes_ = envSizeMBOrDefault("WOWEE_CHARACTER_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     LOG_INFO("Character texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
 
     core::Logger::getInstance().info("Character renderer initialized (Vulkan)");

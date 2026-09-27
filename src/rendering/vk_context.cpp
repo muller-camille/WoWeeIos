@@ -1073,6 +1073,12 @@ bool VkContext::createAllocator() {
     allocInfo.instance = instance;
     allocInfo.physicalDevice = physicalDevice;
     allocInfo.device = device;
+#ifdef WOWEE_IOS
+    // VMA's default 256 MB blocks are kept once made, and on a device whose
+    // whole app is allowed about 2.9 GB a mostly empty one is a tenth of it:
+    // a world load left 1.6 GB of blocks around 1.2 GB of allocations.
+    allocInfo.preferredLargeHeapBlockSize = 32ull * 1024 * 1024;
+#endif
     // VMA asserts when handed a version newer than the headers it was compiled
     // against, and the two do not have to agree: the NDK ships Vulkan 1.3
     // headers while a Pixel's loader reports an instance at 1.4. Telling it a

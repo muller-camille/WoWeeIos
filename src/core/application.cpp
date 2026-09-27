@@ -74,6 +74,15 @@
 #include "addons/lua_api_registrations.hpp"
 #include "core/data_paths.hpp"
 #include "core/platform.hpp"
+#include "core/config_paths.hpp"
+#ifdef WOWEE_IOS
+#include <mach/mach.h>
+#include <os/proc.h>
+#include <malloc/malloc.h>
+#include <vk_mem_alloc.h>
+#include <fstream>
+#include <thread>
+#endif
 #include "ui/ui_services.hpp"
 #include "auth/auth_handler.hpp"
 #include "game/game_handler.hpp"
@@ -1313,6 +1322,58 @@ void Application::run() {
     // on Linux. Pinning here silently confined every later render worker to
     // CPU 0 and defeated all command-recording parallelism.
 
+#ifdef WOWEE_IOS
+    // WOWEE_MEMORY_REPORT=1: every two seconds, what the process holds against
+    // iOS's per-app ceiling and how much of it is Vulkan memory, from a thread
+    // of its own so a long world load is covered too. The first time the
+    // footprint passes 2.3 GB, every VMA allocation is written beside the log
+    // as vma_stats.json, which is what says whose memory it is.
+    if (core::envFlagEnabled("WOWEE_MEMORY_REPORT", false) && window &&
+        window->getVkContext()) {
+        VmaAllocator vma = window->getVkContext()->getAllocator();
+        std::thread([vma]() {
+            bool dumped = false;
+            for (;;) {
+                task_vm_info_data_t info{};
+                mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+                const bool haveInfo = task_info(mach_task_self(), TASK_VM_INFO,
+                    reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS;
+                const uint64_t footprint = haveInfo ? info.phys_footprint : 0;
+                VmaTotalStatistics stats{};
+                vmaCalculateStatistics(vma, &stats);
+                constexpr uint64_t kMB = 1024ull * 1024ull;
+                // Graphics is Metal's own memory, VMA's blocks and MoltenVK's
+                // alike; heap is what malloc and new hold. Whatever neither
+                // accounts for is the rest of the process.
+                malloc_statistics_t heap{};
+                malloc_zone_statistics(nullptr, &heap);
+                const uint64_t graphics = haveInfo && info.ledger_tag_graphics_footprint > 0
+                    ? static_cast<uint64_t>(info.ledger_tag_graphics_footprint) : 0;
+                LOG_WARNING("Memory: footprint ", footprint / kMB, " MB, headroom ",
+                            os_proc_available_memory() / kMB, " MB, graphics ",
+                            graphics / kMB, " MB, heap ", heap.size_in_use / kMB,
+                            " MB, compressed ", (haveInfo ? info.compressed : 0) / kMB,
+                            " MB, VMA ",
+                            stats.total.statistics.allocationBytes / kMB, " MB in ",
+                            stats.total.statistics.allocationCount, " allocations, ",
+                            stats.total.statistics.blockBytes / kMB, " MB of blocks");
+                if (!dumped && footprint > 2300 * kMB) {
+                    dumped = true;
+                    char* json = nullptr;
+                    vmaBuildStatsString(vma, &json, VK_TRUE);
+                    if (json) {
+                        std::ofstream out(core::getConfigRoot() + "/vma_stats.json");
+                        out << json;
+                        vmaFreeStatsString(vma, json);
+                        LOG_WARNING("Memory: VMA allocations written to vma_stats.json");
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+        }).detach();
+    }
+#endif
+
     frameProfileEnabled_ = core::envFlagEnabled("WOWEE_FRAME_PROFILE", false);
     if (frameProfileEnabled_) {
         LOG_WARNING("Frame timing profile enabled (WOWEE_FRAME_PROFILE=1) - "
@@ -1498,6 +1559,14 @@ void Application::run() {
             // comes before that line - and is also what a pulled-down Control
             // Center sends - so drawing stops there and starts again at
             // become-active. Nothing is torn down; see pausePresentation.
+            // The system is short of memory, and on a phone the next step is
+            // this app being killed without a word. The file cache is the one
+            // thing held that costs nothing to give back.
+            if (event.type == SDL_EVENT_LOW_MEMORY) {
+                const size_t freed = assetManager ? assetManager->clearFileCache() : 0;
+                LOG_WARNING("Low-memory warning from the system: dropped ",
+                            freed / (1024 * 1024), " MB of file cache");
+            }
 #ifdef WOWEE_IOS
             if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
                 if (window && window->getVkContext()) {
@@ -3660,6 +3729,30 @@ void Application::updateInGame(float deltaTime, const char*& updateCheckpoint) {
     };
     inGameStep = "gameHandler update";
     updateCheckpoint = "in_game: gameHandler update";
+#ifdef WOWEE_IOS
+    // Beside WOWEE_MEMORY_REPORT's totals, what is holding them: the counts
+    // that decide how much CPU-side model and terrain data is resident.
+    {
+        static const bool report = core::envFlagEnabled("WOWEE_MEMORY_REPORT", false);
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (report && renderer && now - last > std::chrono::seconds(5)) {
+            last = now;
+            auto* m2 = renderer->getM2Renderer();
+            auto* wmo = renderer->getWMORenderer();
+            auto* terrain = renderer->getTerrainManager();
+            auto* chars = renderer->getCharacterRenderer();
+            LOG_WARNING("Memory: tiles ", terrain ? terrain->getLoadedTileCount() : 0,
+                        ", M2 models ", m2 ? m2->getModelCount() : 0,
+                        " instances ", m2 ? m2->getInstanceCount() : 0,
+                        ", WMO models ", wmo ? wmo->getModelCount() : 0,
+                        " instances ", wmo ? wmo->getInstanceCount() : 0,
+                        ", characters ", chars ? chars->getInstanceCount() : 0,
+                        ", file cache ",
+                        assetManager ? assetManager->getFileCacheSize() / (1024 * 1024) : 0, " MB");
+        }
+    }
+#endif
 #ifdef WOWEE_MOBILE
     ui::touchControls().update();
     if (renderer && renderer->getCameraController()) {

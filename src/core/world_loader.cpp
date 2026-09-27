@@ -2,6 +2,7 @@
 // Extracted from Application as part of god-class decomposition (Section 3.3)
 
 #include "rendering/animation/melee_anim_chains.hpp"
+#include "core/config_paths.hpp"
 #include "core/world_loader.hpp"
 #include "core/application.hpp"
 #include "core/world_entry_callback_handler.hpp"
@@ -591,9 +592,16 @@ void WorldLoader::loadMapGeometry(uint32_t mapId, const std::string& mapName,
             // Use a small radius for the initial load (just immediate tiles),
             // then restore the full radius after entering the game.
             // This matches WoW's behavior: load quickly, stream the rest in-game.
-            const int savedLoadRadius = 6;
-            terrainMgr->setLoadRadius(4);   // 9x9=81 tiles - prevents hitches on spawn
-            terrainMgr->setUnloadRadius(9);
+            //
+            // Never past the radius the view distance asks for, and back to that
+            // one afterwards rather than a fixed 6: tiles only unload beyond the
+            // unload radius, so everything the entry loaded stayed loaded, and a
+            // shorter view distance saved nothing. On a device with a memory
+            // ceiling that was the difference between entering the world and
+            // being killed at the end of the loading screen.
+            const int savedLoadRadius = renderer_->getTerrainLoadRadius();
+            terrainMgr->setLoadRadius(std::min(4, savedLoadRadius));
+            terrainMgr->setUnloadRadius(renderer_->getTerrainUnloadRadius());
 
             // Trigger tile streaming for surrounding area
             terrainMgr->update(*camera, 1.0f);
@@ -1351,14 +1359,13 @@ void WorldLoader::cancelWorldPreload() {
 
 void WorldLoader::saveLastWorldInfo(uint32_t mapId, const std::string& mapName,
                                      float serverX, float serverY) {
-#ifdef _WIN32
-    const char* base = std::getenv("APPDATA");
-    std::string dir = base ? std::string(base) + "\\wowee" : ".";
-#else
-    const char* home = std::getenv("HOME");
-    std::string dir = home ? std::string(home) + "/.wowee" : ".";
-#endif
-    std::filesystem::create_directories(dir);
+    // The config root, not the per-user folder by hand: that ignored a
+    // portable install and, on iOS, is the container root, where creating a
+    // directory is refused - which threw and ended the session on entering the
+    // world.
+    const std::string dir = core::getConfigRoot();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
     std::ofstream f(dir + "/last_world.cfg");
     if (f) {
         f << mapId << "\n" << mapName << "\n" << serverX << "\n" << serverY << "\n";
@@ -1366,13 +1373,7 @@ void WorldLoader::saveLastWorldInfo(uint32_t mapId, const std::string& mapName,
 }
 
 WorldLoader::LastWorldInfo WorldLoader::loadLastWorldInfo() const {
-#ifdef _WIN32
-    const char* base = std::getenv("APPDATA");
-    std::string dir = base ? std::string(base) + "\\wowee" : ".";
-#else
-    const char* home = std::getenv("HOME");
-    std::string dir = home ? std::string(home) + "/.wowee" : ".";
-#endif
+    const std::string dir = core::getConfigRoot();
     LastWorldInfo info;
     std::ifstream f(dir + "/last_world.cfg");
     if (!f) return info;
