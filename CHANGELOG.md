@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **iPhone and iPad.** The client builds for iOS and has been played on an iPad Air: Vulkan through MoltenVK, the touch controls from Android, and settings, logs and game data in the app's own folder, which the Files app and a Mac's Finder can reach. [docs/ios.md](docs/ios.md) has building, signing with a free Apple ID and copying game data across
+- **Talking to NPCs by touch.** A finger has no right button, so on a phone or tablet nothing could open a vendor, a quest giver, a corpse's loot or an attack. Tapping the unit that is already your target now does what a right-click on it does: the first tap selects, the second acts
+- **Game data inside the iOS app.** `-DWOWEE_IOS_GAME_DATA` puts an extraction into the app for a device of your own, and `-DWOWEE_IOS_GAME_DATA_EXPANSIONS` chooses which expansions go in
+- **Memory report on iOS.** `WOWEE_MEMORY_REPORT=1` logs the process footprint, graphics memory, heap and what is loaded every few seconds, and writes every graphics allocation to `vma_stats.json` beside the log once memory runs high
+
+### Fixed
+- **A shorter view distance saved no memory.** Entering the world loaded terrain four tiles out whatever the view distance, and afterwards set the radius to six rather than to the view distance's own. Tiles are only unloaded well beyond that radius, so everything loaded on entry stayed loaded. Entering the world now loads no further than the view distance asks, and returns to it
+- **Last world position, guild names, screenshots and recordings ignored a portable install.** They were written to `~/.wowee` by hand rather than to the configuration folder everything else uses. On iOS that folder cannot be created at all, and the attempt ended the session on entering the world
+- **Warden's module cache on iOS.** It was kept under `~/.local/share`, which an iOS app may not write, and the attempt threw in the middle of the server's check. It is kept in the app's caches folder there now
+- **Stale expansion tables in a bundled extraction.** An extraction carries the expansion tables that were current when it was made, and copying it into the iOS app overwrote the client's own newer ones, so spell data went unread. The client's own are kept
+
+### Changed
+- **iOS starts with less loaded.** iOS kills an app outright at a per-app memory ceiling, about 2.9 GB on a 4 GB iPad with graphics memory counted in it, and the desktop defaults went past it before the loading screen finished. On iOS the view distance starts at 700, the texture caches at 192, 192, 128 and 96 MB (models, buildings, terrain, characters), the file cache at 128 MB and the terrain tile cache at 96 MB; terrain loads on two threads, unloads one tile past the view distance rather than three, and graphics memory is reserved in 32 MB blocks rather than 256 MB ones that sat mostly empty. A low-memory warning from the system drops the file cache
+- **Xcode's 64-to-32-bit narrowing warning is off for the iOS target.** Xcode turns it on for iOS and no other platform's build has it, so under warnings-as-errors it stopped the build
+
 ## [v3.1.39] - 2026-09-24
 
 ### Fixed
