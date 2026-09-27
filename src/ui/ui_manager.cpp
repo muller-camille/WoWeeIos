@@ -91,13 +91,15 @@ float interfaceScale([[maybe_unused]] SDL_Window* window) {
 #elif defined(WOWEE_IOS)
     // Points, not pixels, and SDL reports a content scale of 1 for them: the
     // Retina factor is the framebuffer scale, which ImGui applies to its fonts
-    // by itself. So only the height decides. An iPad is tall enough for 1:1.
+    // by itself. So only the height decides. A phone goes below 1 to fit; an
+    // iPad goes above it, as far as the tallest dialog allows and a quarter at
+    // most, because at 1 a desktop-sized control is smaller than a fingertip.
     int height = 0;
     if (window) {
         SDL_GetWindowSize(window, nullptr, &height);
     }
     if (height <= 0) return 1.0f;
-    return std::clamp(static_cast<float>(height) / kMinLogicalHeight, 0.5f, 1.0f);
+    return std::clamp(static_cast<float>(height) / kMinLogicalHeight, 0.5f, 1.25f);
 #else
     return 1.0f;
 #endif

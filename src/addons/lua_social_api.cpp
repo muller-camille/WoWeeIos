@@ -865,6 +865,22 @@ bool gossipQuestIsActive(uint32_t icon) {
     return gossipQuestIsIncomplete(icon) || gossipQuestIsCompletable(icon);
 }
 
+/// Whether a quest the giver lists as taken can be handed in now. The icon
+/// alone cannot say: TrinityCore and AzerothCore send 4 for every quest the
+/// giver takes back, finished or not, and the 3.3.5 client decides from its
+/// own quest log - which is how "A Threat Within" came to show the grey,
+/// not-yet question mark at the marshal who ends it.
+bool gossipQuestReadyToTurnIn(lua_State* L, const game::GossipQuestItem& q) {
+    if (gossipQuestIsCompletable(q.questIcon)) return true;
+    if (!gossipQuestIsActive(q.questIcon)) return false;
+    auto* gh = getGameHandler(L);
+    if (!gh) return false;
+    for (const auto& entry : gh->getQuestLog()) {
+        if (entry.questId == q.questId) return entry.complete;
+    }
+    return false;
+}
+
 /// The i-th quest of one kind, or null past the end. One walk shared by
 /// everything that indexes these lists, so they cannot disagree about which
 /// quest is second.
@@ -2526,7 +2542,7 @@ void registerSocialLuaAPI(lua_State* L) {
                 lua_pushstring(L, q.title.c_str());
                 lua_pushnumber(L, q.questLevel);
                 lua_pushboolean(L, 0);
-                lua_pushboolean(L, gossipQuestIsCompletable(q.questIcon) ? 1 : 0);
+                lua_pushboolean(L, gossipQuestReadyToTurnIn(L, q) ? 1 : 0);
                 n += 4;
             }
             return n;

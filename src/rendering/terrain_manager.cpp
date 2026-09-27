@@ -1321,7 +1321,11 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         auto tile = std::make_unique<TerrainTile>();
         tile->coord = coord;
         tile->terrain = std::move(pending->terrain);
-        tile->mesh = std::move(pending->mesh);
+        // The mesh stays behind with the pending tile and goes with it. It is
+        // the upload's source and nothing reads it once the GPU has it, but
+        // keeping it cost every loaded tile its vertices, indices and a 64x64
+        // alpha map per layer for each of 256 chunks - over 150 MB of heap at
+        // a radius of three, on a device that is killed at 2.9 GB.
         tile->loaded = true;
         tile->m2InstanceIds = std::move(ft.m2InstanceIds);
         tile->wmoInstanceIds = std::move(ft.wmoInstanceIds);

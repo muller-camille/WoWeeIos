@@ -1422,7 +1422,13 @@ void QuestHandler::selectGossipOption(uint32_t optionId, const std::string& code
 }
 
 void QuestHandler::selectGossipQuest(uint32_t questId) {
-    if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || !gossipWindowOpen_) return;
+    // A click on a quest in the gossip window that does nothing leaves no
+    // other trace, so each way it can end is said.
+    if (owner_.getState() != WorldState::IN_WORLD || !owner_.getSocket() || !gossipWindowOpen_) {
+        LOG_INFO("Gossip quest ", questId, " clicked and ignored: ",
+                 !gossipWindowOpen_ ? "the gossip window is marked closed" : "not in the world");
+        return;
+    }
 
     const QuestLogEntry* activeQuest = nullptr;
     for (const auto& q : questLog_) {
@@ -1464,6 +1470,7 @@ void QuestHandler::selectGossipQuest(uint32_t questId) {
         pendingTurnInRewardRequest_ = activeQuest ? activeQuest->complete : false;
         auto packet = QuestgiverCompleteQuestPacket::build(currentGossip_.npcGuid, questId);
         owner_.getSocket()->send(packet);
+        LOG_INFO("Gossip quest ", questId, ": in the server's quest log, asked to hand it in");
     } else {
         pendingTurnInQuestId_ = 0;
         pendingTurnInNpcGuid_ = 0;
@@ -1472,6 +1479,7 @@ void QuestHandler::selectGossipQuest(uint32_t questId) {
             ? owner_.getPacketParsers()->buildQueryQuestPacket(currentGossip_.npcGuid, questId)
             : QuestgiverQueryQuestPacket::build(currentGossip_.npcGuid, questId);
         owner_.getSocket()->send(packet);
+        LOG_INFO("Gossip quest ", questId, ": not in the server's quest log, asked for its details");
     }
 
     gossipWindowOpen_ = false;

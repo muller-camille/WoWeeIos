@@ -10666,9 +10666,22 @@ void LuaEngine::dispatchMouse(float x, float y, float screenH, MouseButtons butt
         }
         if (visibleFrames > 0) {
             lastReport = now;
-            LOG_INFO("WidgetInput: mouse=(", x, ",", y, ") hit=", hit,
-                     " hover=", hoverWid_, " mouseEnabled=", mouseFrames,
-                     " visible=", visibleFrames);
+            // By name and rect, which is what says whether the frame under
+            // the cursor is the one the player can see there.
+            const auto* hitW = hit ? widgets_.get(hit) : nullptr;
+            LOG_INFO("WidgetInput: mouse=(", x, ",", y, ") hit=", hit, " '",
+                     hitW ? hitW->name : std::string(), "' rect=(", hitW ? hitW->left : 0.0f, ",",
+                     hitW ? hitW->bottom : 0.0f, " ", hitW ? hitW->rectW : 0.0f, "x",
+                     hitW ? hitW->rectH : 0.0f, ") hover=", hoverWid_,
+                     " mouseEnabled=", mouseFrames, " visible=", visibleFrames);
+            // Where the gossip window's first line is, while it is up: a quest
+            // there that would not take a click is what this was added for.
+            if (const auto* title = widgets_.findByName("GossipTitleButton1");
+                title && title->visible) {
+                LOG_INFO("WidgetInput: GossipTitleButton1 rect=(", title->left, ",", title->bottom,
+                         " ", title->rectW, "x", title->rectH, ") mouse=",
+                         title->mouseEnabled ? "on" : "off");
+            }
         }
     }
 
@@ -10690,9 +10703,9 @@ void LuaEngine::dispatchMouse(float x, float y, float screenH, MouseButtons butt
         if (answer != lastAnswer && now - lastPress > 1.0) {
             lastPress = now;
             lastAnswer = answer;
-            // Debug: one line per click in ordinary play. A click that lands
+            // Info: one line per click in ordinary play. A click that lands
             // and is refused still says so at warning, from the release below.
-            LOG_DEBUG("WidgetInput: press at (", x, ",", y, ") hit ", answer);
+            LOG_INFO("WidgetInput: press at (", x, ",", y, ") hit ", answer);
         }
     }
 

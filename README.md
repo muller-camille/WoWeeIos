@@ -323,8 +323,16 @@ for the profiles and how to check one.
 | Left thumb, lower left | Move and strafe |
 | Right thumb, drag | Turn the view; the character faces where it looks |
 | Two fingers | Zoom the camera |
-| Tap | Target, and everything in the interface |
+| Tap | Target, and click anything in the interface |
 | Tap the target again | Talk, trade, loot or attack: what a right-click does |
+| Touch and hold | Show the tooltip; lifting the finger clicks nothing |
+| Hold, then drag | Pick up an item or a spell and carry it to a bag, a bar or a player |
+| Round buttons, lower right | Action slots 1 to 6 and jump |
+| Buttons along the top | Bags, character, spellbook, talents, quests, map and the game menu |
+
+The round buttons and the top row step aside for the interface: one with a
+window under it, such as an open bag in that corner, is hidden until the
+window closes.
 
 A keyboard and mouse should work when attached, since SDL delivers them the same
 way, but that is untested.

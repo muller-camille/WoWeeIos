@@ -328,6 +328,34 @@ void GameScreen::render(game::GameHandler& gameHandler) {
     // metrics halfway through an ImGui frame.
     settingsPanel_.applyWindowUiScale();
 
+#ifdef WOWEE_MOBILE
+    // The thumb buttons show what the first six slots of the main bar hold,
+    // from the same bar, page and icon cache the bar is drawn from.
+    {
+        static bool slotProviderSet = false;
+        if (!slotProviderSet) {
+            slotProviderSet = true;
+            game::GameHandler* gh = &gameHandler;
+            ui::touchControls().setSlotProvider([this, gh](int slot) {
+                TouchControls::SlotVisual visual;
+                const auto& bar = gh->getActionBar();
+                const int index = ActionBarPanel::actionSlotForPage(
+                    actionBarPanel_.getMainActionBarPage(), slot);
+                if (index < 0 || index >= static_cast<int>(bar.size())) return visual;
+                const auto& action = bar[index];
+                if (action.type == game::ActionBarSlot::SPELL && action.id != 0) {
+                    visual.texture = reinterpret_cast<void*>(
+                        getSpellIcon(action.id, services_.assetManager));
+                }
+                if (action.cooldownTotal > 0.0f && action.cooldownRemaining > 0.0f) {
+                    visual.cooldown = action.cooldownRemaining / action.cooldownTotal;
+                }
+                return visual;
+            });
+        }
+    }
+#endif
+
     // Set up chat bubble callback (once) and cache game handler in ChatPanel
     chatPanel_.setupCallbacks(gameHandler);
     toastManager_.setupCallbacks(gameHandler);

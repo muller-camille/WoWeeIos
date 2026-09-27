@@ -867,6 +867,10 @@ public:
     void setUserScale(float scale) {
         const float clamped = scale < 0.64f ? 0.64f
                             : (scale > kMaxUserScale ? kMaxUserScale : scale);
+        // 1 is what a scale nobody has chosen reads as - the default that
+        // startup applies like any other value - so on a touch screen it
+        // leaves the touch default in place; see touchDefaultScale.
+        userScaleChosen_ = clamped != 1.0f;
         if (clamped == userScale_) return;
         userScale_ = clamped;
         // Every rect is stale after a scale change, and this said so through
@@ -1065,6 +1069,15 @@ private:
     /// references valid when it grows, which is the guarantee this needs.
     float uiScale_ = 1.0f;
     float userScale_ = 1.0f;
+    bool userScaleChosen_ = false;
+    /// The scale an iPhone or iPad starts at: as large as the interface goes
+    /// while the main bar, 1024 units wide, still fits across the screen. At
+    /// 1 a desktop-sized button is smaller than a fingertip on a tablet.
+    [[nodiscard]] static float touchDefaultScale(float pixelW, float pixelH) {
+        if (pixelW <= 0.0f || pixelH <= 0.0f) return 1.0f;
+        const float fitWidth = (kInterfaceHeight * pixelW / pixelH) / 1024.0f;
+        return fitWidth < 1.0f ? 1.0f : (fitWidth > kMaxUserScale ? kMaxUserScale : fitWidth);
+    }
     std::vector<uint32_t> scrollFrames_;
     /// Which unit each portrait texture is showing, and the reverse. Two maps
     /// rather than one because both questions are asked every frame: the draw

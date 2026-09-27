@@ -54,7 +54,8 @@ struct TileCoord {
 struct TerrainTile {
     TileCoord coord;
     pipeline::ADTTerrain terrain;
-    pipeline::TerrainMesh mesh;
+    // No mesh: it is only the upload's source, and it stays with the pending
+    // tile, which is released once the tile is committed.
     bool loaded = false;
 
     // Tile bounds in world coordinates

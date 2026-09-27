@@ -75,6 +75,8 @@
 #include "core/data_paths.hpp"
 #include "core/platform.hpp"
 #include "core/config_paths.hpp"
+#include "ui/link_hit.hpp"
+#include "ui/widget_tree.hpp"
 #ifdef WOWEE_IOS
 #include <mach/mach.h>
 #include <os/proc.h>
@@ -1323,6 +1325,43 @@ void Application::run() {
     // CPU 0 and defeated all command-recording parallelism.
 
 #ifdef WOWEE_IOS
+    // What the heap is made of, by allocation size: a few hundred large
+    // buffers and millions of small objects are different culprits, and
+    // nothing else on the device can say which. Every zone is locked while it
+    // is walked, and the walk itself allocates nothing.
+    static const auto logHeapHistogram = []() {
+        struct Buckets { uint64_t count[48] = {}; uint64_t bytes[48] = {}; };
+        static Buckets buckets;
+        buckets = Buckets{};
+        vm_address_t* zones = nullptr;
+        unsigned zoneCount = 0;
+        const auto reader = [](task_t, vm_address_t address, vm_size_t, void** local) -> kern_return_t {
+            *local = reinterpret_cast<void*>(address);
+            return KERN_SUCCESS;
+        };
+        if (malloc_get_all_zones(mach_task_self(), reader, &zones, &zoneCount) != KERN_SUCCESS) return;
+        const auto recorder = [](task_t, void*, unsigned, vm_range_t* ranges, unsigned count) {
+            for (unsigned i = 0; i < count; ++i) {
+                const uint64_t size = ranges[i].size;
+                const int bucket = size ? std::min(47, 63 - __builtin_clzll(size)) : 0;
+                ++buckets.count[bucket];
+                buckets.bytes[bucket] += size;
+            }
+        };
+        for (unsigned z = 0; z < zoneCount; ++z) {
+            auto* zone = reinterpret_cast<malloc_zone_t*>(zones[z]);
+            if (!zone || !zone->introspect || !zone->introspect->enumerator) continue;
+            zone->introspect->force_lock(zone);
+            zone->introspect->enumerator(mach_task_self(), nullptr, MALLOC_PTR_IN_USE_RANGE_TYPE,
+                                         zones[z], reader, recorder);
+            zone->introspect->force_unlock(zone);
+        }
+        for (int b = 0; b < 48; ++b) {
+            if (buckets.bytes[b] < 8ull * 1024 * 1024) continue;
+            LOG_WARNING("Memory: heap blocks of ", (1ull << b), "-", (2ull << b) - 1, " bytes: ",
+                        buckets.count[b], " holding ", buckets.bytes[b] / (1024 * 1024), " MB");
+        }
+    };
     // WOWEE_MEMORY_REPORT=1: every two seconds, what the process holds against
     // iOS's per-app ceiling and how much of it is Vulkan memory, from a thread
     // of its own so a long world load is covered too. The first time the
@@ -1359,6 +1398,7 @@ void Application::run() {
                             stats.total.statistics.blockBytes / kMB, " MB of blocks");
                 if (!dumped && footprint > 2300 * kMB) {
                     dumped = true;
+                    logHeapHistogram();
                     char* json = nullptr;
                     vmaBuildStatsString(vma, &json, VK_TRUE);
                     if (json) {
@@ -1507,6 +1547,11 @@ void Application::run() {
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+#ifdef WOWEE_MOBILE
+            // A finger's mouse, sorted into tap, hold and drag before anything
+            // reads it; see TouchControls::filterMouseEvent.
+            if (ui::touchControls().filterMouseEvent(event)) continue;
+#endif
             // Sound in Background. Off in the real client and off here: losing
             // focus silences the client rather than playing on behind whatever
             // the player switched to. Read at the moment focus changes, so
@@ -1536,10 +1581,10 @@ void Application::run() {
             // than accumulated out of events.
             core::gamepad().handleEvent(event);
 #ifdef WOWEE_MOBILE
-            // The stick and the pinch read the finger events SDL sends
-            // alongside the mouse ones. They claim nothing else: every panel,
-            // slider and action button keeps working through the mouse SDL
-            // already makes of the first finger.
+            // The stick, the thumb buttons, the menu row and the pinch read
+            // the finger events SDL sends alongside the mouse ones. They claim
+            // nothing else: every panel, slider and action button keeps
+            // working through the mouse SDL makes of the first finger.
             {
                 int tw = 0, th = 0;
                 if (window) SDL_GetWindowSize(window->getSDLWindow(), &tw, &th);
@@ -4169,9 +4214,32 @@ void Application::render() {
     };
 
 #ifdef WOWEE_MOBILE
-    // Drawn into the background list, under everything the interface puts on
-    // screen, and only while a thumb is holding it.
+    // The stick under everything the interface draws, and only while a thumb
+    // holds it; the thumb buttons and menu row over it, where no frame is.
     ui::touchControls().setInWorld(state == AppState::IN_GAME);
+    {
+        static bool probeSet = false;
+        if (!probeSet) {
+            probeSet = true;
+            ui::touchControls().setInterfaceProbe([this](float x, float y, float screenH) {
+                if (!addonManager_ || !addonsLoaded_) return false;
+                auto* engine = addonManager_->getLuaEngine();
+                if (!engine) return false;
+                ui::WidgetTree& tree = engine->widgets();
+                // The conversion LuaEngine::dispatchMouse uses, so the probe
+                // and a real press agree on what is under the finger.
+                ui::mouseToTreeSpace(x, y, screenH, tree.uiScale());
+                const uint32_t hit = tree.hitTest(x, y);
+                if (hit == 0) return false;
+                // Mouse-enabled and empty: the strip across the top that
+                // holds battleground scores when there are any. Nothing is
+                // drawn there otherwise, so it covers nothing a button hides
+                // for - and it hid "Talents" in every zone.
+                const ui::Widget* w = tree.get(hit);
+                return !(w && w->name == "WorldStateAlwaysUpFrame");
+            });
+        }
+    }
     ui::touchControls().draw();
 #endif
 

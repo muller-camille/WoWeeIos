@@ -133,8 +133,16 @@ The same as on Android:
 | Left thumb, lower left | Move and strafe |
 | Right thumb, drag | Turn the view; the character faces where it looks |
 | Two fingers | Zoom the camera |
-| Tap | Target, and everything in the interface |
+| Tap | Target, and click anything in the interface |
 | Tap the target again | Talk, trade, loot or attack: what a right-click does |
+| Touch and hold | Show the tooltip; lifting the finger clicks nothing |
+| Hold, then drag | Pick up an item or a spell and carry it to a bag, a bar or a player |
+| Round buttons, lower right | Action slots 1 to 6 and jump |
+| Buttons along the top | Bags, character, spellbook, talents, quests, map and the game menu |
+
+The round buttons and the top row step aside for the interface: one with a
+window under it, such as an open bag in that corner, is hidden until the
+window closes.
 
 A game controller works through SDL, as on every platform. An iPad's keyboard,
 trackpad or mouse arrive the way they do on a desktop.
@@ -156,7 +164,9 @@ trackpad or mouse arrive the way they do on a desktop.
   ceiling rather than free memory, and starts smaller than on a desktop: a
   view distance of 700, texture caches of 192/192/128/96 MB (models,
   buildings, terrain, characters), a 128 MB file cache, a 96 MB terrain tile
-  cache, two terrain workers and 32 MB allocator blocks. A low-memory warning
+  cache, two terrain workers and 32 MB allocator blocks. The picture starts at
+  two thirds of the screen, upscaled with FSR 1, without volumetric fog, sun
+  shafts, water refraction or MSAA, and with ground clutter at 25. A low-memory warning
   from the system drops the file cache. `WOWEE_MEMORY_REPORT=1` logs the
   process footprint, graphics, heap and what is loaded every few seconds. With
   a paid team, `-DWOWEE_IOS_INCREASED_MEMORY_LIMIT=ON` signs the app with the
@@ -177,6 +187,7 @@ Where the port is code, and why each piece is the way it is.
 | Background | `VkContext::pausePresentation` | iOS kills an app that submits GPU work from the background. Android releases its surface there, but SDL makes a new Metal view for every surface it creates and cannot give the old one back, so iOS stops drawing without tearing anything down |
 | Audio | `src/audio/miniaudio_impl.mm` | miniaudio's iOS backend is Objective-C and has no switch to leave that out, so its implementation is compiled as Objective-C++ on iOS only |
 | Lua | `ios/lua_ios_compat.h` | The iOS SDK makes `system()` an error; `os.execute` is its only caller, and answers as a platform with no shell |
-| Interface scale | `ui_manager.cpp` | iOS measures in points. A phone in landscape is 375 to 440 points tall and the client's tallest dialog needs 620, so the scale there goes below 1 |
+| Interface scale | `ui_manager.cpp`, `widget_tree.hpp` | iOS measures in points. A phone in landscape is 375 to 440 points tall and the client's tallest dialog needs 620, so the client's own windows scale below 1 there, and up to 1.25 on an iPad. The game interface starts as large as it goes with the main bar still fitting across the screen: 1.28 on a phone, about 1.08 on an iPad |
+| Touch gestures and buttons | `touch_controls.cpp` | SDL presses the mouse the moment a finger lands, so looking at a tooltip was also a click. The press is held back until the finger shows whether it is a tap, a hold or a drag |
 | Bundle | `ios/Info.plist.in`, `ios/Assets.xcassets` | Landscape, full screen, file sharing into Documents, the local-network prompt a LAN realm needs, 120 Hz on ProMotion phones, and the icon |
 | Packaging | `tools/ios/package_ipa.sh` | An `.ipa` is the app under `Payload/`, zipped |

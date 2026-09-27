@@ -1,4 +1,5 @@
 #include "ui/widget_tree.hpp"
+#include "core/platform.hpp"
 
 #include <chrono>
 
@@ -665,6 +666,9 @@ void WidgetTree::noteScreenSize(float pixelW, float pixelH) {
     if (pixelW <= 0.0f || pixelH <= 0.0f) return;
     lastPixelW_ = pixelW;
     lastPixelH_ = pixelH;
+#ifdef WOWEE_IOS
+    if (!userScaleChosen_) userScale_ = touchDefaultScale(pixelW, pixelH);
+#endif
     // The same scale the full pass works out, so a rect resolved before that
     // pass is in the units everything else will be in.
     uiScale_ = (pixelH / kInterfaceHeight) * userScale_;
@@ -735,6 +739,9 @@ void WidgetTree::layout(float pixelW, float pixelH) {
     // The screen's height decides the base, and the player's UI Scale
     // multiplies it. A smaller scale means a smaller interface and more units
     // of room, which is what the slider is understood to do.
+#ifdef WOWEE_IOS
+    if (!userScaleChosen_) userScale_ = touchDefaultScale(pixelW, pixelH);
+#endif
     uiScale_ = ((pixelH > 0.0f) ? (pixelH / kInterfaceHeight) : 1.0f) * userScale_;
     const float screenW = (uiScale_ > 0.0f) ? (pixelW / uiScale_) : pixelW;
     // The same division as the width, and it used to be the constant instead.
