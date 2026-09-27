@@ -10,16 +10,25 @@
 #include <filesystem>
 
 #include "core/data_paths.hpp"
+#include "core/platform.hpp"
 #include <string>
 #include <SDL3/SDL.h>
 // SDLActivity loads libwowee.so and calls SDL_main, the name this header gives
 // main(). SDL2's SDL.h pulled it in; SDL3's does not, and without it the
 // library exports only main and the activity has nothing to call.
-#ifdef __ANDROID__
+//
+// iOS needs it for the other half of what it does: it supplies the real main,
+// which hands the process to UIApplicationMain and calls this main() - renamed
+// SDL_main - once UIKit has finished launching. Without it the client would
+// create its window before there was an application to put it in.
+#ifdef WOWEE_MOBILE
 #include <SDL3/SDL_main.h>
 #endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
+#ifdef WOWEE_IOS
+#include "core/ios_platform.hpp"
 #endif
 
 // backtrace(3) and friends live in libSystem on macOS and in glibc on Linux, so
@@ -35,7 +44,11 @@
 // Bionic ships execinfo.h but declares backtrace() only from API 33, and this
 // build targets lower. The crash log keeps everything but its stack section on
 // Android, where logcat carries a native trace anyway.
-#if !defined(__ANDROID__)
+//
+// iOS is left out for the same reason Android is below: the system's own crash
+// report is symbolised by Xcode and reaches the developer, and /tmp - where the
+// copy of this one goes - is not a directory an iOS app may write.
+#if !defined(WOWEE_MOBILE)
 #define WOWEE_HAS_BACKTRACE 1
 #include <execinfo.h>
 #endif
@@ -130,7 +143,13 @@ static void selectUserDataPath() {
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
-#ifdef __ANDROID__
+#ifdef WOWEE_IOS
+    // WoweeActivity does this in Java on Android: name the three roots before
+    // anything reads them. The bundle holds what the client ships, Documents
+    // holds what the player copies in, and the working directory is the bundle.
+    wowee::core::prepareIosSandbox();
+#endif
+#ifdef WOWEE_MOBILE
     // Everything after this opens its files relative to the working directory,
     // which on Android is not a directory that holds any of them.
     wowee::core::enterResourceRoot();
@@ -165,11 +184,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
     }
     std::signal(SIGTERM, [](int) { std::_Exit(1); });
     std::signal(SIGINT,  [](int) { std::_Exit(1); });
-#elif defined(__ANDROID__)
+#elif defined(WOWEE_MOBILE)
     // Android already has a crash reporter, and it is a far better one than
     // this: debuggerd writes a symbolised tombstone and the abort message to
     // logcat. Ours writes a backtrace to stderr, which on Android goes nowhere,
     // and installing it costs the tombstone. So only the two exit signals here.
+    // iOS is the same trade: ReportCrash writes the report Xcode symbolises.
     std::signal(SIGTERM, crashHandler);
     std::signal(SIGINT,  crashHandler);
 #else
@@ -181,8 +201,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
 #endif
     // Change working directory so relative asset paths resolve from any launch
     // location. A signed macOS bundle keeps data in Contents/Resources because
-    // Contents/MacOS may contain code only.
-#ifdef __APPLE__
+    // Contents/MacOS may contain code only. An iOS bundle is flat and was
+    // entered above, from WOWEE_RESOURCE_ROOT.
+#if defined(WOWEE_MACOS)
     {
         uint32_t bufSize = 0;
         _NSGetExecutablePath(nullptr, &bufSize);
@@ -224,6 +245,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
         constexpr const char* kPlatform = "windows";
 #elif defined(__ANDROID__)
         constexpr const char* kPlatform = "android";
+#elif defined(WOWEE_IOS)
+        constexpr const char* kPlatform = "ios";
 #elif defined(__APPLE__)
         constexpr const char* kPlatform = "macos";
 #elif defined(__linux__)

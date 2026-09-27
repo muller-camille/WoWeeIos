@@ -627,9 +627,56 @@ jobs:
         name: wowee-android-arm64
         path: wowee-*-android-arm64.apk
 
+  build-ios:
+    name: Build (ios arm64)
+    runs-on: macos-15
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        submodules: true
+        fetch-depth: 0
+
+    - name: Cache the iOS dependencies
+      id: cache-ios-deps
+      uses: actions/cache@v4
+      with:
+        path: build-ios-deps
+        key: ios-deps-${{ hashFiles('tools/build-ios-deps.sh') }}
+
+    - name: Build OpenSSL and fetch MoltenVK
+      if: steps.cache-ios-deps.outputs.cache-hit != 'true'
+      run: tools/build-ios-deps.sh 16.0
+
+    - name: Build the app
+      run: |
+        cmake -S . -B build-ios -G Xcode \
+          -DCMAKE_SYSTEM_NAME=iOS \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+        cmake --build build-ios --config Release --target wowee -- \
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+
+    - name: Package the unsigned .ipa
+      run: |
+        # Unsigned on purpose: there is no App Store listing and no team every
+        # player belongs to. AltStore, SideStore or Sideloadly sign it with the
+        # player's own Apple ID as they install it; see docs/ios.md.
+        TAG="${GITHUB_REF_NAME}"
+        APP="$(find build-ios/bin -maxdepth 2 -type d -name 'WoWee.app' | head -1)"
+        test -n "${APP}"
+        tools/ios/package_ipa.sh "${APP}" "wowee-${TAG}-ios-arm64-unsigned.ipa"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: wowee-ios-arm64
+        path: wowee-*-ios-arm64-unsigned.ipa
+
   release:
     name: Create Release
-    needs: [ build-linux, build-macos, build-windows, build-android ]
+    needs: [ build-linux, build-macos, build-windows, build-android, build-ios ]
     runs-on: ubuntu-latest
 
     steps:

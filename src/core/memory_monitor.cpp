@@ -1,5 +1,6 @@
 #include "core/memory_monitor.hpp"
 #include "core/logger.hpp"
+#include "core/platform.hpp"
 #include <fstream>
 #include <string>
 #include <sstream>
@@ -9,6 +10,9 @@
 #include <mach/mach.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
+#ifdef WOWEE_IOS
+#include <os/proc.h>
+#endif
 #else
 #include <sys/sysinfo.h>
 #endif
@@ -88,6 +92,15 @@ size_t MemoryMonitor::getAvailableRAM() const {
         return static_cast<size_t>(status.ullAvailPhys);
     }
     return totalRAM_ / 2;
+#elif defined(WOWEE_IOS)
+    // What the device has free is not the question on iOS. Each app has a
+    // ceiling well under the device's memory, and passing it is not swapping
+    // but the process being killed. This is the room left under that ceiling,
+    // which is what every caller here is really asking.
+    if (const size_t headroom = os_proc_available_memory(); headroom > 0) {
+        return headroom;
+    }
+    return totalRAM_ / 4;
 #elif defined(__APPLE__)
     // hw.usermem is a 32-bit kernel sysctl on macOS: on systems with ≥16 GB RAM
     // the value overflows signed int32, truncating to ~2 GB and causing false

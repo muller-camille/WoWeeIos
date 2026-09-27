@@ -60,7 +60,8 @@ AzerothCore/ChromieCraft, TrinityCore, MaNGOS, and Turtle WoW 1.18.
   spell and NPC voice audio
 - Optional Warden module execution through Unicorn Engine x86 emulation
 - Linux, macOS and Windows on x86-64 and ARM64, and **Android on arm64** with
-  on-screen controls
+  on-screen controls. An **iOS** port shares Android's controls and is not yet
+  tested on a device; see [iOS](#ios)
 
 This is an active work in progress, not a drop-in replacement for the official
 client. See [Known limitations](#known-limitations) before reporting a bug.
@@ -339,6 +340,27 @@ same split the desktop archives use. `adb logcat -s wowee` shows the client's
 log, and `adb shell setprop debug.wowee.loglevel info` opens it up beyond
 warnings.
 
+## iOS
+
+The iOS client is the same tree again, for iPhone and iPad on **iOS 16 or
+newer**: SDL3's UIKit backend, MoltenVK linked into the app, and the Android
+touch controls. It has not yet been compiled or run on a device, so treat it as
+a starting point rather than a release.
+
+```bash
+tools/build-ios-deps.sh                        # OpenSSL and MoltenVK, once
+cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+  -DWOWEE_IOS_TEAM_ID=<your team> -DWOWEE_IOS_BUNDLE_ID=com.<you>.wowee
+open build-ios/wowee.xcodeproj                 # pick your device, Run
+```
+
+Game data is extracted and cut down on a desktop exactly as for Android, then
+copied into WoWee's **Data** folder with the Finder's Files tab or the Files
+app. CI builds an unsigned `.ipa` for AltStore, SideStore or Sideloadly to sign
+as they install it. [docs/ios.md](docs/ios.md) has the rest: signing with a
+free Apple ID, where the logs are, and what behaves differently on iOS.
+
 ## Container builds
 
 Docker or Podman can build all supported targets without installing a host
@@ -396,7 +418,7 @@ custom binary and catalog formats.
 Keys are listed and can be rebound in the game's **Key Bindings** panel, from
 the menu `Escape` opens.
 
-On Android the same actions are driven by
+On Android and iOS the same actions are driven by
 [touch controls](#touch-controls).
 
 ### Controller

@@ -3,6 +3,7 @@
 #include "pipeline/dds_loader.hpp"
 #include "core/logger.hpp"
 #include "core/memory_monitor.hpp"
+#include "core/platform.hpp"
 #include "core/profiler.hpp"
 #include <algorithm>
 #include <cstdlib>
@@ -119,12 +120,13 @@ void AssetManager::setupFileCacheBudget() {
     const size_t envMaxMB = parseEnvSizeMB("WOWEE_FILE_CACHE_MAX_MB");
 
     const size_t minBudgetBytes = 256ull * 1024ull * 1024ull;
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // Half of available RAM is a desktop rule. Android does not let one app
     // have that: it enforces a per-app limit far below the machine's memory and
     // kills the process rather than swapping when it is passed. A phone with
     // 8 GB was handing this cache 840 MB, which is both more than the app may
     // hold and a good way to be killed the moment it goes to the background.
+    // iOS works the same way, with its own per-app ceiling.
     const size_t defaultMaxBudgetBytes = 384ull * 1024ull * 1024ull;
 #else
     const size_t defaultMaxBudgetBytes = 12288ull * 1024ull * 1024ull;  // 12 GB max for file cache

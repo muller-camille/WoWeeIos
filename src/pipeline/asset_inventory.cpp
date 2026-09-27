@@ -8,6 +8,7 @@
 #include <fstream>
 
 #include "core/data_paths.hpp"
+#include "core/platform.hpp"
 
 namespace wowee {
 namespace pipeline {
@@ -166,9 +167,20 @@ std::string AssetInventory::troubleText() const {
                     [](const AssetSet& set) { return set.anyAssets; });
 
     if (!anythingStarted) {
+#ifdef WOWEE_IOS
+        // The path is a sandbox container named by a UUID, which tells the
+        // player nothing; the place they can actually open is this one. There
+        // is no asset builder on the device - StormLib and a WoW install both
+        // live on a computer - so the extraction is made there and copied in.
+        return "No game assets yet.  Build them on a computer with wowee_assets "
+               "from a World of Warcraft installation you own, then copy them into "
+               "WoWee's Data folder: Files > On My iPhone > WoWee > Data, or the "
+               "Finder's Files tab with the device connected.";
+#else
         return "No game assets in " + dataRoot +
                ".  Run wowee_assets to build them from a World of Warcraft "
                "installation you own, or to install a pack somebody sent you.";
+#endif
     }
 
     // Something was started and none of it can be used, which is a different

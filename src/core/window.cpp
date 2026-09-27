@@ -6,11 +6,12 @@
 #include "core/env.hpp"
 #include "core/logger.hpp"
 #include "core/config_paths.hpp"
+#include "core/platform.hpp"
 #include "stb_image.h"
 #include "rendering/vk_context.hpp"
 #include <SDL3/SDL_vulkan.h>
 #include <cstdlib>
-#ifdef __APPLE__
+#ifdef WOWEE_MACOS
 #include "core/macos_platform.hpp"
 #include <filesystem>
 #include <mach-o/dyld.h>
@@ -20,7 +21,7 @@
 namespace wowee {
 namespace core {
 
-#ifdef __APPLE__
+#ifdef WOWEE_MACOS
 namespace {
 
 std::string bundledMoltenVkManifest() {
@@ -60,21 +61,36 @@ Window::~Window() {
 bool Window::initialize() {
     LOG_INFO("Initializing window: ", config.title);
 
-#ifdef __APPLE__
+#ifdef WOWEE_MACOS
     // Before SDL_Init spins up NSApplication: holding a key should repeat it,
     // not open the accent chooser over the game.
     disablePressAndHoldAccents();
 #endif
 
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // Without this the manifest's screenOrientation does not survive: SDL calls
     // setOrientation itself when it creates the window, and with no hint and a
     // resizable window it asks for FULL_USER, which follows the phone's own
     // rotation lock. That is portrait, and the interface is laid out for a
     // landscape screen. Naming both landscape orientations leaves the phone
     // free to flip between them.
+    //
+    // iOS reads the same hint for the orientations its view controller
+    // reports, and Info.plist names the same two, so neither can undo the
+    // other.
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
 
+#ifdef WOWEE_IOS
+    // The home indicator hidden, and a swipe up from the bottom edge taken by
+    // the game first rather than by the system. That edge is under the left
+    // thumb, which is where the movement stick is, and a stroke of it that
+    // sent the player to the home screen mid-fight would be the stick's fault.
+    // A second swipe still leaves, as iOS requires.
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
+#endif
+
+#ifdef __ANDROID__
     // By default SDL parks the thread that called SDL_main for as long as the
     // activity is in the background. That thread is the one that reads the
     // socket, so a few seconds behind the home button and the server has timed
@@ -104,7 +120,7 @@ bool Window::initialize() {
     // pre-instance enumeration unless told otherwise.  Setting this env var
     // makes the loader include portability ICDs so SDL's VK_KHR_surface check
     // succeeds.
-#ifdef __APPLE__
+#ifdef WOWEE_MACOS
     setEnvVar("VK_LOADER_ENABLE_PORTABILITY_DRIVERS", "1", /*overwrite=*/false);
     // Probe for MoltenVK's ICD JSON if VK_ICD_FILENAMES isn't already set.
     // Without it the Vulkan loader can't find MoltenVK and SDL's pre-instance
@@ -149,7 +165,12 @@ bool Window::initialize() {
 #endif
     if (!vulkanLoaded) {
         LOG_ERROR("Failed to load Vulkan library: ", SDL_GetError());
-#ifdef __APPLE__
+#if defined(WOWEE_IOS)
+        // There is no loader on iOS: MoltenVK is linked into the app, and SDL
+        // finds vkGetInstanceProcAddr among the executable's own symbols.
+        LOG_ERROR("MoltenVK is linked statically on iOS; this build was stripped of "
+                  "vkGetInstanceProcAddr or linked without it");
+#elif defined(__APPLE__)
         LOG_ERROR("On macOS, install Vulkan via Homebrew:  brew install vulkan-loader molten-vk");
         LOG_ERROR("Or source the LunarG SDK setup script before running:  source $VULKAN_SDK/setup-env.sh");
 #else
@@ -180,11 +201,11 @@ bool Window::initialize() {
     if (config.fullscreen) {
         flags |= SDL_WINDOW_FULLSCREEN;
     }
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // A phone has no windows to be one of. Fullscreen is also what makes SDL
     // put the activity in immersive mode, which is what hides the navigation
     // bar; without it the client draws into 2272x954 of a 2424x1080 panel and
-    // the rest is system chrome.
+    // the rest is system chrome. On iOS it is what hides the status bar.
     flags |= SDL_WINDOW_FULLSCREEN;
 #endif
     if (config.resizable) {
@@ -224,10 +245,11 @@ bool Window::initialize() {
         return false;
     }
 
-#ifdef __ANDROID__
+#ifdef WOWEE_MOBILE
     // SDL and the Vulkan driver leave the working directory at /system/bin on
     // Android, and everything after this opens its files relative to it: the
     // skybox shader was the first to fail, one call after this returned.
+    // Nothing is known to move it on iOS; entering the bundle again is free.
     //
     // Guarded rather than relying on the no-op, so a target that links this
     // file does not have to link config_paths with it. The editor does not.

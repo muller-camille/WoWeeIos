@@ -1,4 +1,9 @@
+// On iOS miniaudio's implementation is Objective-C - it watches AVAudioSession
+// for interruptions and route changes - so it is compiled from
+// miniaudio_impl.mm there, and this unit sees only the declarations.
+#ifndef WOWEE_MINIAUDIO_IMPL_SEPARATE
 #define MINIAUDIO_IMPLEMENTATION
+#endif
 #include "audio/audio_engine.hpp"
 #include "core/logger.hpp"
 #include "pipeline/asset_manager.hpp"

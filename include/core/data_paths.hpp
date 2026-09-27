@@ -19,6 +19,8 @@
  * here.
  */
 
+#include "core/platform.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -45,7 +47,12 @@ inline std::filesystem::path userDataRoot() {
 #else
     const char* home = std::getenv("HOME");
     if (home == nullptr || *home == '\0') return {};
-#ifdef __APPLE__
+#if defined(WOWEE_IOS)
+    // HOME is the app's sandbox, and Documents is the one directory in it the
+    // player can reach, through the Files app or a Mac's Finder. main() names
+    // this same folder in WOW_DATA_PATH; see prepareIosSandbox.
+    return fs::path(home) / "Documents" / "Data";
+#elif defined(__APPLE__)
     return fs::path(home) / "Library" / "Application Support" / "Wowee" / "Data";
 #else
     // The XDG base directory spec, which is what a Linux or BSD desktop expects

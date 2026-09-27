@@ -38,7 +38,7 @@ Implemented (working in normal use):
 - Controllers: SDL3 gamepads on every platform, with buttons named per pad family (Xbox, PlayStation, Nintendo, Steam Deck and others), back paddles on action slots 7-10, a pointer mode on Back, and the scheme seeded into the game's Key Bindings panel
 - DBC auto-detection: CharSections.dbc field layout auto-detected at runtime (handles stock WotLK vs HD-textured clients)
 - Multi-expansion: Classic/Vanilla, TBC, WotLK, and Turtle WoW (1.18) protocol and asset variants
-- CI: GitHub Actions for Linux (x86-64, ARM64), Windows (MSYS2 x86-64 + ARM64), macOS (ARM64, x86-64), Android (arm64); container builds via Podman
+- CI: GitHub Actions for Linux (x86-64, ARM64), Windows (MSYS2 x86-64 + ARM64), macOS (ARM64, x86-64), Android (arm64), iOS (arm64, an unsigned .ipa; not yet run on a device - see [ios.md](ios.md)); container builds via Podman
 
 Recent refactors (PRs #59-63, April 2026):
 

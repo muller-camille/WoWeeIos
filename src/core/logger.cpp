@@ -11,12 +11,16 @@
 #include <ranges>
 #include "core/local_time.hpp"
 #include "core/log_privacy.hpp"
+#include "core/platform.hpp"
 #include <cstdio>
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
+#ifdef WOWEE_IOS
+#include <os/log.h>
 #endif
 
 namespace wowee {
@@ -65,8 +69,14 @@ std::filesystem::path perUserLogDir() {
 /// the log went into the app itself - Contents/Resources/logs, where nobody
 /// finds it without Show Package Contents - and every run modified a signed
 /// bundle. A bundled client always logs to the per-user directory instead.
+///
+/// Every iOS client is a bundled one. Its working directory is the bundle, which
+/// is read-only on a device and writable in the simulator - where a log inside
+/// it would be exactly as hard to find.
 bool runningFromAppBundle() {
-#if defined(__APPLE__)
+#if defined(WOWEE_IOS)
+    return true;
+#elif defined(__APPLE__)
     uint32_t size = 0;
     _NSGetExecutablePath(nullptr, &size);
     std::string path(size, '\0');
@@ -186,9 +196,33 @@ void Logger::emitLineLocked(LogLevel level, const std::string& rawMessage) {
 
     line << "] " << message;
 
+#ifdef WOWEE_IOS
+    // stdout reaches Xcode's console and nothing else. The unified log reaches
+    // that console too, and Console.app on a Mac with the device attached, so
+    // it is used instead of stdout rather than beside it: both at once would
+    // print every line twice in Xcode. Public, because the message has already
+    // had the home directory taken out of it and a redacted line is useless.
+    if (echoToStdout_) {
+        os_log_type_t type = OS_LOG_TYPE_DEFAULT;
+        switch (level) {
+            case LogLevel::DEBUG:   type = OS_LOG_TYPE_DEBUG; break;
+            case LogLevel::INFO:    type = OS_LOG_TYPE_INFO; break;
+            case LogLevel::WARNING: type = OS_LOG_TYPE_DEFAULT; break;
+            case kLogLevelError:    type = OS_LOG_TYPE_ERROR; break;
+            case LogLevel::FATAL:   type = OS_LOG_TYPE_FAULT; break;
+        }
+        // os_log_with_type is a GNU statement expression, which -Wpedantic
+        // would stop the build over.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpedantic"
+        os_log_with_type(OS_LOG_DEFAULT, type, "%{public}s", message.c_str());
+#pragma clang diagnostic pop
+    }
+#else
     if (echoToStdout_) {
         std::cout << line.str() << '\n';
     }
+#endif
 #ifdef __ANDROID__
     // stdout goes nowhere on Android and the file has to be pulled off the
     // device to be read, so every line also goes to logcat, where `adb logcat
