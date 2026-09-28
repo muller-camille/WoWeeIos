@@ -10,6 +10,9 @@
 #include "stb_image.h"
 #include "rendering/vk_context.hpp"
 #include <SDL3/SDL_vulkan.h>
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <cstdlib>
 #ifdef WOWEE_MACOS
 #include "core/macos_platform.hpp"
@@ -108,6 +111,7 @@ bool Window::initialize() {
         return false;
     }
 
+#ifndef WOWEE_METAL
     // Explicitly load the Vulkan library before creating the window.
     // SDL_CreateWindow with SDL_WINDOW_VULKAN fails on some platforms/drivers
     // if the Vulkan loader hasn't been located yet; calling this first gives a
@@ -180,10 +184,16 @@ bool Window::initialize() {
         SDL_Quit();
         return false;
     }
+#endif
 
-    // Create Vulkan window (no GL attributes needed)
     // SDL3 shows a window by default, so there is no SHOWN flag.
+#ifdef WOWEE_METAL
+    // A CAMetalLayer-backed view, made by MetalContext through SDL_Metal_CreateView.
+    Uint32 flags = SDL_WINDOW_METAL;
+#else
+    // Create Vulkan window (no GL attributes needed)
     Uint32 flags = SDL_WINDOW_VULKAN;
+#endif
 #ifdef __APPLE__
     // Draw at the display's own pixels rather than at its points.
     //
@@ -237,6 +247,13 @@ bool Window::initialize() {
                     " pixel surface - the world is drawn at the pixel size.");
     }
 
+#ifdef WOWEE_METAL
+    metalContext = std::make_unique<rendering::MetalContext>();
+    if (!metalContext->initialize(window)) {
+        LOG_ERROR("Failed to initialize Metal context");
+        return false;
+    }
+#else
     // Initialize Vulkan context
     vkContext = std::make_unique<rendering::VkContext>();
     vkContext->setVsync(vsync);
@@ -244,6 +261,7 @@ bool Window::initialize() {
         LOG_ERROR("Failed to initialize Vulkan context");
         return false;
     }
+#endif
 
 #ifdef WOWEE_MOBILE
     // SDL and the Vulkan driver leave the working directory at /system/bin on
@@ -256,7 +274,11 @@ bool Window::initialize() {
     core::enterResourceRoot();
 #endif
 
+#ifdef WOWEE_METAL
+    LOG_INFO("Window initialized successfully (Metal)");
+#else
     LOG_INFO("Window initialized successfully (Vulkan)");
+#endif
     return true;
 }
 
@@ -303,6 +325,14 @@ void Window::shutdown() {
         vkContext.reset();
     }
 
+#ifdef WOWEE_METAL
+    // Before the window: the view it destroys belongs to the window.
+    if (metalContext) {
+        metalContext->shutdown();
+        metalContext.reset();
+    }
+#endif
+
     LOG_DEBUG("Window::shutdown - SDL_DestroyWindow...");
     if (window) {
         SDL_DestroyWindow(window);
@@ -310,7 +340,9 @@ void Window::shutdown() {
     }
 
     LOG_DEBUG("Window::shutdown - SDL_Quit...");
+#ifndef WOWEE_METAL
     SDL_Vulkan_UnloadLibrary();
+#endif
     SDL_Quit();
     LOG_DEBUG("Window shutdown complete");
 }

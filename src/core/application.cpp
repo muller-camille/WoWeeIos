@@ -69,6 +69,9 @@
 #include "ui/ui_manager.hpp"
 #include "ui/map_window.hpp"
 #include "ui/touch_controls.hpp"
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include "ui/gamepad_controls.hpp"
 #include "core/gamepad.hpp"
 #include "addons/lua_api_registrations.hpp"
@@ -318,18 +321,24 @@ bool Application::initialize() {
         }
     }
 
+#ifndef WOWEE_METAL
     // Create renderer
+    //
+    // Not in the Metal build yet: until the world's renderers are ported (M2,
+    // M3 of docs/plan-metal.md) it draws the interface and nothing else, and
+    // everything past this point already allows for there being no renderer.
     renderer = std::make_unique<rendering::Renderer>();
     if (!renderer->initialize(window.get())) {
         LOG_FATAL("Failed to initialize renderer");
         return false;
     }
+#endif
 
     // Create and initialize audio coordinator (owns all audio managers)
     audioCoordinator_ = std::make_unique<audio::AudioCoordinator>();
     if (!audioCoordinator_->initialize())
         LOG_WARNING("Audio coordinator initialization failed - game will run without audio");
-    renderer->setAudioCoordinator(audioCoordinator_.get());
+    if (renderer) renderer->setAudioCoordinator(audioCoordinator_.get());
 
     // Create UI manager
     uiManager = std::make_unique<ui::UIManager>();
@@ -1622,6 +1631,15 @@ void Application::run() {
                     window->getVkContext()->resumePresentation();
                 }
             }
+#ifdef WOWEE_METAL
+            if (auto* metal = window ? window->getMetalContext() : nullptr) {
+                if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
+                    metal->pausePresentation();
+                } else if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+                    metal->resumePresentation();
+                }
+            }
+#endif
 #else
             if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
                 if (window && window->getVkContext()) {
@@ -4196,6 +4214,11 @@ void Application::render() {
     }
 #endif
 
+#ifdef WOWEE_METAL
+    renderInterfaceOnly();
+    return;
+#endif
+
     if (!renderer) {
         return;
     }
@@ -5130,6 +5153,53 @@ void Application::render() {
     processDeferredLogoutToLogin();
 }
 
+#ifdef WOWEE_METAL
+// The Metal build's frame until the world is ported: the interface, and for
+// now only the screens before the world (docs/plan-metal.md, M1).
+void Application::renderInterfaceOnly() {
+    auto* metal = window ? window->getMetalContext() : nullptr;
+    if (!metal || !uiManager) return;
+
+#ifdef WOWEE_MOBILE
+    ui::touchControls().setInWorld(state == AppState::IN_GAME);
+    ui::touchControls().draw();
+#endif
+
+    renderingFrame_ = true;
+    uiManager->render(state, authHandler.get(), gameHandler.get());
+    uiManager->finishImGuiFrame();
+
+    // Laid out whether or not there is anything to draw into, so ImGui's
+    // frames stay paired; skipped while the app is in the background, as the
+    // MoltenVK build skips it.
+    // WOWEE_SCREENSHOT, as the Vulkan build has it. A relative path lands
+    // under the config root: on iOS the working directory is the app bundle,
+    // which cannot be written.
+    bool capturing = false;
+    if (const char* shot = std::getenv("WOWEE_SCREENSHOT"); shot != nullptr && *shot) {
+        if (++screenshotFrames_ == kScreenshotFrame) {
+            std::filesystem::path path(shot);
+            if (path.is_relative()) path = std::filesystem::path(getConfigRoot()) / path;
+            metal->captureNextFrame(path.string());
+            capturing = true;
+        }
+    }
+
+    if (metal->beginFrame()) {
+        uiManager->drawToMetal(*metal);
+        metal->endFrame();
+        if (capturing) running = false;
+    } else if (metal->isPresentationPaused()) {
+        SDL_Delay(50);
+    }
+
+    stageStatFrames_ += 1;
+    reportStageTimes();
+    renderingFrame_ = false;
+    processDeferredLogoutToLogin();
+}
+#endif
+
 void Application::noteStageTime(const char* stage, float milliseconds) {
     auto& stat = stageStats_[stage];
     stat.totalMs += milliseconds;
@@ -5239,13 +5309,12 @@ void Application::setupUICallbacks() {
     //
     // A reference bound to null is undefined the moment it is bound, so the
     // check has to be here rather than inside the callbacks.
-    if (!entitySpawner_ || !renderer || !gameHandler || !assetManager ||
+    if (!entitySpawner_ || !gameHandler || !assetManager ||
         !uiManager || !authHandler || !appearanceComposer_) {
         LOG_ERROR("Cannot wire the interface callbacks: ",
                   !assetManager ? "asset manager" :
                   !entitySpawner_ ? "entity spawner" :
                   !appearanceComposer_ ? "appearance composer" :
-                  !renderer ? "renderer" :
                   !gameHandler ? "game handler" :
                   !uiManager ? "UI manager" : "auth handler",
                   " was never created - the game data path is the usual reason. "
@@ -5260,6 +5329,16 @@ void Application::setupUICallbacks() {
         assetManager.get(),
         [this](AppState s) { setState(s); });
     uiScreenCallbacks_->setupCallbacks();
+
+    // Everything from here on is the world's, and binds the renderer. The
+    // screens before it do not need one, and the Metal build has none until
+    // the world is ported (docs/plan-metal.md, M3): it gets as far as the
+    // character list and no further.
+    if (!renderer) {
+        LOG_WARNING("No renderer: the world's callbacks are not wired, so "
+                    "entering the world will not work in this build");
+        return;
+    }
 
     // ── World entry, unstuck, hearthstone, bind point ──
     worldEntryCallbacks_ = std::make_unique<WorldEntryCallbackHandler>(

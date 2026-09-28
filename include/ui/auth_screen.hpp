@@ -14,6 +14,7 @@
 #include <utility>
 
 namespace wowee { namespace rendering { class VkContext; } }
+namespace MTL { class Texture; }
 
 namespace wowee { namespace ui {
 
@@ -208,6 +209,12 @@ private:
     VkImageView bgImageView = VK_NULL_HANDLE;
     VkSampler bgSampler = VK_NULL_HANDLE;
     VkDescriptorSet bgDescriptorSet = VK_NULL_HANDLE;
+    /// What drawBackdrop hands ImGui: the descriptor set above, or in the
+    /// Metal build the texture below.
+    ImTextureID bgTextureId = ImTextureID_Invalid;
+#ifdef WOWEE_METAL
+    MTL::Texture* bgMetalTexture = nullptr;
+#endif
     int bgWidth = 0;
     int bgHeight = 0;
 

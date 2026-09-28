@@ -33,6 +33,14 @@ else()
     set(_wowee_tests_default ON)
 endif()
 option(WOWEE_BUILD_TESTS "Build tests" ${_wowee_tests_default})
+# What the iOS build draws through: Metal, natively, which is the port under
+# way on this branch (docs/plan-metal.md). OFF builds the MoltenVK renderer,
+# which is the one that plays until the port reaches parity at M4.
+if(IOS)
+    option(WOWEE_METAL "Draw through Metal rather than MoltenVK (docs/plan-metal.md)" ON)
+else()
+    set(WOWEE_METAL OFF)
+endif()
 option(WOWEE_ENABLE_ASAN "Enable AddressSanitizer + UBSan (applied to all build configs; pairs well with Debug)" OFF)
 option(WOWEE_ENABLE_TRACY "Enable Tracy profiler instrumentation" OFF)
 # AMD's FidelityFX SDK backends, off by default.
@@ -678,6 +686,15 @@ if(EXISTS ${IMGUI_DIR})
         ${IMGUI_DIR}/backends
     )
     target_link_libraries(imgui PUBLIC SDL3::SDL3 Vulkan::Vulkan ${CMAKE_DL_LIBS})
+    if(WOWEE_METAL)
+        # ImGui's own Metal backend, spoken to through metal-cpp so the
+        # interface code that drives it stays C++.
+        target_sources(imgui PRIVATE ${IMGUI_DIR}/backends/imgui_impl_metal.mm)
+        target_compile_definitions(imgui PUBLIC IMGUI_IMPL_METAL_CPP)
+        target_include_directories(imgui SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/extern/metal-cpp)
+        target_link_libraries(imgui PUBLIC
+            "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+    endif()
 else()
     message(WARNING "ImGui not found in extern/imgui. Clone it with:")
     message(WARNING "  git clone https://github.com/ocornut/imgui.git extern/imgui")
@@ -1316,6 +1333,12 @@ if(IOS)
     list(APPEND WOWEE_PLATFORM_SOURCES
         src/core/ios_platform.mm
         src/audio/miniaudio_impl.mm)
+    if(WOWEE_METAL)
+        list(APPEND WOWEE_PLATFORM_SOURCES
+            src/rendering/metal/metal_context.cpp
+            src/rendering/metal/metal_pipeline.cpp
+            src/rendering/metal/metal_cpp_impl.cpp)
+    endif()
     # The app icon, compiled by Xcode's actool into the bundle. Only Xcode
     # knows what to do with an asset catalog; another generator gets an app
     # with the blank icon rather than a build that fails over it.
@@ -1458,6 +1481,11 @@ if(IOS)
     # reference here.
     set_target_properties(wowee PROPERTIES
         XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION "NO")
+    if(WOWEE_METAL)
+        target_compile_definitions(wowee PRIVATE WOWEE_METAL=1)
+        target_include_directories(wowee SYSTEM PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/extern/metal-cpp)
+    endif()
     target_link_libraries(wowee PRIVATE
         "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio")
 endif()

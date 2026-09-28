@@ -6,7 +6,7 @@
 #include <vulkan/vulkan.h>
 
 namespace wowee {
-namespace rendering { class VkContext; }
+namespace rendering { class VkContext; class MetalContext; }
 
 namespace core {
 
@@ -79,10 +79,18 @@ public:
     // Vulkan context access
     [[nodiscard]] rendering::VkContext* getVkContext() const { return vkContext.get(); }
 
+#ifdef WOWEE_METAL
+    /// The Metal build's in its place; getVkContext() is null there.
+    [[nodiscard]] rendering::MetalContext* getMetalContext() const { return metalContext.get(); }
+#endif
+
 private:
     WindowConfig config;
     SDL_Window* window = nullptr;
     std::unique_ptr<rendering::VkContext> vkContext;
+#ifdef WOWEE_METAL
+    std::unique_ptr<rendering::MetalContext> metalContext;
+#endif
 
     int width;
     int height;

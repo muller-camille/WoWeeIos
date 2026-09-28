@@ -21,6 +21,11 @@
 #include "core/application.hpp"
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "core/window.hpp"
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
@@ -192,6 +197,18 @@ bool CharacterPreview::initialize(pipeline::AssetManager* am, int width, int hei
     if (width > 0) fboWidth_ = width;
     if (height > 0) fboHeight_ = height;
 
+#ifdef WOWEE_METAL
+    if (auto* window = core::Application::getInstance().getWindow();
+        window && window->getMetalContext()) {
+        if (mtlColor_ && charRenderer_ && camera_) {
+            modelLoaded_ = false;
+            return true;
+        }
+        metal_ = window->getMetalContext();
+        return initializeMetal(am);
+    }
+#endif
+
     auto* appRenderer = core::Application::getInstance().getRenderer();
     vkCtx_ = appRenderer ? appRenderer->getVkContext() : nullptr;
     VkDescriptorSetLayout perFrameLayout = appRenderer ? appRenderer->getPerFrameSetLayout() : VK_NULL_HANDLE;
@@ -244,6 +261,9 @@ void CharacterPreview::shutdown() {
     }
     camera_.reset();
     destroyFBO();
+#ifdef WOWEE_METAL
+    destroyMetal();
+#endif
     modelLoaded_ = false;
     compositeRendered_ = false;
     instanceId_ = 0;
@@ -1381,21 +1401,13 @@ void CharacterPreview::update(float deltaTime) {
 
 void CharacterPreview::render() {
     // No-op - actual rendering happens in compositePass() called from Renderer::beginFrame()
+    // On Metal there is no Renderer to call it; the pass is drawn here.
+#ifdef WOWEE_METAL
+    if (metal_) renderMetal();
+#endif
 }
 
-void CharacterPreview::compositePass(VkCommandBuffer cmd, uint32_t frameIndex) {
-    // Only composite when a UI screen actually requested it this frame
-    if (!compositeRequested_) return;
-    compositeRequested_ = false;
-
-    if (!charRenderer_ || !camera_ || !modelLoaded_ || !renderTarget_ || !renderTarget_->isValid()) {
-        return;
-    }
-
-    uint32_t fi = frameIndex % MAX_FRAMES;
-
-    // Update per-frame UBO with preview camera matrices and studio lighting
-    GPUPerFrameData ubo{};
+void CharacterPreview::fillFrameData(GPUPerFrameData& ubo) const {
     ubo.view = camera_->getViewMatrix();
     ubo.projection = camera_->getProjectionMatrix();
     ubo.lightSpaceMatrix = glm::mat4(1.0f);
@@ -1411,6 +1423,22 @@ void CharacterPreview::compositePass(VkCommandBuffer cmd, uint32_t frameIndex) {
     // the global shadow binding here can produce unstable fragments on some
     // drivers, so keep the portrait on studio lighting only.
     ubo.shadowParams = glm::vec4(0.0f);
+}
+
+void CharacterPreview::compositePass(VkCommandBuffer cmd, uint32_t frameIndex) {
+    // Only composite when a UI screen actually requested it this frame
+    if (!compositeRequested_) return;
+    compositeRequested_ = false;
+
+    if (!charRenderer_ || !camera_ || !modelLoaded_ || !renderTarget_ || !renderTarget_->isValid()) {
+        return;
+    }
+
+    uint32_t fi = frameIndex % MAX_FRAMES;
+
+    // Update per-frame UBO with preview camera matrices and studio lighting
+    GPUPerFrameData ubo{};
+    fillFrameData(ubo);
 
     std::memcpy(previewUBOMapped_[fi], &ubo, sizeof(GPUPerFrameData));
 
@@ -1557,6 +1585,107 @@ void CharacterPreview::applyPreviewView() {
         charRenderer_->setInstanceRotation(instanceId_, glm::vec3(0.0f, 0.0f, modelYaw_));
     }
 }
+
+#ifdef WOWEE_METAL
+bool CharacterPreview::initializeMetal(pipeline::AssetManager* am) {
+    const auto width = static_cast<NS::UInteger>(fboWidth_);
+    const auto height = static_cast<NS::UInteger>(fboHeight_);
+    constexpr NS::UInteger kSamples = 4;  // what the Vulkan target asks for
+    MTL::Device* device = metal_->getDevice();
+
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, width, height, false);
+    desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+    desc->setStorageMode(MTL::StorageModePrivate);
+    mtlColor_ = device->newTexture(desc);
+
+    // The multisampled colour and depth are resolved or thrown away at the
+    // end of the pass, so they never need memory of their own.
+    desc->setTextureType(MTL::TextureType2DMultisample);
+    desc->setSampleCount(kSamples);
+    desc->setUsage(MTL::TextureUsageRenderTarget);
+    desc->setStorageMode(MTL::StorageModeMemoryless);
+    mtlColorMsaa_ = device->newTexture(desc);
+    desc->setPixelFormat(MTL::PixelFormatDepth32Float);
+    mtlDepth_ = device->newTexture(desc);
+
+    mtlFrameData_ = metal_->newBuffer(nullptr, MetalContext::kRingSize * 
+                                      ((sizeof(GPUPerFrameData) + 255) & ~size_t(255)));
+    if (!mtlColor_ || !mtlColorMsaa_ || !mtlDepth_ || !mtlFrameData_) {
+        LOG_ERROR("CharacterPreview: failed to create the Metal render target");
+        destroyMetal();
+        return false;
+    }
+
+    charRenderer_ = std::make_unique<CharacterRenderer>();
+    if (!charRenderer_->initializeMetal(metal_, am, MTL::PixelFormatRGBA8Unorm,
+                                        MTL::PixelFormatDepth32Float, kSamples,
+                                        /*offscreenPreview=*/true)) {
+        LOG_ERROR("CharacterPreview: failed to initialize CharacterRenderer (Metal)");
+        charRenderer_.reset();
+        destroyMetal();
+        return false;
+    }
+
+    // What the interface draws: the texture itself (see getTextureId).
+    imguiTextureId_ = reinterpret_cast<VkDescriptorSet>(mtlColor_);
+
+    camera_ = std::make_unique<Camera>();
+    camera_->setFov(30.0f);
+    camera_->setAspectRatio(static_cast<float>(fboWidth_) / static_cast<float>(fboHeight_));
+    camera_->setPosition(glm::vec3(0.0f, 4.5f, 0.9f));
+    camera_->setRotation(270.0f, 0.0f);
+
+    LOG_INFO("CharacterPreview initialized (Metal, ", fboWidth_, "x", fboHeight_, ")");
+    return true;
+}
+
+void CharacterPreview::renderMetal() {
+    if (!charRenderer_ || !camera_ || !modelLoaded_ || !mtlColor_) return;
+
+    // The slot no frame still in flight reads (MetalContext::kRingSize).
+    const size_t stride = (sizeof(GPUPerFrameData) + 255) & ~size_t(255);
+    const size_t offset = (metal_->frameNumber() % MetalContext::kRingSize) * stride;
+    GPUPerFrameData ubo{};
+    fillFrameData(ubo);
+    std::memcpy(static_cast<char*>(mtlFrameData_->contents()) + offset, &ubo, sizeof(ubo));
+
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    auto* color = pass->colorAttachments()->object(0);
+    color->setTexture(mtlColorMsaa_);
+    color->setResolveTexture(mtlColor_);
+    color->setLoadAction(MTL::LoadActionClear);
+    // Nothing at all behind a portrait, so the frame art around it shows
+    // through; the studio backdrop everywhere else.
+    color->setClearColor(transparentBackground_ ? MTL::ClearColor::Make(0.0, 0.0, 0.0, 0.0)
+                                                : MTL::ClearColor::Make(0.05, 0.05, 0.1, 1.0));
+    color->setStoreAction(MTL::StoreActionMultisampleResolve);
+    pass->depthAttachment()->setTexture(mtlDepth_);
+    pass->depthAttachment()->setLoadAction(MTL::LoadActionClear);
+    pass->depthAttachment()->setClearDepth(1.0);
+    pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
+
+    MTL::CommandBuffer* cmd = metal_->getQueue()->commandBuffer();
+    MTL::RenderCommandEncoder* encoder = cmd->renderCommandEncoder(pass);
+    charRenderer_->renderMetal(encoder, mtlFrameData_, offset, *camera_);
+    encoder->endEncoding();
+    cmd->commit();
+    pool->release();
+
+    compositeRendered_ = true;
+}
+
+void CharacterPreview::destroyMetal() {
+    // Command buffers still in flight retain what they draw into.
+    for (MTL::Texture** texture : {&mtlColor_, &mtlColorMsaa_, &mtlDepth_}) {
+        if (*texture) { (*texture)->release(); *texture = nullptr; }
+    }
+    if (mtlFrameData_) { mtlFrameData_->release(); mtlFrameData_ = nullptr; }
+    if (metal_) imguiTextureId_ = VK_NULL_HANDLE;
+    metal_ = nullptr;
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

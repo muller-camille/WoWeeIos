@@ -20,6 +20,9 @@
 #include "game/expansion_profile.hpp"
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include "stb_image.h"
 #include <filesystem>
 #include <fstream>
@@ -72,6 +75,14 @@ AuthScreen::~AuthScreen() {
     // the device on every run. bgSampler is the context's, cached and shared,
     // and bgDescriptorSet belongs to the ImGui backend, which frees its own
     // pool -- neither is this class's to destroy.
+#ifdef WOWEE_METAL
+    if (bgMetalTexture) {
+        auto* window = core::Application::getInstance().getWindow();
+        if (auto* metal = window ? window->getMetalContext() : nullptr) {
+            metal->releaseTexture(bgMetalTexture);
+        }
+    }
+#endif
     if (!bgVkCtx) return;
     VkDevice device = bgVkCtx->getDevice();
     if (device == VK_NULL_HANDLE) return;
@@ -1030,7 +1041,7 @@ void AuthScreen::drawBackdrop() {
             LOG_WARNING("Auth screen: failed to decode background image");
         }
     }
-    if (!bgDescriptorSet) return;
+    if (bgTextureId == ImTextureID_Invalid) return;
 
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
     const float imgW = static_cast<float>(bgWidth);
@@ -1050,7 +1061,7 @@ void AuthScreen::drawBackdrop() {
         uv0.y = crop;
         uv1.y = 1.0f - crop;
     }
-    ImGui::GetBackgroundDrawList()->AddImage(reinterpret_cast<ImTextureID>(bgDescriptorSet),
+    ImGui::GetBackgroundDrawList()->AddImage(bgTextureId,
                                              ImVec2(0, 0), ImVec2(screen.x, screen.y), uv0, uv1);
 }
 
@@ -1451,6 +1462,17 @@ static uint32_t findMemType(VkPhysicalDevice pd, uint32_t filter, VkMemoryProper
 // which has to happen on the main thread.
 bool AuthScreen::uploadBackgroundImage(const unsigned char* data) {
     auto& app = core::Application::getInstance();
+#ifdef WOWEE_METAL
+    auto* window = app.getWindow();
+    auto* metal = window ? window->getMetalContext() : nullptr;
+    if (!metal || !data) return false;
+    bgMetalTexture = metal->uploadTexture(data, static_cast<uint32_t>(bgWidth),
+                                          static_cast<uint32_t>(bgHeight));
+    if (!bgMetalTexture) return false;
+    bgTextureId = reinterpret_cast<ImTextureID>(bgMetalTexture);
+    LOG_INFO("Auth screen background loaded: ", bgWidth, "x", bgHeight, " (Metal)");
+    return true;
+#endif
     auto* renderer = app.getRenderer();
     if (!renderer) return false;
     bgVkCtx = renderer->getVkContext();
@@ -1582,6 +1604,7 @@ bool AuthScreen::uploadBackgroundImage(const unsigned char* data) {
 
     bgDescriptorSet = ImGui_ImplVulkan_AddTexture(bgSampler, bgImageView,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    bgTextureId = reinterpret_cast<ImTextureID>(bgDescriptorSet);
 
     LOG_INFO("Auth screen background loaded: ", bgWidth, "x", bgHeight);
     return true;

@@ -20,6 +20,10 @@
 #include <mutex>
 #include <atomic>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -28,6 +32,9 @@ namespace rendering {
 class Camera;
 class VkContext;
 class VkTexture;
+#ifdef WOWEE_METAL
+class MetalContext;
+#endif
 
 // Enchant visual (glint, glow) attached to a weapon at one of the weapon model's
 // own item-visual attachment points.
@@ -88,6 +95,23 @@ public:
     /** Pre-allocate GPU resources (bone SSBOs, descriptors) on main thread before parallel render. */
     void prepareRender(uint32_t frameIndex);
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera);
+
+#ifdef WOWEE_METAL
+    /// The same renderer on Metal (docs/plan-metal.md, M2): everything but
+    /// the GPU calls is shared with the Vulkan path, which a renderer
+    /// initialized this way never takes. The formats are MTL::PixelFormat
+    /// values; offscreenPreview is what renderPassOverride says on Vulkan -
+    /// the character preview's simple, studio-lit material path.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* am,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount, bool offscreenPreview);
+    /// Draws into an encoder whose pass has the formats initializeMetal was
+    /// given. perFrame holds a GPUPerFrameData at offset; the shadow map and
+    /// fog volume are the context's neutral ones, as the preview binds on
+    /// Vulkan.
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera);
+#endif
     void recreatePipelines();
     /// The five main-pass pipelines, which initialize() and
     /// recreatePipelines() both need and each used to describe.
@@ -206,6 +230,45 @@ public:
 
 private:
     std::unordered_map<std::string, pipeline::BLPImage>* predecodedBLPCache_ = nullptr;
+
+    /// The five main-pass pipelines, named rather than held, so the draw loop
+    /// that picks one is the same for both backends.
+    enum class PipelineKind : uint8_t { Opaque, AlphaTest, Alpha, Additive, Translucent };
+    [[nodiscard]] VkPipeline vulkanPipeline(PipelineKind kind) const;
+    /// Culling, geoset and material selection for every instance, shared by
+    /// render() and renderMetal(); Sink makes the backend's calls.
+    template <typename Sink>
+    void drawInstances(Sink& sink, const Camera& camera);
+    /// The preview's render target rather than the world's.
+    [[nodiscard]] bool isOffscreenPreview() const;
+    /// Settings both initialize() and initializeMetal() apply.
+    void initializeCommon(pipeline::AssetManager* am);
+    /// An RGBA8 texture with a repeating sampler on whichever backend this
+    /// renderer was initialized for. Always returns one, as the Vulkan sites
+    /// it replaces kept a texture whose upload failed; uploaded says whether
+    /// it did.
+    std::unique_ptr<VkTexture> makeTexture(const uint8_t* rgba, uint32_t width, uint32_t height,
+                                           bool mipmaps, bool linear, bool* uploaded = nullptr);
+    void releaseTexture(VkTexture& texture);
+    [[nodiscard]] bool hasDevice() const;
+#ifdef WOWEE_METAL
+    void shutdownMetal();
+    MetalContext* metal_ = nullptr;
+    bool metalPreview_ = false;
+    MTL::RenderPipelineState* metalPipelines_[5] = {};
+    /// Where character_vert and character_frag take each binding, from the
+    /// shader manifest.
+    struct MetalSlots {
+        int vertPerFrame = -1, vertPush = -1, vertBones = -1;
+        int fragPerFrame = -1, fragMaterial = -1;
+        int fragDiffuse = -1, fragDiffuseSampler = -1;
+        int fragNormal = -1, fragNormalSampler = -1;
+        int fragShadow = -1, fragShadowSampler = -1;
+        int fragFog = -1, fragFogSampler = -1;
+        int fragRtA = -1, fragRtASampler = -1;
+        int fragRtB = -1, fragRtBSampler = -1;
+    } mtlSlots_;
+#endif
     // GPU representation of M2 model
     struct M2ModelGPU {
         VkBuffer vertexBuffer = VK_NULL_HANDLE;
@@ -237,6 +300,10 @@ private:
         // Pre-classified at load time to avoid per-batch string ops in render loop
         bool isKoboldFlame = false;
         bool isSkyBird = false;
+#ifdef WOWEE_METAL
+        MTL::Buffer* mtlVertexBuffer = nullptr;
+        MTL::Buffer* mtlIndexBuffer = nullptr;
+#endif
     };
 
     // Character instance
@@ -315,6 +382,11 @@ private:
         VmaAllocation boneAlloc[2] = {};
         void* boneMapped[2] = {};
         VkDescriptorSet boneSet[2] = {};
+#ifdef WOWEE_METAL
+        /// A ring, as MetalContext::kRingSize says: written each frame, read
+        /// by up to two frames still in flight.
+        MTL::Buffer* mtlBones[3] = {};
+#endif
     };
 
     void setupModelBuffers(M2ModelGPU& gpuModel);

@@ -20,6 +20,11 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include <imgui_impl_metal.h>
+#include "rendering/metal/metal_context.hpp"
+#endif
 
 namespace wowee {
 namespace ui {
@@ -111,11 +116,19 @@ bool UIManager::initialize(core::Window* win) {
     window = win;
     LOG_INFO("Initializing UI manager");
 
+#ifdef WOWEE_METAL
+    auto* metal = window->getMetalContext();
+    if (!metal) {
+        LOG_ERROR("No Metal context available for ImGui initialization");
+        return false;
+    }
+#else
     auto* vkCtx = window->getVkContext();
     if (!vkCtx) {
         LOG_ERROR("No Vulkan context available for ImGui initialization");
         return false;
     }
+#endif
 
     // Initialize ImGui
     IMGUI_CHECKVERSION();
@@ -137,6 +150,16 @@ bool UIManager::initialize(core::Window* win) {
         LOG_INFO("Interface scaled by ", scale, " for this display");
     }
 
+#ifdef WOWEE_METAL
+    ImGui_ImplSDL3_InitForMetal(window->getSDLWindow());
+    if (!ImGui_ImplMetal_Init(metal->getDevice())) {
+        LOG_ERROR("ImGui's Metal backend did not start");
+        return false;
+    }
+    imguiInitialized = true;
+    LOG_INFO("UI manager initialized successfully (Metal)");
+    return true;
+#else
     // Initialize ImGui for SDL2 + Vulkan
     ImGui_ImplSDL3_InitForVulkan(window->getSDLWindow());
 
@@ -166,6 +189,7 @@ bool UIManager::initialize(core::Window* win) {
 
     LOG_INFO("UI manager initialized successfully (Vulkan)");
     return true;
+#endif
 }
 
 void UIManager::loadInterfaceFont(const std::string& dataRoot,
@@ -370,7 +394,11 @@ void UIManager::shutdown() {
             vkDeviceWaitIdle(vkCtx->getDevice());
         }
 
+#ifdef WOWEE_METAL
+        ImGui_ImplMetal_Shutdown();
+#else
         ImGui_ImplVulkan_Shutdown();
+#endif
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
         imguiInitialized = false;
@@ -381,8 +409,11 @@ void UIManager::shutdown() {
 void UIManager::update([[maybe_unused]] float deltaTime) {
     if (!imguiInitialized) return;
 
-    // Start ImGui frame
+    // Start ImGui frame. The Metal backend's NewFrame wants the frame's pass,
+    // which there is not yet; drawToMetal gives it that.
+#ifndef WOWEE_METAL
     ImGui_ImplVulkan_NewFrame();
+#endif
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 }
@@ -513,6 +544,21 @@ void UIManager::finishImGuiFrame() {
 
     ImGui::Render();
 }
+
+#ifdef WOWEE_METAL
+void UIManager::drawToMetal(rendering::MetalContext& metal) {
+    if (!imguiInitialized) return;
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (!drawData) return;
+    MTL::RenderPassDescriptor* pass = metal.renderPass();
+    // Only what the pipelines are keyed on is read from the pass: the
+    // drawable's format and sample count.
+    ImGui_ImplMetal_NewFrame(pass);
+    MTL::RenderCommandEncoder* encoder = metal.commandBuffer()->renderCommandEncoder(pass);
+    ImGui_ImplMetal_RenderDrawData(drawData, metal.commandBuffer(), encoder);
+    encoder->endEncoding();
+}
+#endif
 
 void UIManager::processEvent(const SDL_Event& event) {
     if (imguiInitialized) {

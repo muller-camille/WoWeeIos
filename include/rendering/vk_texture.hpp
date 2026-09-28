@@ -10,10 +10,17 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Texture; class SamplerState; }
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+#ifdef WOWEE_METAL
+class MetalContext;
+#endif
 
 class VkTexture {
 public:
@@ -116,9 +123,23 @@ public:
     /// graphics engine exception and a lost device rather than as anything this
     /// client can catch. Reported in #123.
     [[nodiscard]] bool isValid() const {
+#ifdef WOWEE_METAL
+        if (mtlTexture_) return mtlSampler_ != nullptr;
+#endif
         return image_.image != VK_NULL_HANDLE && image_.imageView != VK_NULL_HANDLE &&
                sampler_ != VK_NULL_HANDLE;
     }
+
+#ifdef WOWEE_METAL
+    /// The same texture on the Metal renderer (docs/plan-metal.md). A texture
+    /// is one or the other: a renderer ported to Metal fills it through these
+    /// and never through upload(). The sampler is the context's, shared.
+    bool uploadMetal(MetalContext& ctx, const uint8_t* rgba, uint32_t width, uint32_t height,
+                     bool generateMips);
+    void setMetalSampler(MTL::SamplerState* sampler) { mtlSampler_ = sampler; }
+    [[nodiscard]] MTL::Texture* metalTexture() const { return mtlTexture_; }
+    [[nodiscard]] MTL::SamplerState* metalSampler() const { return mtlSampler_; }
+#endif
 
     // Write descriptor info for binding
     [[nodiscard]] VkDescriptorImageInfo descriptorInfo(VkImageLayout layout =
@@ -147,6 +168,11 @@ private:
     VmaAllocator allocator_ = VK_NULL_HANDLE;
     glm::vec3 averageColor_{1.0f};
     float alphaCoverage_ = 1.0f;
+#ifdef WOWEE_METAL
+    void releaseMetal();
+    MTL::Texture* mtlTexture_ = nullptr;
+    MTL::SamplerState* mtlSampler_ = nullptr;
+#endif
 };
 
 } // namespace rendering

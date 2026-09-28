@@ -20,6 +20,7 @@ namespace pipeline { class AssetManager; }
 
 // Forward declarations
 namespace core { class Window; class AppearanceComposer; enum class AppState; }
+namespace rendering { class MetalContext; }
 namespace auth { class AuthHandler; }
 namespace game { class GameHandler; }
 
@@ -92,6 +93,12 @@ public:
     /// draw FrameXML's panels between the two - they belong over the world
     /// overlays that render() puts in the same draw list.
     void finishImGuiFrame();
+
+#ifdef WOWEE_METAL
+    /// Encode the closed frame into the Metal context's pass onto the drawable.
+    /// Between MetalContext::beginFrame and endFrame, after finishImGuiFrame.
+    void drawToMetal(rendering::MetalContext& metal);
+#endif
 
     void processEvent(const SDL_Event& event);
 

@@ -1,6 +1,10 @@
 #include "rendering/vk_texture.hpp"
 #include "rendering/vk_context.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -12,7 +16,33 @@ namespace rendering {
 
 VkTexture::~VkTexture() {
     destroy(device_, allocator_);
+#ifdef WOWEE_METAL
+    releaseMetal();
+#endif
 }
+
+#ifdef WOWEE_METAL
+bool VkTexture::uploadMetal(MetalContext& ctx, const uint8_t* rgba, uint32_t width,
+                            uint32_t height, bool generateMips) {
+    releaseMetal();
+    mtlTexture_ = ctx.uploadTexture(rgba, width, height, generateMips);
+    if (!mtlTexture_) return false;
+    image_.extent = {width, height};
+    image_.format = VK_FORMAT_R8G8B8A8_UNORM;
+    mipLevels_ = static_cast<uint32_t>(mtlTexture_->mipmapLevelCount());
+    return true;
+}
+
+void VkTexture::releaseMetal() {
+    // The command buffers that sample it retain it, so a frame still in flight
+    // keeps it alive past this.
+    if (mtlTexture_) {
+        mtlTexture_->release();
+        mtlTexture_ = nullptr;
+    }
+    mtlSampler_ = nullptr;
+}
+#endif
 
 VkTexture::VkTexture(VkTexture&& other) noexcept
     : image_(other.image_), sampler_(other.sampler_), mipLevels_(other.mipLevels_),
@@ -26,6 +56,12 @@ VkTexture::VkTexture(VkTexture&& other) noexcept
     // ...nor the device, which is what stops its destructor freeing ours.
     other.device_ = VK_NULL_HANDLE;
     other.allocator_ = VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+    mtlTexture_ = other.mtlTexture_;
+    mtlSampler_ = other.mtlSampler_;
+    other.mtlTexture_ = nullptr;
+    other.mtlSampler_ = nullptr;
+#endif
 }
 
 VkTexture& VkTexture::operator=(VkTexture&& other) noexcept {
@@ -45,6 +81,13 @@ VkTexture& VkTexture::operator=(VkTexture&& other) noexcept {
         other.ownsSampler_ = false;
         other.device_ = VK_NULL_HANDLE;
         other.allocator_ = VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+        // destroy() above has released this one's.
+        mtlTexture_ = other.mtlTexture_;
+        mtlSampler_ = other.mtlSampler_;
+        other.mtlTexture_ = nullptr;
+        other.mtlSampler_ = nullptr;
+#endif
     }
     return *this;
 }
@@ -418,6 +461,9 @@ bool VkTexture::createSampler(VkDevice device,
     return finalizeSampler(device, samplerInfo);
 }
 void VkTexture::destroy(VkDevice device, VmaAllocator allocator) {
+#ifdef WOWEE_METAL
+    releaseMetal();
+#endif
     // Nothing was ever created, or this has already run. Both are ordinary:
     // the destructor calls this after an explicit destroy() has, and a
     // default-constructed texture is destroyed without having been used.

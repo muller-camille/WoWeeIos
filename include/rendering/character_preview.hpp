@@ -12,6 +12,10 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class Texture; }
+#endif
+
 namespace wowee {
 namespace pipeline { class AssetManager; struct M2Model; }
 namespace rendering {
@@ -21,6 +25,10 @@ class Camera;
 class VkContext;
 class VkTexture;
 class VkRenderTarget;
+struct GPUPerFrameData;
+#ifdef WOWEE_METAL
+class MetalContext;
+#endif
 
 class CharacterPreview {
 public:
@@ -92,6 +100,8 @@ public:
 
     // Returns the ImGui texture handle. Returns VK_NULL_HANDLE until the first
     // compositePass has run (image is in UNDEFINED layout before that).
+    // In the Metal build it carries the MTL::Texture*, which is the ImTextureID
+    // ImGui's Metal backend expects; the type goes with Vulkan at M6.
     [[nodiscard]] VkDescriptorSet getTextureId() const { return compositeRendered_ ? imguiTextureId_ : VK_NULL_HANDLE; }
     [[nodiscard]] int getWidth() const { return fboWidth_; }
     [[nodiscard]] int getHeight() const { return fboHeight_; }
@@ -123,6 +133,21 @@ private:
     // Load the race's glue scene (Stormwind for humans, Orgrimmar for orcs, ...) as a backdrop.
     void loadRacialBackdrop(game::Race race);
     void applyPreviewView();
+    /// The camera and studio lighting both backends' passes draw with.
+    void fillFrameData(GPUPerFrameData& ubo) const;
+#ifdef WOWEE_METAL
+    /// The Metal build's render target and pass (docs/plan-metal.md, M2).
+    /// render() draws straight away there, on its own command buffer: it is
+    /// committed before the frame that shows the picture, on the same queue.
+    bool initializeMetal(pipeline::AssetManager* am);
+    void renderMetal();
+    void destroyMetal();
+    MetalContext* metal_ = nullptr;
+    MTL::Texture* mtlColor_ = nullptr;      // resolved; what the interface draws
+    MTL::Texture* mtlColorMsaa_ = nullptr;  // memoryless: lives in tile memory only
+    MTL::Texture* mtlDepth_ = nullptr;      // memoryless, likewise
+    MTL::Buffer* mtlFrameData_ = nullptr;   // MetalContext::kRingSize slots
+#endif
 
     pipeline::AssetManager* assetManager_ = nullptr;
     VkContext* vkCtx_ = nullptr;

@@ -184,6 +184,15 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
              paperFade(theme.ink, 0.5f), px(1.3f), 0x9931u);
 
     const auto enterWorld = [&](const game::Character& character) {
+#ifdef WOWEE_METAL
+        // The Metal build has no world to draw until M3 (docs/plan-metal.md),
+        // and nothing to switch the client to it. Asking anyway logged the
+        // character in on the server while this screen stayed up, and every
+        // later pick was refused for being in the world already.
+        setStatus("Entering the world is not available yet in the Metal build. " +
+                  character.name + " stays here.");
+        return;
+#endif
         characterSelected = true;
         saveLastCharacter(character.guid);
         setStatus("Entering world with " + character.name + "...");

@@ -182,6 +182,9 @@ private:
     /// follows the entity, which reads as a ring sliding off a still NPC.
     void syncRenderInstancesToEntities(float deltaTime);
     void render();
+#ifdef WOWEE_METAL
+    void renderInterfaceOnly();
+#endif
     void performLogoutToLogin();
     void processDeferredLogoutToLogin();
 

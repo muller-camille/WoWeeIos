@@ -4,9 +4,27 @@
 iPhone and iPad as its only platforms. Vulkan, MoltenVK, and the Linux, Windows, macOS and
 Android builds go at the end of the port (M6), not the start.
 
-**Status:** M0 in progress. The shader translation is written and verified here
-(`tools/metal/convert_shaders.py`, 80 functions, all within Metal's per-stage limits) and CMake
-compiles the result into `default.metallib`. That build step has not yet run on a Mac.
+**Status:** M0 done, M1 nearly done, M2 under way. On 2026-09-28 the Mac build compiled all 80
+translated shaders into `default.metallib` with no error or warning, the library in the app holds
+exactly the 80 functions the manifest lists, and the MoltenVK build still played on the iPad.
+
+With `WOWEE_METAL` (on by default for iOS) the iPad draws, through Metal:
+
+- the login screen, realm list and character list (M1): `MetalContext` in place of `VkContext`,
+  ImGui on `imgui_impl_metal`, the login background as an `MTL::Texture`, no `Renderer`;
+- the character preview on the character creation screen (M2): `CharacterRenderer` and
+  `CharacterPreview` have a Metal path beside the Vulkan one. The draw loop - culling, geosets,
+  material and blend choice - is one template both backends run (`drawInstances`), each with a
+  sink for its own calls. `VkTexture` holds an `MTL::Texture` in the Metal build, so every
+  `VkTexture*` handle keeps working. Pipelines come from `buildMetalPipeline` and their binding
+  indices from `MetalBindings`, which reads the manifest and fails at pipeline creation when an
+  entry is missing. The preview's multisampled colour and depth are memoryless.
+
+Entering the world is refused in the Metal build until M3. Left for M1: the widget textures
+(`ui_texture_load`, `widget_renderer`) the world's interface uses. Left for M2: `M2Renderer`, BC
+textures where the GPU has them, and checking the character list's preview and the equipment on
+the device. `WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config
+root.
 
 **Target:** iOS 16 or later on a Metal 3 GPU (A13 or later): iPhone 11 onward, iPad Air 4 onward,
 every M-series iPad. The test device is an iPad Air (4th generation, A14, 4 GB).

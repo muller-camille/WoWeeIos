@@ -54,6 +54,12 @@
 #include <chrono>
 #include <cstdlib>
 #include <limits>
+#include <optional>
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <cstring>
 
 
@@ -343,17 +349,10 @@ bool CharacterRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFram
     core::Logger::getInstance().info("Initializing character renderer (Vulkan)...");
 
     vkCtx_ = ctx;
-    assetManager = am;
     perFrameLayout_ = perFrameLayout;
     renderPassOverride_ = renderPassOverride;
     msaaSamplesOverride_ = msaaSamples;
-    const unsigned hc = std::thread::hardware_concurrency();
-    const size_t availableCores = (hc > 1u) ? static_cast<size_t>(hc - 1u) : 1ull;
-    // Character updates run alongside M2/WMO work; default to a smaller share.
-    const size_t defaultAnimThreads = std::max<size_t>(1, availableCores / 4);
-    numAnimThreads_ = static_cast<uint32_t>(std::max<size_t>(
-        1, envSizeOrDefault("WOWEE_CHAR_ANIM_THREADS", defaultAnimThreads)));
-    core::Logger::getInstance().info("Character anim threads: ", numAnimThreads_);
+    initializeCommon(am);
 
     VkDevice device = vkCtx_->getDevice();
 
@@ -482,15 +481,91 @@ bool CharacterRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFram
 
     createFallbackTextures(device);
 
-    // Diagnostics-only: cache lifetime is currently tied to renderer lifetime.
-    textureCacheBudgetBytes_ = envSizeMBOrDefault("WOWEE_CHARACTER_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
-    LOG_INFO("Character texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
-
     core::Logger::getInstance().info("Character renderer initialized (Vulkan)");
     return true;
 }
 
+void CharacterRenderer::initializeCommon(pipeline::AssetManager* am) {
+    assetManager = am;
+    const unsigned hc = std::thread::hardware_concurrency();
+    const size_t availableCores = (hc > 1u) ? static_cast<size_t>(hc - 1u) : 1ull;
+    // Character updates run alongside M2/WMO work; default to a smaller share.
+    const size_t defaultAnimThreads = std::max<size_t>(1, availableCores / 4);
+    numAnimThreads_ = static_cast<uint32_t>(std::max<size_t>(
+        1, envSizeOrDefault("WOWEE_CHAR_ANIM_THREADS", defaultAnimThreads)));
+    core::Logger::getInstance().info("Character anim threads: ", numAnimThreads_);
+
+    // Diagnostics-only: cache lifetime is currently tied to renderer lifetime.
+    textureCacheBudgetBytes_ = envSizeMBOrDefault("WOWEE_CHARACTER_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
+    LOG_INFO("Character texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
+}
+
+bool CharacterRenderer::hasDevice() const {
+#ifdef WOWEE_METAL
+    if (metal_) return true;
+#endif
+    return vkCtx_ != nullptr;
+}
+
+bool CharacterRenderer::isOffscreenPreview() const {
+#ifdef WOWEE_METAL
+    if (metal_) return metalPreview_;
+#endif
+    return renderPassOverride_ != VK_NULL_HANDLE;
+}
+
+VkPipeline CharacterRenderer::vulkanPipeline(PipelineKind kind) const {
+    switch (kind) {
+        case PipelineKind::Opaque: return opaquePipeline_;
+        case PipelineKind::AlphaTest: return alphaTestPipeline_;
+        case PipelineKind::Alpha: return alphaPipeline_;
+        case PipelineKind::Additive: return additivePipeline_;
+        case PipelineKind::Translucent: return translucentPipeline_;
+    }
+    return opaquePipeline_;
+}
+
+std::unique_ptr<VkTexture> CharacterRenderer::makeTexture(const uint8_t* rgba, uint32_t width,
+                                                          uint32_t height, bool mipmaps,
+                                                          bool linear, bool* uploaded) {
+    auto tex = std::make_unique<VkTexture>();
+    bool ok = false;
+#ifdef WOWEE_METAL
+    if (metal_) {
+        ok = tex->uploadMetal(*metal_, rgba, width, height, mipmaps);
+        tex->setMetalSampler(metal_->sampler(
+            linear ? MetalContext::Filter::Linear : MetalContext::Filter::Nearest,
+            MetalContext::Address::Repeat));
+        if (uploaded) *uploaded = ok;
+        return tex;
+    }
+#endif
+    if (vkCtx_) {
+        ok = tex->upload(*vkCtx_, rgba, width, height, VK_FORMAT_R8G8B8A8_UNORM, mipmaps);
+        const VkFilter filter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+        tex->createSampler(vkCtx_->getDevice(), filter, filter, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    }
+    if (uploaded) *uploaded = ok;
+    return tex;
+}
+
+void CharacterRenderer::releaseTexture(VkTexture& texture) {
+    if (vkCtx_) {
+        texture.destroy(vkCtx_->getDevice(), vkCtx_->getAllocator());
+    } else {
+        // A Metal texture, or one never uploaded: nothing Vulkan to free, and
+        // destroy() gives back the Metal one before it looks for a device.
+        texture.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);
+    }
+}
+
 void CharacterRenderer::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        shutdownMetal();
+        return;
+    }
+#endif
     if (!vkCtx_) return;
 
     LOG_INFO("CharacterRenderer::shutdown instances=", instances.size(),
@@ -601,7 +676,7 @@ void CharacterRenderer::shutdown() {
 }
 
 void CharacterRenderer::clear() {
-    if (!vkCtx_) return;
+    if (!hasDevice()) return;
 
     LOG_INFO("CharacterRenderer::clear instances=", instances.size(),
              " models=", models.size());
@@ -619,8 +694,13 @@ void CharacterRenderer::clear() {
         completedNormalMaps_.clear();
     }
 
-    vkDeviceWaitIdle(vkCtx_->getDevice());
-    VkDevice device = vkCtx_->getDevice();
+    // On Metal nothing waits: the command buffers still in flight retain what
+    // they use, and everything below is released rather than destroyed.
+    VkDevice device = VK_NULL_HANDLE;
+    if (vkCtx_) {
+        vkDeviceWaitIdle(vkCtx_->getDevice());
+        device = vkCtx_->getDevice();
+    }
 
     // Destroy GPU resources for all models
     for (auto& pair : models) {
@@ -682,29 +762,30 @@ void CharacterRenderer::clear() {
 
 void CharacterRenderer::createFallbackTextures(VkDevice device) {
     // White: default diffuse when no texture is assigned
+    (void)device;
     {
         uint8_t white[] = {255, 255, 255, 255};
-        whiteTexture_ = std::make_unique<VkTexture>();
-        whiteTexture_->upload(*vkCtx_, white, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
-        whiteTexture_->createSampler(device, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+        whiteTexture_ = makeTexture(white, 1, 1, false, false);
     }
     // Transparent: placeholder for optional overlay layers (e.g. hair highlights)
     {
         uint8_t transparent[] = {0, 0, 0, 0};
-        transparentTexture_ = std::make_unique<VkTexture>();
-        transparentTexture_->upload(*vkCtx_, transparent, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
-        transparentTexture_->createSampler(device, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+        transparentTexture_ = makeTexture(transparent, 1, 1, false, false);
     }
     // Flat normal: neutral normal map (128,128,255) + 0.5 height in alpha channel
     {
         uint8_t flatNormal[] = {128, 128, 255, 128};
-        flatNormalTexture_ = std::make_unique<VkTexture>();
-        flatNormalTexture_->upload(*vkCtx_, flatNormal, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
-        flatNormalTexture_->createSampler(device, VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_REPEAT);
+        flatNormalTexture_ = makeTexture(flatNormal, 1, 1, false, false);
     }
 }
 
 void CharacterRenderer::destroyModelGPU(M2ModelGPU& gpuModel, bool defer) {
+#ifdef WOWEE_METAL
+    // Released now whether or not deferral was asked for: a command buffer
+    // still in flight retains the buffers it draws from.
+    if (gpuModel.mtlVertexBuffer) { gpuModel.mtlVertexBuffer->release(); gpuModel.mtlVertexBuffer = nullptr; }
+    if (gpuModel.mtlIndexBuffer) { gpuModel.mtlIndexBuffer->release(); gpuModel.mtlIndexBuffer = nullptr; }
+#endif
     if (!vkCtx_) return;
     VmaAllocator alloc = vkCtx_->getAllocator();
 
@@ -732,13 +813,18 @@ void CharacterRenderer::destroyModelGPU(M2ModelGPU& gpuModel, bool defer) {
 }
 
 void CharacterRenderer::destroyInstanceBones(CharacterInstance& inst, bool defer) {
+#ifdef WOWEE_METAL
+    for (auto*& bones : inst.mtlBones) {
+        if (bones) { bones->release(); bones = nullptr; }
+    }
+#endif
     if (!vkCtx_) return;
     releaseInstanceBones(*vkCtx_, boneDescPool_, boneDescPoolGeneration_, inst, defer);
 }
 
 std::unique_ptr<VkTexture> CharacterRenderer::generateNormalHeightMap(
         const uint8_t* pixels, uint32_t width, uint32_t height, float& outVariance) {
-    if (!vkCtx_ || width == 0 || height == 0) return nullptr;
+    if (!hasDevice() || width == 0 || height == 0) return nullptr;
 
     // Use the CPU-only static method, then upload to GPU
     std::vector<uint8_t> dummy(static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
@@ -746,12 +832,9 @@ std::unique_ptr<VkTexture> CharacterRenderer::generateNormalHeightMap(
     auto result = generateNormalHeightMapCPU("", std::move(dummy), width, height);
     outVariance = result.variance;
 
-    auto tex = std::make_unique<VkTexture>();
-    if (!tex->upload(*vkCtx_, result.pixels.data(), width, height, VK_FORMAT_R8G8B8A8_UNORM, true)) {
-        return nullptr;
-    }
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                        VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    bool uploaded = false;
+    auto tex = makeTexture(result.pixels.data(), width, height, true, true, &uploaded);
+    if (!uploaded) return nullptr;
     return tex;
 }
 
@@ -891,11 +974,7 @@ VkTexture* CharacterRenderer::loadTexture(const std::string& path) {
         }
     }
 
-    auto tex = std::make_unique<VkTexture>();
-    tex->upload(*vkCtx_, blpImage.data.data(), blpImage.width, blpImage.height,
-                VK_FORMAT_R8G8B8A8_UNORM, true);
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                       VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    auto tex = makeTexture(blpImage.data.data(), blpImage.width, blpImage.height, true, true);
 
     VkTexture* texPtr = tex.get();
 
@@ -923,7 +1002,7 @@ VkTexture* CharacterRenderer::loadTexture(const std::string& path) {
 }
 
 void CharacterRenderer::processPendingNormalMaps(int budget) {
-    if (!vkCtx_) return;
+    if (!hasDevice()) return;
 
     // Collect completed results from background threads
     std::deque<NormalMapResult> ready;
@@ -942,13 +1021,10 @@ void CharacterRenderer::processPendingNormalMaps(int budget) {
         auto it = textureCache.find(result.cacheKey);
         if (it == textureCache.end()) continue;  // texture was evicted
 
-        vkCtx_->beginUploadBatch();
-        auto tex = std::make_unique<VkTexture>();
-        bool ok = tex->upload(*vkCtx_, result.pixels.data(), result.width, result.height,
-                              VK_FORMAT_R8G8B8A8_UNORM, true);
+        if (vkCtx_) vkCtx_->beginUploadBatch();
+        bool ok = false;
+        auto tex = makeTexture(result.pixels.data(), result.width, result.height, true, true, &ok);
         if (ok) {
-            tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                               VK_SAMPLER_ADDRESS_MODE_REPEAT);
             it->second.heightMapVariance = result.variance;
             it->second.approxBytes += approxTextureBytesWithMips(result.width, result.height);
             textureCacheBytes_ += approxTextureBytesWithMips(result.width, result.height);
@@ -958,7 +1034,7 @@ void CharacterRenderer::processPendingNormalMaps(int budget) {
                     .normalMap = it->second.normalHeightMap.get(), .heightMapVariance = it->second.heightMapVariance};
             }
         }
-        vkCtx_->endUploadBatch();
+        if (vkCtx_) vkCtx_->endUploadBatch();
         it->second.normalMapPending = false;
     }
 }
@@ -1389,10 +1465,7 @@ VkTexture* CharacterRenderer::compositeTextures(const std::vector<std::string>& 
     const bool hasAlpha = hasNonOpaqueAlpha(composite);
 
     // Upload composite to GPU via VkTexture
-    auto tex = std::make_unique<VkTexture>();
-    tex->upload(*vkCtx_, composite.data(), width, height, VK_FORMAT_R8G8B8A8_UNORM, true);
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                       VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    auto tex = makeTexture(composite.data(), width, height, true, true);
 
     VkTexture* texPtr = tex.get();
 
@@ -1417,7 +1490,7 @@ VkTexture* CharacterRenderer::compositeTextures(const std::vector<std::string>& 
     // and ~VkTexture frees nothing, so the texture goes in, comes back out
     // destroyed-but-not-freed, and there is no longer a pointer to free it by.
     if (auto existing = textureCache.find(cacheKey); existing != textureCache.end()) {
-        e.texture->destroy(vkCtx_->getDevice(), vkCtx_->getAllocator());
+        releaseTexture(*e.texture);
         existing->second.lastUse = ++textureCacheCounter_;
         return existing->second.texture.get();
     }
@@ -1700,10 +1773,7 @@ VkTexture* CharacterRenderer::compositeWithRegions(const std::string& basePath,
     const bool hasAlpha = hasNonOpaqueAlpha(composite);
 
     // Upload to GPU via VkTexture
-    auto tex = std::make_unique<VkTexture>();
-    tex->upload(*vkCtx_, composite.data(), width, height, VK_FORMAT_R8G8B8A8_UNORM, true);
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                       VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    auto tex = makeTexture(composite.data(), width, height, true, true);
 
     VkTexture* texPtr = tex.get();
 
@@ -1723,7 +1793,7 @@ VkTexture* CharacterRenderer::compositeWithRegions(const std::string& basePath,
     // into a node that emplace already destroyed, leaking it with no handle
     // left to free.
     if (auto existing = textureCache.find(storageKey); existing != textureCache.end()) {
-        entry.texture->destroy(vkCtx_->getDevice(), vkCtx_->getAllocator());
+        releaseTexture(*entry.texture);
         existing->second.lastUse = ++textureCacheCounter_;
         compositeCache_[cacheKey] = existing->second.texture.get();
         return existing->second.texture.get();
@@ -1812,7 +1882,7 @@ bool CharacterRenderer::loadModel(const pipeline::M2Model& model, uint32_t id) {
 
     // Batch all GPU uploads (VB, IB, textures) into a single command buffer
     // submission with one fence wait, instead of one fence wait per upload.
-    vkCtx_->beginUploadBatch();
+    if (vkCtx_) vkCtx_->beginUploadBatch();
 
     // Setup GPU buffers
     setupModelBuffers(gpuModel);
@@ -1842,7 +1912,7 @@ bool CharacterRenderer::loadModel(const pipeline::M2Model& model, uint32_t id) {
         gpuModel.textureIds.push_back(texPtr);
     }
 
-    vkCtx_->endUploadBatch();
+    if (vkCtx_) vkCtx_->endUploadBatch();
 
     // Precompute batch render order (priorityPlane, materialLayer). The result
     // depends only on the model, so caching it here removes the per-frame
@@ -1971,6 +2041,18 @@ void CharacterRenderer::setupModelBuffers(M2ModelGPU& gpuModel) {
         gpuVerts[i].tangent = glm::vec4(tOrtho, w);
     }
 
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Shared and written once: the GPU reads the CPU's memory directly.
+        gpuModel.mtlVertexBuffer = metal_->newBuffer(gpuVerts.data(),
+                                                     gpuVerts.size() * sizeof(CharVertexGPU));
+        gpuModel.mtlIndexBuffer = metal_->newBuffer(model.indices.data(),
+                                                    idxCount * sizeof(uint16_t));
+        gpuModel.vertexCount = static_cast<uint32_t>(vertCount);
+        gpuModel.indexCount = static_cast<uint32_t>(idxCount);
+        return;
+    }
+#endif
     // Upload vertex buffer (CharVertexGPU, 56 bytes per vertex)
     auto vb = uploadBuffer(*vkCtx_,
         gpuVerts.data(),
@@ -2532,10 +2614,8 @@ void CharacterRenderer::prepareRender(uint32_t frameIndex) {
     }
 }
 
-void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
-    if (instances.empty() || !opaquePipeline_) {
-        return;
-    }
+template <typename Sink>
+void CharacterRenderer::drawInstances(Sink& sink, const Camera& camera) {
     const float renderRadius = static_cast<float>(envSizeOrDefault("WOWEE_CHAR_RENDER_RADIUS", 130));
     const float renderRadiusSq = renderRadius * renderRadius;
     // Default frustum-cull radius when model bounds aren't available.
@@ -2549,79 +2629,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
     Frustum frustum;
     frustum.extractFromMatrix(camera.getViewProjectionMatrix());
 
-    uint32_t frameIndex = vkCtx_->getCurrentFrame();
-    uint32_t frameSlot = frameIndex % 2u;
-
-    // Reset material ring buffer and descriptor pool once per frame slot.
-    if (lastMaterialPoolResetFrame_ != frameIndex) {
-        materialRingOffset_[frameSlot] = 0;
-        if (materialDescPools_[frameSlot]) {
-            vkResetDescriptorPool(vkCtx_->getDevice(), materialDescPools_[frameSlot], 0);
-        }
-        materialDescriptorCache_[frameSlot].clear();
-        lastMaterialPoolResetFrame_ = frameIndex;
-    }
-
-    // Pre-compute aligned UBO stride for ring buffer sub-allocation
-    const uint32_t uboStride = (sizeof(CharMaterialUBO) + materialUboAlignment_ - 1) & ~(materialUboAlignment_ - 1);
-    const uint32_t ringCapacityBytes = uboStride * MATERIAL_RING_CAPACITY;
-    auto getMaterialDescriptorSet = [&](VkTexture* diffuse, VkTexture* normal) -> VkDescriptorSet {
-        // Valid, not merely non-null. descriptorInfo() hands back whatever the
-        // texture holds - VK_NULL_HANDLE for a view and a sampler that were
-        // never created - and declares SHADER_READ_ONLY_OPTIMAL either way. A
-        // draw that samples that is undefined behaviour, and on NVIDIA it
-        // surfaces as a graphics engine exception and a lost device rather
-        // than anything this client can catch.
-        //
-        // Both call sites check the diffuse and neither checks the normal, and
-        // the normal is the one that can arrive from an asynchronous generation
-        // pass or from a flat fallback whose own upload can fail under the same
-        // memory pressure that makes the texture cache start rejecting.
-        if (!diffuse || !diffuse->isValid()) diffuse = whiteTexture_.get();
-        if (!normal || !normal->isValid()) normal = flatNormalTexture_.get();
-        if (!diffuse || !diffuse->isValid() || !normal || !normal->isValid()) {
-            // Even the fallbacks are gone. Skipping the draw loses a model;
-            // binding a null view loses the device.
-            return VK_NULL_HANDLE;
-        }
-        const VkDescriptorImageInfo diffuseInfo = diffuse->descriptorInfo();
-        const VkDescriptorImageInfo normalInfo = normal->descriptorInfo();
-        const MaterialDescriptorKey key{.diffuse = diffuseInfo.imageView, .normal = normalInfo.imageView,
-                                        .diffuseSampler = diffuseInfo.sampler, .normalSampler = normalInfo.sampler};
-        auto& cache = materialDescriptorCache_[frameSlot];
-        if (auto it = cache.find(key); it != cache.end()) return it->second;
-
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        ai.descriptorPool = materialDescPools_[frameSlot];
-        ai.descriptorSetCount = 1;
-        ai.pSetLayouts = &materialSetLayout_;
-        if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &set) != VK_SUCCESS)
-            return VK_NULL_HANDLE;
-
-        VkDescriptorBufferInfo bufferInfo{};
-        bufferInfo.buffer = materialRingBuffer_[frameSlot];
-        bufferInfo.offset = 0;
-        bufferInfo.range = sizeof(CharMaterialUBO);
-        VkWriteDescriptorSet writes[3] = {};
-        writes[0] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 0, .dstArrayElement = 0, .descriptorCount = 1,
-                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &diffuseInfo, .pBufferInfo = nullptr, .pTexelBufferView = nullptr};
-        writes[1] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 1, .dstArrayElement = 0, .descriptorCount = 1,
-                     .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .pImageInfo = nullptr, .pBufferInfo = &bufferInfo, .pTexelBufferView = nullptr};
-        writes[2] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 2, .dstArrayElement = 0, .descriptorCount = 1,
-                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &normalInfo, .pBufferInfo = nullptr, .pTexelBufferView = nullptr};
-        vkUpdateDescriptorSets(vkCtx_->getDevice(), 3, writes, 0, nullptr);
-        cache.emplace(key, set);
-        return set;
-    };
-
-    // Bind per-frame descriptor set (set 0) -- shared across all draws
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
-
     // Start with opaque pipeline
-    VkPipeline currentPipeline = opaquePipeline_;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, currentPipeline);
+    PipelineKind currentPipeline = PipelineKind::Opaque;
+    sink.bindPipeline(currentPipeline);
 
     for (auto& pair : instances) {
         auto& instance = pair.second;
@@ -2654,7 +2664,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         const auto& gpuModel = *instance.cachedModel;
 
         // Skip models without GPU buffers
-        if (!gpuModel.vertexBuffer) continue;
+        if (!sink.hasGeometry(gpuModel)) continue;
 
         // Skip fully transparent instances
         if (instance.opacity <= 0.0f) continue;
@@ -2664,33 +2674,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             ? instance.overrideModelMatrix
             : getModelMatrix(instance);
 
-        // Push model matrix
-        vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &modelMat);
-
-        // Upload bone matrices to SSBO
-        int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), MAX_BONES);
-        if (numBones > 0) {
-            // GPU allocation is performed by prepareRender() before command
-            // recording. Never allocate buffers/descriptors from the draw loop.
-            if (!instance.boneBuffer[frameIndex] || !instance.boneSet[frameIndex]) continue;
-
-            // Upload bone matrices
-            if (instance.boneMapped[frameIndex]) {
-                memcpy(instance.boneMapped[frameIndex], instance.boneMatrices.data(),
-                       numBones * sizeof(glm::mat4));
-            }
-
-            // Bind bone descriptor set (set 2)
-            if (instance.boneSet[frameIndex]) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipelineLayout_, 2, 1, &instance.boneSet[frameIndex], 0, nullptr);
-            }
-        }
-
-        // Bind vertex and index buffers
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &gpuModel.vertexBuffer, &offset);
-        vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        // Model matrix, bone matrices, vertex and index buffers. An instance
+        // whose bones have nowhere to go this frame is skipped.
+        if (!sink.bindInstance(instance, gpuModel, modelMat)) continue;
 
         if (!gpuModel.data.batches.empty()) {
             bool applyGeosetFilter = !instance.activeGeosets.empty();
@@ -2729,7 +2715,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 return false;
             };
 
-            const bool previewMainModel = renderPassOverride_ != VK_NULL_HANDLE &&
+            const bool previewMainModel = isOffscreenPreview() &&
                                           !instance.hasOverrideModelMatrix;
 
             // Draw batches in two passes: opaque (blendMode 0) first, then
@@ -2931,12 +2917,12 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 const bool additiveBlend = (blendMode == 3 || blendMode == 4 ||
                                             blendMode == 6 || blendMode == 7);
 
-                VkPipeline desiredPipeline;
+                PipelineKind desiredPipeline;
                 if (instance.isEffectModel) {
                     // Enchant visuals are glow cards drawn on black. Their materials
                     // declare Mod/alpha blending, which would composite that black
                     // background as an opaque quad - force additive so only the light adds.
-                    desiredPipeline = additivePipeline_;
+                    desiredPipeline = PipelineKind::Additive;
                 } else if (additiveBlend) {
                     // Decided before the fade branch below, not after it. An
                     // additive card fades by adding less light - matData.opacity
@@ -2948,7 +2934,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     // animated pulse, so the diversion tripped on almost every
                     // frame the pulse was not at full, and the cards showed as
                     // black roughly half the time.
-                    desiredPipeline = additivePipeline_;
+                    desiredPipeline = PipelineKind::Additive;
                 } else if (instance.opacity * batchColorAlpha < 0.999f) {
                     // Whole-instance fade (ghost form, spawn fade-in): the opaque and
                     // alpha-test pipelines have blending disabled, so the shader's
@@ -2958,9 +2944,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     // still handles cutout materials in the shader.
                     //
                     // Except that a batch which must not write depth still must
-                    // not, fading or otherwise. translucentPipeline_ writes
+                    // not, fading or otherwise. PipelineKind::Translucent writes
                     // depth so a fading character's own solid parts keep sorting
-                    // against each other; alphaPipeline_ is the same blend with
+                    // against each other; PipelineKind::Alpha is the same blend with
                     // the depth write off. Sending a translucent card down the
                     // writing one puts an invisible occluder in front of
                     // whatever it covers, which is how the glue screens' cloud
@@ -2969,9 +2955,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     // ask for no depth write (0x10) and the scenes animate their
                     // alpha, so almost every frame took this branch.
                     const bool noDepthWrite = (blendMode >= 2) || ((materialFlags & 0x10) != 0);
-                    desiredPipeline = noDepthWrite ? alphaPipeline_ : translucentPipeline_;
+                    desiredPipeline = noDepthWrite ? PipelineKind::Alpha : PipelineKind::Translucent;
                 } else if (hairMaterial) {
-                    desiredPipeline = alphaTestPipeline_;
+                    desiredPipeline = PipelineKind::AlphaTest;
                 } else {
                     // additiveBlend (3/4/6/7) is handled above; only the
                     // non-additive modes reach here. 4/Add is the one that used
@@ -2979,14 +2965,14 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                     // glow card's black backing as an actual black quad - every
                     // material on Wisp.m2 declares it.
                     switch (blendMode) {
-                        case 0: desiredPipeline = opaquePipeline_; break;
-                        case 1: desiredPipeline = alphaTestPipeline_; break;
-                        case 2: desiredPipeline = alphaPipeline_; break;
-                        default: desiredPipeline = alphaPipeline_; break;
+                        case 0: desiredPipeline = PipelineKind::Opaque; break;
+                        case 1: desiredPipeline = PipelineKind::AlphaTest; break;
+                        case 2: desiredPipeline = PipelineKind::Alpha; break;
+                        default: desiredPipeline = PipelineKind::Alpha; break;
                     }
                 }
                 if (desiredPipeline != currentPipeline) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
+                    sink.bindPipeline(desiredPipeline);
                     currentPipeline = desiredPipeline;
                 }
 
@@ -3098,25 +3084,10 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 }
 
                 // Sub-allocate material UBO from ring buffer
-                uint32_t matOffset = materialRingOffset_[frameSlot];
-                if (matOffset + uboStride > ringCapacityBytes) continue; // ring exhausted
-                memcpy(static_cast<char*>(materialRingMapped_[frameSlot]) + matOffset, &matData, sizeof(CharMaterialUBO));
-                materialRingOffset_[frameSlot] = matOffset + uboStride;
-
                 VkTexture* bindTex = (texPtr && texPtr->isValid()) ? texPtr : whiteTexture_.get();
-                VkDescriptorSet materialSet = getMaterialDescriptorSet(bindTex, normalMap);
-                if (!materialSet) continue;
-
-                // Bind material descriptor set (set 1)
-                const uint32_t dynamicOffset = matOffset;
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipelineLayout_, 1, 1, &materialSet, 1, &dynamicOffset);
-
-                // Per-batch depth bias from materialLayer to separate coplanar
-                // armor pieces (chest/legs/gloves) that share identical depth.
-                vkCmdSetDepthBias(cmd, static_cast<float>(batch.materialLayer) * 0.5f, 0.0f, 0.0f);
-
-                vkCmdDrawIndexed(cmd, batch.indexCount, 1, batch.indexStart, 0, 0);
+                sink.drawBatch(matData, bindTex, normalMap,
+                               static_cast<float>(batch.materialLayer) * 0.5f,
+                               batch.indexCount, batch.indexStart);
             }
             } // end pass loop
         } else {
@@ -3129,10 +3100,10 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
 
             // Whole-model fallback inherits whatever pipeline was bound last;
             // pick it explicitly so instance fades blend here too.
-            VkPipeline fallbackPipeline = (instance.opacity < 0.999f)
-                ? translucentPipeline_ : opaquePipeline_;
+            PipelineKind fallbackPipeline = (instance.opacity < 0.999f)
+                ? PipelineKind::Translucent : PipelineKind::Opaque;
             if (fallbackPipeline != currentPipeline) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, fallbackPipeline);
+                sink.bindPipeline(fallbackPipeline);
                 currentPipeline = fallbackPipeline;
             }
 
@@ -3146,7 +3117,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             matData.emissiveTintG = 1.0f;
             matData.emissiveTintB = 1.0f;
             matData.specularIntensity = 0.5f;
-            const bool previewMainModel = renderPassOverride_ != VK_NULL_HANDLE &&
+            const bool previewMainModel = isOffscreenPreview() &&
                                           !instance.hasOverrideModelMatrix;
             const bool useAdvancedMaterials = !previewMainModel;
             const bool usePreviewSimpleShader = previewMainModel;
@@ -3163,21 +3134,164 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             }
 
             // Sub-allocate material UBO from ring buffer
-            uint32_t matOffset2 = materialRingOffset_[frameSlot];
-            if (matOffset2 + uboStride > ringCapacityBytes) continue; // ring exhausted
-            memcpy(static_cast<char*>(materialRingMapped_[frameSlot]) + matOffset2, &matData, sizeof(CharMaterialUBO));
-            materialRingOffset_[frameSlot] = matOffset2 + uboStride;
-
-            VkDescriptorSet materialSet = getMaterialDescriptorSet(texPtr, flatNormalTexture_.get());
-            if (!materialSet) continue;
-
-            const uint32_t dynamicOffset = matOffset2;
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipelineLayout_, 1, 1, &materialSet, 1, &dynamicOffset);
-
-            vkCmdDrawIndexed(cmd, gpuModel.indexCount, 1, 0, 0, 0);
+            // No depth bias here: the fallback never set one, and keeps
+            // whatever the last batch left.
+            sink.drawBatch(matData, texPtr, flatNormalTexture_.get(), std::nullopt,
+                           gpuModel.indexCount, 0);
         }
     }
+}
+
+void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
+    if (instances.empty() || !opaquePipeline_) {
+        return;
+    }
+    uint32_t frameIndex = vkCtx_->getCurrentFrame();
+    uint32_t frameSlot = frameIndex % 2u;
+
+    // Reset material ring buffer and descriptor pool once per frame slot.
+    if (lastMaterialPoolResetFrame_ != frameIndex) {
+        materialRingOffset_[frameSlot] = 0;
+        if (materialDescPools_[frameSlot]) {
+            vkResetDescriptorPool(vkCtx_->getDevice(), materialDescPools_[frameSlot], 0);
+        }
+        materialDescriptorCache_[frameSlot].clear();
+        lastMaterialPoolResetFrame_ = frameIndex;
+    }
+
+    // Pre-compute aligned UBO stride for ring buffer sub-allocation
+    const uint32_t uboStride = (sizeof(CharMaterialUBO) + materialUboAlignment_ - 1) & ~(materialUboAlignment_ - 1);
+    const uint32_t ringCapacityBytes = uboStride * MATERIAL_RING_CAPACITY;
+    auto getMaterialDescriptorSet = [&](VkTexture* diffuse, VkTexture* normal) -> VkDescriptorSet {
+        // Valid, not merely non-null. descriptorInfo() hands back whatever the
+        // texture holds - VK_NULL_HANDLE for a view and a sampler that were
+        // never created - and declares SHADER_READ_ONLY_OPTIMAL either way. A
+        // draw that samples that is undefined behaviour, and on NVIDIA it
+        // surfaces as a graphics engine exception and a lost device rather
+        // than anything this client can catch.
+        //
+        // Both call sites check the diffuse and neither checks the normal, and
+        // the normal is the one that can arrive from an asynchronous generation
+        // pass or from a flat fallback whose own upload can fail under the same
+        // memory pressure that makes the texture cache start rejecting.
+        if (!diffuse || !diffuse->isValid()) diffuse = whiteTexture_.get();
+        if (!normal || !normal->isValid()) normal = flatNormalTexture_.get();
+        if (!diffuse || !diffuse->isValid() || !normal || !normal->isValid()) {
+            // Even the fallbacks are gone. Skipping the draw loses a model;
+            // binding a null view loses the device.
+            return VK_NULL_HANDLE;
+        }
+        const VkDescriptorImageInfo diffuseInfo = diffuse->descriptorInfo();
+        const VkDescriptorImageInfo normalInfo = normal->descriptorInfo();
+        const MaterialDescriptorKey key{.diffuse = diffuseInfo.imageView, .normal = normalInfo.imageView,
+                                        .diffuseSampler = diffuseInfo.sampler, .normalSampler = normalInfo.sampler};
+        auto& cache = materialDescriptorCache_[frameSlot];
+        if (auto it = cache.find(key); it != cache.end()) return it->second;
+
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = materialDescPools_[frameSlot];
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &materialSetLayout_;
+        if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &set) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
+
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = materialRingBuffer_[frameSlot];
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(CharMaterialUBO);
+        VkWriteDescriptorSet writes[3] = {};
+        writes[0] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 0, .dstArrayElement = 0, .descriptorCount = 1,
+                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &diffuseInfo, .pBufferInfo = nullptr, .pTexelBufferView = nullptr};
+        writes[1] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 1, .dstArrayElement = 0, .descriptorCount = 1,
+                     .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .pImageInfo = nullptr, .pBufferInfo = &bufferInfo, .pTexelBufferView = nullptr};
+        writes[2] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = nullptr, .dstSet = set, .dstBinding = 2, .dstArrayElement = 0, .descriptorCount = 1,
+                     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &normalInfo, .pBufferInfo = nullptr, .pTexelBufferView = nullptr};
+        vkUpdateDescriptorSets(vkCtx_->getDevice(), 3, writes, 0, nullptr);
+        cache.emplace(key, set);
+        return set;
+    };
+
+    // Bind per-frame descriptor set (set 0) -- shared across all draws
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
+
+    // The Vulkan calls drawInstances makes, with the material ring and the
+    // descriptor sets above.
+    struct VulkanSink {
+        CharacterRenderer& r;
+        VkCommandBuffer cmd;
+        uint32_t frameIndex;
+        uint32_t frameSlot;
+        uint32_t uboStride;
+        uint32_t ringCapacityBytes;
+        decltype(getMaterialDescriptorSet)& getMaterialDescriptorSet;
+
+        bool hasGeometry(const M2ModelGPU& gpuModel) const {
+            return gpuModel.vertexBuffer != VK_NULL_HANDLE;
+        }
+
+        void bindPipeline(PipelineKind kind) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.vulkanPipeline(kind));
+        }
+
+        bool bindInstance(CharacterInstance& instance, const M2ModelGPU& gpuModel,
+                          const glm::mat4& modelMat) {
+            // Push model matrix
+            vkCmdPushConstants(cmd, r.pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &modelMat);
+
+            // Upload bone matrices to SSBO
+            int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), MAX_BONES);
+            if (numBones > 0) {
+                // GPU allocation is performed by prepareRender() before command
+                // recording. Never allocate buffers/descriptors from the draw loop.
+                if (!instance.boneBuffer[frameIndex] || !instance.boneSet[frameIndex]) return false;
+
+                // Upload bone matrices
+                if (instance.boneMapped[frameIndex]) {
+                    memcpy(instance.boneMapped[frameIndex], instance.boneMatrices.data(),
+                           numBones * sizeof(glm::mat4));
+                }
+
+                // Bind bone descriptor set (set 2)
+                if (instance.boneSet[frameIndex]) {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            r.pipelineLayout_, 2, 1, &instance.boneSet[frameIndex], 0, nullptr);
+                }
+            }
+
+            // Bind vertex and index buffers
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &gpuModel.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            return true;
+        }
+
+        void drawBatch(const CharMaterialUBO& matData, VkTexture* bindTex, VkTexture* normalMap,
+                       std::optional<float> depthBias, uint32_t indexCount, uint32_t indexStart) {
+            uint32_t matOffset = r.materialRingOffset_[frameSlot];
+            if (matOffset + uboStride > ringCapacityBytes) return; // ring exhausted
+            memcpy(static_cast<char*>(r.materialRingMapped_[frameSlot]) + matOffset, &matData, sizeof(CharMaterialUBO));
+            r.materialRingOffset_[frameSlot] = matOffset + uboStride;
+
+            VkDescriptorSet materialSet = getMaterialDescriptorSet(bindTex, normalMap);
+            if (!materialSet) return;
+
+            // Bind material descriptor set (set 1)
+            const uint32_t dynamicOffset = matOffset;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    r.pipelineLayout_, 1, 1, &materialSet, 1, &dynamicOffset);
+
+            // Per-batch depth bias from materialLayer to separate coplanar
+            // armor pieces (chest/legs/gloves) that share identical depth.
+            if (depthBias) vkCmdSetDepthBias(cmd, *depthBias, 0.0f, 0.0f);
+
+            vkCmdDrawIndexed(cmd, indexCount, 1, indexStart, 0, 0);
+        }
+    };
+    VulkanSink sink{*this, cmd, frameIndex, frameSlot, uboStride, ringCapacityBytes,
+                    getMaterialDescriptorSet};
+    drawInstances(sink, camera);
 }
 
 bool CharacterRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
@@ -4358,6 +4472,228 @@ void CharacterRenderer::recreatePipelines() {
                  static_cast<int>(samples), ")");
     }
 }
+
+#ifdef WOWEE_METAL
+bool CharacterRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* am,
+                                        uint32_t colorFormat, uint32_t depthFormat,
+                                        uint32_t sampleCount, bool offscreenPreview) {
+    core::Logger::getInstance().info("Initializing character renderer (Metal)...");
+    if (!ctx) return false;
+    metal_ = ctx;
+    metalPreview_ = offscreenPreview;
+    initializeCommon(am);
+
+    // Every index the draws use, from the manifest, so a shader and this
+    // disagreeing is found here rather than as a black model.
+    const MetalBindings vert("character_vert");
+    const MetalBindings frag("character_frag");
+    mtlSlots_.vertPerFrame = vert.buffer(0, 0);
+    mtlSlots_.vertBones = vert.buffer(2, 0);
+    mtlSlots_.vertPush = vert.pushConstants();
+    mtlSlots_.fragPerFrame = frag.buffer(0, 0);
+    mtlSlots_.fragMaterial = frag.buffer(1, 1);
+    mtlSlots_.fragDiffuse = frag.texture(1, 0);
+    mtlSlots_.fragDiffuseSampler = frag.sampler(1, 0);
+    mtlSlots_.fragNormal = frag.texture(1, 2);
+    mtlSlots_.fragNormalSampler = frag.sampler(1, 2);
+    mtlSlots_.fragShadow = frag.texture(0, 1);
+    mtlSlots_.fragShadowSampler = frag.sampler(0, 1);
+    mtlSlots_.fragFog = frag.texture(0, 2);
+    mtlSlots_.fragFogSampler = frag.sampler(0, 2);
+    mtlSlots_.fragRtA = frag.texture(0, 3);
+    mtlSlots_.fragRtASampler = frag.sampler(0, 3);
+    mtlSlots_.fragRtB = frag.texture(0, 4);
+    mtlSlots_.fragRtBSampler = frag.sampler(0, 4);
+    if (!vert.valid() || !frag.valid()) {
+        LOG_ERROR("Character (Metal): the shader manifest does not match the character shaders");
+        metal_ = nullptr;
+        return false;
+    }
+
+    // CharVertexGPU, as buildMainPassPipelines describes it to Vulkan.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    struct Attr { uint32_t location; MTL::VertexFormat format; size_t offset; };
+    const Attr attrs[] = {
+        {0, MTL::VertexFormatFloat3, offsetof(CharVertexGPU, position)},
+        {1, MTL::VertexFormatUChar4Normalized, offsetof(CharVertexGPU, boneWeights)},
+        {2, MTL::VertexFormatUChar4, offsetof(CharVertexGPU, boneIndices)},
+        {3, MTL::VertexFormatFloat3, offsetof(CharVertexGPU, normal)},
+        {4, MTL::VertexFormatFloat2, offsetof(CharVertexGPU, texCoords)},
+        {5, MTL::VertexFormatFloat4, offsetof(CharVertexGPU, tangent)},
+    };
+    for (const Attr& a : attrs) {
+        auto* attr = vd->attributes()->object(a.location);
+        attr->setFormat(a.format);
+        attr->setOffset(a.offset);
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(CharVertexGPU));
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStepFunction(MTL::VertexStepFunctionPerVertex);
+
+    // The five of buildMainPassPipelines: blend and alpha-to-coverage here,
+    // depth writes in the depth state renderMetal sets with each.
+    struct Spec { PipelineKind kind; MetalBlend blend; bool alphaToCoverage; const char* label; };
+    const Spec specs[] = {
+        {PipelineKind::Opaque, MetalBlend::None, false, "character opaque"},
+        {PipelineKind::AlphaTest, MetalBlend::None, true, "character alpha test"},
+        {PipelineKind::Alpha, MetalBlend::Alpha, false, "character alpha"},
+        {PipelineKind::Additive, MetalBlend::Additive, false, "character additive"},
+        {PipelineKind::Translucent, MetalBlend::Alpha, false, "character translucent"},
+    };
+    bool built = true;
+    for (const Spec& spec : specs) {
+        MetalPipelineDesc desc;
+        desc.vertexFunction = "character_vert";
+        desc.fragmentFunction = "character_frag";
+        desc.vertexDescriptor = vd;
+        desc.colorFormat = colorFormat;
+        desc.depthFormat = depthFormat;
+        desc.sampleCount = sampleCount;
+        desc.blend = spec.blend;
+        desc.alphaToCoverage = spec.alphaToCoverage && sampleCount > 1;
+        desc.label = spec.label;
+        auto*& slot = metalPipelines_[static_cast<size_t>(spec.kind)];
+        slot = buildMetalPipeline(*metal_, desc);
+        built = built && slot != nullptr;
+    }
+    vd->release();
+    if (!built) {
+        shutdownMetal();
+        return false;
+    }
+
+    createFallbackTextures(VK_NULL_HANDLE);
+
+    core::Logger::getInstance().info("Character renderer initialized (Metal)");
+    return true;
+}
+
+void CharacterRenderer::shutdownMetal() {
+    LOG_INFO("CharacterRenderer::shutdown (Metal) instances=", instances.size(),
+             " models=", models.size());
+    // Wait for any in-flight background normal map generation threads
+    {
+        std::unique_lock<std::mutex> lock(normalMapResultsMutex_);
+        normalMapDoneCV_.wait(lock, [this] {
+            return pendingNormalMapCount_.load(std::memory_order_acquire) == 0;
+        });
+    }
+    for (auto& pair : models) destroyModelGPU(pair.second);
+    for (auto& pair : instances) destroyInstanceBones(pair.second);
+    models.clear();
+    instances.clear();
+
+    // Released with the unique_ptrs; command buffers still in flight hold
+    // their own references.
+    textureCache.clear();
+    texturePropsByPtr_.clear();
+    normalMapByTexPtr_.clear();
+    compositeCache_.clear();
+    failedTextureCache_.clear();
+    failedTextureRetryAt_.clear();
+    textureCacheBytes_ = 0;
+    textureCacheCounter_ = 0;
+    textureLookupSerial_ = 0;
+    whiteTexture_.reset();
+    transparentTexture_.reset();
+    flatNormalTexture_.reset();
+
+    for (auto*& pipeline : metalPipelines_) {
+        if (pipeline) { pipeline->release(); pipeline = nullptr; }
+    }
+    metal_ = nullptr;
+}
+
+void CharacterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                    size_t offset, const Camera& camera) {
+    if (!metal_ || instances.empty() || !metalPipelines_[0] || !encoder) return;
+
+    // Set 0: the frame's data, and the stand-ins for what the preview does
+    // not have - shadows, fog, ray traced light - as it binds on Vulkan.
+    const MetalSlots& slot = mtlSlots_;
+    encoder->setVertexBuffer(perFrame, offset, slot.vertPerFrame);
+    encoder->setFragmentBuffer(perFrame, offset, slot.fragPerFrame);
+    MTL::SamplerState* clampLinear = metal_->sampler(MetalContext::Filter::Linear,
+                                                     MetalContext::Address::ClampToEdge);
+    encoder->setFragmentTexture(metal_->neutralDepthTexture(), slot.fragShadow);
+    encoder->setFragmentSamplerState(metal_->shadowSampler(), slot.fragShadowSampler);
+    encoder->setFragmentTexture(metal_->neutralVolumeTexture(), slot.fragFog);
+    encoder->setFragmentSamplerState(clampLinear, slot.fragFogSampler);
+    encoder->setFragmentTexture(metal_->whiteTexture(), slot.fragRtA);
+    encoder->setFragmentSamplerState(clampLinear, slot.fragRtASampler);
+    encoder->setFragmentTexture(metal_->whiteTexture(), slot.fragRtB);
+    encoder->setFragmentSamplerState(clampLinear, slot.fragRtBSampler);
+    // The Vulkan pipelines cull nothing, so the winding the y flip reverses
+    // (docs/plan-metal.md, 3.6) does not matter here.
+    encoder->setCullMode(MTL::CullModeNone);
+
+    struct MetalSink {
+        CharacterRenderer& r;
+        MTL::RenderCommandEncoder* encoder;
+        uint32_t ringSlot;
+
+        bool hasGeometry(const M2ModelGPU& gpuModel) const {
+            return gpuModel.mtlVertexBuffer != nullptr && gpuModel.mtlIndexBuffer != nullptr;
+        }
+
+        void bindPipeline(PipelineKind kind) {
+            encoder->setRenderPipelineState(r.metalPipelines_[static_cast<size_t>(kind)]);
+            // Depth writes as the Vulkan pipelines have them.
+            const bool write = kind == PipelineKind::Opaque || kind == PipelineKind::AlphaTest ||
+                               kind == PipelineKind::Translucent;
+            encoder->setDepthStencilState(r.metal_->depthState(true, write));
+        }
+
+        bool bindInstance(CharacterInstance& instance, const M2ModelGPU& gpuModel,
+                          const glm::mat4& modelMat) {
+            encoder->setVertexBytes(&modelMat, sizeof(glm::mat4), r.mtlSlots_.vertPush);
+
+            const int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), MAX_BONES);
+            MTL::Buffer*& bones = instance.mtlBones[ringSlot];
+            if (!bones) {
+                bones = r.metal_->newBuffer(nullptr, MAX_BONES * sizeof(glm::mat4));
+                if (!bones) return false;
+                // Identity everywhere, so an index past the skeleton skins to
+                // nothing rather than to garbage - as prepareRender does.
+                auto* dst = static_cast<glm::mat4*>(bones->contents());
+                for (int j = 0; j < MAX_BONES; j++) dst[j] = glm::mat4(1.0f);
+            }
+            if (numBones > 0) {
+                std::memcpy(bones->contents(), instance.boneMatrices.data(),
+                            static_cast<size_t>(numBones) * sizeof(glm::mat4));
+            }
+            encoder->setVertexBuffer(bones, 0, r.mtlSlots_.vertBones);
+            encoder->setVertexBuffer(gpuModel.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+            currentIndexBuffer = gpuModel.mtlIndexBuffer;
+            return true;
+        }
+
+        void drawBatch(const CharMaterialUBO& matData, VkTexture* bindTex, VkTexture* normalMap,
+                       std::optional<float> depthBias, uint32_t indexCount, uint32_t indexStart) {
+            // The same fallbacks getMaterialDescriptorSet makes.
+            if (!bindTex || !bindTex->isValid()) bindTex = r.whiteTexture_.get();
+            if (!normalMap || !normalMap->isValid()) normalMap = r.flatNormalTexture_.get();
+            if (!bindTex || !bindTex->isValid() || !normalMap || !normalMap->isValid()) return;
+
+            const MetalSlots& slot = r.mtlSlots_;
+            encoder->setFragmentBytes(&matData, sizeof(CharMaterialUBO), slot.fragMaterial);
+            encoder->setFragmentTexture(bindTex->metalTexture(), slot.fragDiffuse);
+            encoder->setFragmentSamplerState(bindTex->metalSampler(), slot.fragDiffuseSampler);
+            encoder->setFragmentTexture(normalMap->metalTexture(), slot.fragNormal);
+            encoder->setFragmentSamplerState(normalMap->metalSampler(), slot.fragNormalSampler);
+            if (depthBias) encoder->setDepthBias(*depthBias, 0.0f, 0.0f);
+            encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, indexCount,
+                                           MTL::IndexTypeUInt16, currentIndexBuffer,
+                                           static_cast<NS::UInteger>(indexStart) * sizeof(uint16_t));
+        }
+
+        MTL::Buffer* currentIndexBuffer = nullptr;
+    };
+    MetalSink sink{*this, encoder,
+                   static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize)};
+    drawInstances(sink, camera);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee
