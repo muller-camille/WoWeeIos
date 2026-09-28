@@ -6,10 +6,15 @@
 
 struct SDL_Window;
 
+#ifdef WOWEE_METAL
+namespace MTL { class Texture; }
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 class LoadingScreen {
 public:
@@ -36,12 +41,21 @@ public:
 
     // Must be set before initialize() for Vulkan texture upload
     void setVkContext(VkContext* ctx) { vkCtx = ctx; }
+#ifdef WOWEE_METAL
+    /// The Metal build's, in place of the Vulkan context. Before initialize(),
+    /// which loads the picture.
+    void setMetalContext(MetalContext* ctx) { metal_ = ctx; }
+#endif
     void setSDLWindow(SDL_Window* win) { sdlWindow = win; }
 
 private:
     bool loadImage(const std::string& path);
 
     VkContext* vkCtx = nullptr;
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::Texture* bgMetal_ = nullptr;
+#endif
     SDL_Window* sdlWindow = nullptr;
 
     // Vulkan texture for background image

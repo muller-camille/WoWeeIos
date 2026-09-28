@@ -60,6 +60,11 @@
 #include "pipeline/terrain_mesh.hpp"
 #include "core/application.hpp"
 #include "core/window.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "ui/ui_manager.hpp"
+#endif
 #include "core/logger.hpp"
 #include "game/world.hpp"
 #include "game/zone_manager.hpp"
@@ -693,12 +698,17 @@ void Renderer::updatePerFrameUBO() {
     }
 
     // Copy to current frame's mapped UBO
+    // The Metal build copies currentFrameData into its own ring.
+    if (!vkCtx) return;
     uint32_t frame = vkCtx->getCurrentFrame();
     std::memcpy(perFrameUBOMapped[frame], &currentFrameData, sizeof(GPUPerFrameData));
 }
 
 bool Renderer::initialize(core::Window* win) {
     window = win;
+#ifdef WOWEE_METAL
+    if (win->getMetalContext()) return initializeMetal();
+#endif
     vkCtx = win->getVkContext();
     deferredWorldInitEnabled_ = core::envFlagEnabled("WOWEE_DEFER_WORLD_SYSTEMS", true);
     LOG_INFO("Initializing renderer (Vulkan)");
@@ -1033,6 +1043,11 @@ void Renderer::shutdown() {
     renderGraph_.reset();
 
     destroyPerFrameResources();
+#ifdef WOWEE_METAL
+    if (mtlDepth_) { mtlDepth_->release(); mtlDepth_ = nullptr; }
+    if (mtlFrameData_) { mtlFrameData_->release(); mtlFrameData_ = nullptr; }
+    metal_ = nullptr;
+#endif
 
     zoneManager.reset();
 
@@ -1192,6 +1207,14 @@ void Renderer::applyMsaaChange() {
 
 void Renderer::beginFrame() {
     ZoneScopedN("Renderer::beginFrame");
+#ifdef WOWEE_METAL
+    // Nothing to acquire yet: the drawable is taken in endFrame, once the
+    // interface has been laid out, so it is held for as short a time as can be.
+    if (metal_) {
+        mtlWorldRequested_ = false;
+        return;
+    }
+#endif
     if (!vkCtx) return;
     if (vkCtx->isDeviceLost()) return;
 
@@ -1410,6 +1433,12 @@ void Renderer::beginFrame() {
 
 void Renderer::endFrame() {
     ZoneScopedN("Renderer::endFrame");
+#ifdef WOWEE_METAL
+    if (metal_) {
+        renderFrameMetal();
+        return;
+    }
+#endif
     if (!vkCtx || currentCmd == VK_NULL_HANDLE) return;
 
     logViewDistanceDiag();
@@ -2858,6 +2887,15 @@ void Renderer::updateGrassPopulation() {
 void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
     ZoneScopedN("Renderer::renderWorld");
     (void)world;
+#ifdef WOWEE_METAL
+    // Asked for here, drawn in endFrame (renderFrameMetal), under the interface.
+    if (metal_) {
+        mtlWorldRequested_ = true;
+        worldDrawnThisFrame_ = true;
+        ghostMode_ = (gameHandler && gameHandler->isPlayerGhost());
+        return;
+    }
+#endif
 
     // Guard against null command buffer (e.g. after VK_ERROR_DEVICE_LOST)
     if (currentCmd == VK_NULL_HANDLE) return;
@@ -3645,114 +3683,131 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
     }
 
     // Create terrain renderer if not already created
-    if (!terrainRenderer) {
-        terrainRenderer = std::make_unique<TerrainRenderer>();
-        if (!terrainRenderer->initialize(vkCtx, perFrameSetLayout, assetManager)) {
-            LOG_ERROR("Failed to initialize terrain renderer");
-            terrainRenderer.reset();
-            return false;
+#ifdef WOWEE_METAL
+    // Only what has been ported (docs/plan-metal.md): the characters. The
+    // terrain, water, maps, doodads and buildings come with M3; the terrain
+    // manager below still runs without a terrain renderer, for its heights.
+    if (metal_ && !characterRenderer) {
+        characterRenderer = std::make_unique<CharacterRenderer>();
+        if (!characterRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
+                                                MTL::PixelFormatDepth32Float, 1,
+                                                /*offscreenPreview=*/false)) {
+            LOG_ERROR("CharacterRenderer (Metal) initialization failed");
         }
-        terrainRenderer->setRtScene(rtScene_.get());
-        if (shadowRenderPass != VK_NULL_HANDLE) {
+    }
+    if (!metal_) {
+#else
+    {
+#endif
+        if (!terrainRenderer) {
+            terrainRenderer = std::make_unique<TerrainRenderer>();
+            if (!terrainRenderer->initialize(vkCtx, perFrameSetLayout, assetManager)) {
+                LOG_ERROR("Failed to initialize terrain renderer");
+                terrainRenderer.reset();
+                return false;
+            }
+            terrainRenderer->setRtScene(rtScene_.get());
+            if (shadowRenderPass != VK_NULL_HANDLE) {
+                terrainRenderer->initializeShadow(shadowRenderPass);
+            }
+        } else if (!terrainRenderer->hasShadowPipeline() && shadowRenderPass != VK_NULL_HANDLE) {
             terrainRenderer->initializeShadow(shadowRenderPass);
         }
-    } else if (!terrainRenderer->hasShadowPipeline() && shadowRenderPass != VK_NULL_HANDLE) {
-        terrainRenderer->initializeShadow(shadowRenderPass);
-    }
 
-    // Create water renderer if not already created
-    if (!waterRenderer) {
-        waterRenderer = std::make_unique<WaterRenderer>();
-        if (!waterRenderer->initialize(vkCtx, perFrameSetLayout)) {
-            LOG_ERROR("Failed to initialize water renderer");
-            waterRenderer.reset();
+        // Create water renderer if not already created
+        if (!waterRenderer) {
+            waterRenderer = std::make_unique<WaterRenderer>();
+            if (!waterRenderer->initialize(vkCtx, perFrameSetLayout)) {
+                LOG_ERROR("Failed to initialize water renderer");
+                waterRenderer.reset();
+            }
         }
-    }
 
-    // Create minimap if not already created
-    if (!minimap) {
-        minimap = std::make_unique<Minimap>();
-        if (!minimap->initialize(vkCtx, perFrameSetLayout)) {
-            LOG_ERROR("Failed to initialize minimap");
-            minimap.reset();
+        // Create minimap if not already created
+        if (!minimap) {
+            minimap = std::make_unique<Minimap>();
+            if (!minimap->initialize(vkCtx, perFrameSetLayout)) {
+                LOG_ERROR("Failed to initialize minimap");
+                minimap.reset();
+            }
         }
-    }
 
-    // Create world map if not already created
-    if (!worldMap) {
-        worldMap = std::make_unique<WorldMap>();
-        if (!worldMap->initialize(vkCtx, assetManager)) {
-            LOG_ERROR("Failed to initialize world map");
-            worldMap.reset();
+        // Create world map if not already created
+        if (!worldMap) {
+            worldMap = std::make_unique<WorldMap>();
+            if (!worldMap->initialize(vkCtx, assetManager)) {
+                LOG_ERROR("Failed to initialize world map");
+                worldMap.reset();
+            }
         }
-    }
 
-    // Create M2, WMO, and Character renderers
-    if (!m2Renderer) {
-        m2Renderer = std::make_unique<M2Renderer>();
-        if (!m2Renderer->initialize(vkCtx, perFrameSetLayout, assetManager))
-            LOG_ERROR("M2Renderer initialization failed");
-        m2Renderer->setRtScene(rtScene_.get());
-        if (swimEffects) {
-            swimEffects->setM2Renderer(m2Renderer.get());
+        // Create M2, WMO, and Character renderers
+        if (!m2Renderer) {
+            m2Renderer = std::make_unique<M2Renderer>();
+            if (!m2Renderer->initialize(vkCtx, perFrameSetLayout, assetManager))
+                LOG_ERROR("M2Renderer initialization failed");
+            m2Renderer->setRtScene(rtScene_.get());
+            if (swimEffects) {
+                swimEffects->setM2Renderer(m2Renderer.get());
+            }
+            // Initialize SpellVisualSystem once M2Renderer is available (§4.4)
+            if (!spellVisualSystem_) {
+                spellVisualSystem_ = std::make_unique<SpellVisualSystem>();
+                spellVisualSystem_->initialize(m2Renderer.get(), this);
+            }
         }
-        // Initialize SpellVisualSystem once M2Renderer is available (§4.4)
-        if (!spellVisualSystem_) {
-            spellVisualSystem_ = std::make_unique<SpellVisualSystem>();
-            spellVisualSystem_->initialize(m2Renderer.get(), this);
+
+        // The original client's skies are camera-centered M2 models selected
+        // through LightParams and LightSkybox, on every map that names one - not
+        // Outland alone, which is where this was built and where it stayed. The
+        // lookup was opened to all maps and this was not, so it went on doing
+        // nothing anywhere else: without the renderer there is nothing to draw
+        // into.
+        //
+        // It keeps its own no-depth renderer so the sky draws behind terrain and
+        // never enters world collision.
+        if (!skyboxModelRenderer_) {
+            skyboxModelRenderer_ = std::make_unique<M2Renderer>();
+            skyboxModelRenderer_->setSkyMode(true);
+            if (!skyboxModelRenderer_->initialize(vkCtx, perFrameSetLayout, assetManager)) {
+                LOG_WARNING("Sky M2 renderer initialization failed");
+                skyboxModelRenderer_.reset();
+            }
         }
-    }
 
-    // The original client's skies are camera-centered M2 models selected
-    // through LightParams and LightSkybox, on every map that names one - not
-    // Outland alone, which is where this was built and where it stayed. The
-    // lookup was opened to all maps and this was not, so it went on doing
-    // nothing anywhere else: without the renderer there is nothing to draw
-    // into.
-    //
-    // It keeps its own no-depth renderer so the sky draws behind terrain and
-    // never enters world collision.
-    if (!skyboxModelRenderer_) {
-        skyboxModelRenderer_ = std::make_unique<M2Renderer>();
-        skyboxModelRenderer_->setSkyMode(true);
-        if (!skyboxModelRenderer_->initialize(vkCtx, perFrameSetLayout, assetManager)) {
-            LOG_WARNING("Sky M2 renderer initialization failed");
-            skyboxModelRenderer_.reset();
+        // HiZ occlusion culling disabled - the pyramid build + blocking fence was
+        // the main frame-rate bottleneck.  GPU frustum culling alone provides good
+        // draw-call reduction without the per-frame GPU stall.  HiZ can be re-
+        // enabled once the pyramid build is moved to an async compute queue.
+        if (!wmoRenderer) {
+            wmoRenderer = std::make_unique<WMORenderer>();
+            if (!wmoRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
+                LOG_ERROR("WMORenderer initialization failed");
+            wmoRenderer->setRtScene(rtScene_.get());
+            if (shadowRenderPass != VK_NULL_HANDLE) {
+                if (!wmoRenderer->initializeShadow(shadowRenderPass))
+                    LOG_WARNING("WMO shadow pipeline initialization failed");
+            }
         }
-    }
 
-    // HiZ occlusion culling disabled - the pyramid build + blocking fence was
-    // the main frame-rate bottleneck.  GPU frustum culling alone provides good
-    // draw-call reduction without the per-frame GPU stall.  HiZ can be re-
-    // enabled once the pyramid build is moved to an async compute queue.
-    if (!wmoRenderer) {
-        wmoRenderer = std::make_unique<WMORenderer>();
-        if (!wmoRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
-            LOG_ERROR("WMORenderer initialization failed");
-        wmoRenderer->setRtScene(rtScene_.get());
-        if (shadowRenderPass != VK_NULL_HANDLE) {
-            if (!wmoRenderer->initializeShadow(shadowRenderPass))
-                LOG_WARNING("WMO shadow pipeline initialization failed");
+        // Renderer components can be recreated during map transitions. Restore the
+        // configured view distance instead of falling back to their defaults.
+        setViewDistance(viewDistance_);
+        setSharpStars(sharpStars_);
+
+        // Initialize shadow pipelines for M2 if not yet done
+        if (m2Renderer && shadowRenderPass != VK_NULL_HANDLE && !m2Renderer->hasShadowPipeline()) {
+            if (!m2Renderer->initializeShadow(shadowRenderPass))
+                LOG_WARNING("M2 shadow pipeline initialization failed");
         }
-    }
-
-    // Renderer components can be recreated during map transitions. Restore the
-    // configured view distance instead of falling back to their defaults.
-    setViewDistance(viewDistance_);
-    setSharpStars(sharpStars_);
-
-    // Initialize shadow pipelines for M2 if not yet done
-    if (m2Renderer && shadowRenderPass != VK_NULL_HANDLE && !m2Renderer->hasShadowPipeline()) {
-        if (!m2Renderer->initializeShadow(shadowRenderPass))
-            LOG_WARNING("M2 shadow pipeline initialization failed");
-    }
-    if (!characterRenderer) {
-        characterRenderer = std::make_unique<CharacterRenderer>();
-        if (!characterRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
-            LOG_ERROR("CharacterRenderer initialization failed");
-        if (shadowRenderPass != VK_NULL_HANDLE) {
-            if (!characterRenderer->initializeShadow(shadowRenderPass))
-                LOG_WARNING("Character shadow pipeline initialization failed");
+        if (!characterRenderer) {
+            characterRenderer = std::make_unique<CharacterRenderer>();
+            if (!characterRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
+                LOG_ERROR("CharacterRenderer initialization failed");
+            if (shadowRenderPass != VK_NULL_HANDLE) {
+                if (!characterRenderer->initializeShadow(shadowRenderPass))
+                    LOG_WARNING("Character shadow pipeline initialization failed");
+            }
         }
     }
 
@@ -4837,6 +4892,105 @@ void Renderer::buildFrameGraph(game::GameHandler* gameHandler) {
 
     renderGraph_->compile();
 }
+
+#ifdef WOWEE_METAL
+bool Renderer::initializeMetal() {
+    metal_ = window->getMetalContext();
+    deferredWorldInitEnabled_ = core::envFlagEnabled("WOWEE_DEFER_WORLD_SYSTEMS", true);
+    LOG_INFO("Initializing renderer (Metal)");
+
+    // As initialize() makes them: the camera and its controller, the HUD, the
+    // lighting and the zones. The Vulkan sub-renderers are not made at all;
+    // everything that reaches for one checks for it first.
+    camera = std::make_unique<Camera>();
+    camera->setPosition(glm::vec3(-8900.0f, -170.0f, 150.0f));
+    camera->setRotation(0.0f, -5.0f);
+    camera->setAspectRatio(window->getAspectRatio());
+    camera->setFov(60.0f);
+    cameraController = std::make_unique<CameraController>(camera.get());
+    cameraController->setUseWoWSpeed(true);
+    cameraController->setMouseSensitivity(0.15f);
+    performanceHUD = std::make_unique<PerformanceHUD>();
+    performanceHUD->setPosition(PerformanceHUD::Position::TOP_LEFT);
+
+    // No shadow map to sample until shadows are ported (M4).
+    shadowsEnabled = false;
+
+    lightingManager = std::make_unique<LightingManager>();
+    auto* assetManager = core::Application::getInstance().getAssetManager();
+    zoneManager = std::make_unique<game::ZoneManager>();
+    zoneManager->initialize();
+    if (assetManager) zoneManager->enrichFromDBC(assetManager);
+
+    const size_t stride = (sizeof(GPUPerFrameData) + 255) & ~size_t(255);
+    mtlFrameData_ = metal_->newBuffer(nullptr, MetalContext::kRingSize * stride);
+    if (!mtlFrameData_) {
+        LOG_ERROR("Renderer (Metal): could not make the per-frame buffer");
+        return false;
+    }
+
+    LOG_INFO("Renderer initialized (Metal)");
+    return true;
+}
+
+void Renderer::renderFrameMetal() {
+    if (!metal_->beginFrame()) {
+        // In the background: the loop keeps reading the socket, at a pace
+        // that does not spend a core on nothing.
+        if (metal_->isPresentationPaused()) SDL_Delay(50);
+        return;
+    }
+
+    if (mtlWorldRequested_ && camera) {
+        updatePerFrameUBO();
+        const size_t stride = (sizeof(GPUPerFrameData) + 255) & ~size_t(255);
+        const size_t offset = (metal_->frameNumber() % MetalContext::kRingSize) * stride;
+        std::memcpy(static_cast<char*>(mtlFrameData_->contents()) + offset, &currentFrameData,
+                    sizeof(GPUPerFrameData));
+
+        // The depth the world is drawn against: only needed while the pass
+        // runs, so it lives in tile memory.
+        const uint32_t w = metal_->drawableWidth();
+        const uint32_t h = metal_->drawableHeight();
+        if (!mtlDepth_ || mtlDepthWidth_ != w || mtlDepthHeight_ != h) {
+            if (mtlDepth_) mtlDepth_->release();
+            auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+                MTL::PixelFormatDepth32Float, w, h, false);
+            desc->setUsage(MTL::TextureUsageRenderTarget);
+            desc->setStorageMode(MTL::StorageModeMemoryless);
+            mtlDepth_ = metal_->getDevice()->newTexture(desc);
+            mtlDepthWidth_ = w;
+            mtlDepthHeight_ = h;
+        }
+
+        MTL::RenderPassDescriptor* pass = metal_->renderPass();
+        auto* color = pass->colorAttachments()->object(0);
+        // No sky yet: the fog colour stands in for it, which is the colour the
+        // distance fades to anyway.
+        const glm::vec4& fog = currentFrameData.fogColor;
+        color->setClearColor(MTL::ClearColor::Make(fog.r, fog.g, fog.b, 1.0));
+        pass->depthAttachment()->setTexture(mtlDepth_);
+        pass->depthAttachment()->setLoadAction(MTL::LoadActionClear);
+        pass->depthAttachment()->setClearDepth(1.0);
+        pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
+
+        MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
+        if (characterRenderer) {
+            characterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
+        encoder->endEncoding();
+
+        // The interface goes on top of what is there, with no depth.
+        color->setLoadAction(MTL::LoadActionLoad);
+        pass->depthAttachment()->setTexture(nullptr);
+    }
+
+    if (auto* ui = core::Application::getInstance().getUIManager()) {
+        ui->drawToMetal(*metal_);
+    }
+    metal_->endFrame();
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

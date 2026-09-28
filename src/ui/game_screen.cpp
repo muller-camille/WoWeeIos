@@ -612,11 +612,13 @@ void GameScreen::render(game::GameHandler& gameHandler) {
             // cannot carry FSR 3, setFSR2Enabled refuses it by name and says so.
             settingsPanel_.pendingAMDFramegen = false;
 #endif
-            renderer->getPostProcessPipeline()->setFSRQuality(
-                fsrScaleForChoice(settingsPanel_.pendingFSRQuality));
-            renderer->getPostProcessPipeline()->setFSRSharpness(settingsPanel_.pendingFSRSharpness);
-            renderer->getPostProcessPipeline()->setFSR2DebugTuning(settingsPanel_.pendingFSR2JitterSign, settingsPanel_.pendingFSR2MotionVecScaleX, settingsPanel_.pendingFSR2MotionVecScaleY);
-            renderer->getPostProcessPipeline()->setAmdFsr3FramegenEnabled(settingsPanel_.pendingAMDFramegen);
+            // No post-processing in the Metal build yet (docs/plan-metal.md, M4).
+            if (auto* post = renderer->getPostProcessPipeline()) {
+                post->setFSRQuality(fsrScaleForChoice(settingsPanel_.pendingFSRQuality));
+                post->setFSRSharpness(settingsPanel_.pendingFSRSharpness);
+                post->setFSR2DebugTuning(settingsPanel_.pendingFSR2JitterSign, settingsPanel_.pendingFSR2MotionVecScaleX, settingsPanel_.pendingFSR2MotionVecScaleY);
+                post->setAmdFsr3FramegenEnabled(settingsPanel_.pendingAMDFramegen);
+            }
             int effectiveMode = settingsPanel_.pendingUpscalingMode;
 
             // Defer FSR2/FSR3 activation until fully in-world to avoid

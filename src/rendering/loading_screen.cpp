@@ -3,6 +3,12 @@
 #include <SDL3/SDL_vulkan.h>
 #include "rendering/vk_context.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "core/application.hpp"
+#include "rendering/metal/metal_context.hpp"
+#include "ui/ui_manager.hpp"
+#endif
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_impl_vulkan.h>
@@ -34,6 +40,12 @@ bool LoadingScreen::initialize() {
 }
 
 void LoadingScreen::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_ && bgMetal_) {
+        metal_->releaseTexture(bgMetal_);
+        bgDescriptorSet = VK_NULL_HANDLE;
+    }
+#endif
     if (vkCtx && bgImage) {
         VkDevice device = vkCtx->getDevice();
         vkDeviceWaitIdle(device);
@@ -85,6 +97,25 @@ static uint32_t findMemoryType(VkPhysicalDevice physDevice, uint32_t typeFilter,
 }
 
 bool LoadingScreen::loadImage(const std::string& path) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (bgMetal_) metal_->releaseTexture(bgMetal_);
+        bgDescriptorSet = VK_NULL_HANDLE;
+        int channels = 0;
+        stbi_set_flip_vertically_on_load(false);
+        unsigned char* data = stbi_load(path.c_str(), &imageWidth, &imageHeight, &channels, 4);
+        if (!data) {
+            LOG_ERROR("Failed to load loading screen image: ", path);
+            return false;
+        }
+        bgMetal_ = metal_->uploadTexture(data, static_cast<uint32_t>(imageWidth),
+                                         static_cast<uint32_t>(imageHeight));
+        stbi_image_free(data);
+        // The handle the backdrop draws, as on Vulkan: the texture itself here.
+        bgDescriptorSet = reinterpret_cast<VkDescriptorSet>(bgMetal_);
+        return bgMetal_ != nullptr;
+    }
+#endif
     if (!vkCtx) {
         LOG_WARNING("No VkContext for loading screen image");
         return false;
@@ -347,6 +378,9 @@ void LoadingScreen::render() {
     float screenW = io.DisplaySize.x;
     float screenH = io.DisplaySize.y;
 
+#ifdef WOWEE_METAL
+    if (!metal_)
+#endif
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
@@ -423,6 +457,18 @@ void LoadingScreen::render() {
 
     ImGui::End();
     ImGui::Render();
+
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (metal_->beginFrame()) {
+            if (auto* ui = core::Application::getInstance().getUIManager()) {
+                ui->drawToMetal(*metal_);
+            }
+            metal_->endFrame();
+        }
+        return;
+    }
+#endif
 
     // Submit the frame to Vulkan (loading screen runs outside the main render loop)
     if (vkCtx) {

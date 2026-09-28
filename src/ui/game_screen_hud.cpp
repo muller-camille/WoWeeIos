@@ -1716,7 +1716,8 @@ void GameScreen::setGamma(float gamma) {
     const bool changed = (stored != settingsPanel_.pendingBrightness);
     settingsPanel_.pendingBrightness = stored;
     if (auto* renderer = services_.renderer) {
-        renderer->getPostProcessPipeline()->setBrightness(clamped);
+        // None in the Metal build yet (docs/plan-metal.md, M4).
+        if (auto* post = renderer->getPostProcessPipeline()) post->setBrightness(clamped);
     }
     if (changed) saveSettings();
 }

@@ -199,7 +199,7 @@ void PerformanceHUD::render(const Renderer* renderer, const Camera* camera) {
         }
 
         // FSR info
-        if (renderer->getPostProcessPipeline()->isFSREnabled()) {
+        if (renderer->getPostProcessPipeline() && renderer->getPostProcessPipeline()->isFSREnabled()) {
             ImGui::TextColored(colors::kGreen, "FSR 1.0: ON");
             auto* ctx = renderer->getVkContext();
             if (ctx) {
@@ -210,7 +210,7 @@ void PerformanceHUD::render(const Renderer* renderer, const Camera* camera) {
                 ImGui::Text("  %ux%u -> %ux%u (%.0f%%)", iw, ih, ext.width, ext.height, sf * 100.0f);
             }
         }
-        if (renderer->getPostProcessPipeline()->isFSR2Enabled()) {
+        if (renderer->getPostProcessPipeline() && renderer->getPostProcessPipeline()->isFSR2Enabled()) {
             ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.0f, 1.0f), "FSR 3 Upscale: ON");
             ImGui::Text("  JitterSign=%.2f", renderer->getPostProcessPipeline()->getFSR2JitterSign());
             const bool fgEnabled = renderer->getPostProcessPipeline()->isAmdFsr3FramegenEnabled();
@@ -229,7 +229,7 @@ void PerformanceHUD::render(const Renderer* renderer, const Camera* camera) {
             ImGui::Text("  Upscale Dispatches: %zu", renderer->getPostProcessPipeline()->getAmdFsr3UpscaleDispatchCount());
             ImGui::Text("  FG Fallbacks: %zu", renderer->getPostProcessPipeline()->getAmdFsr3FallbackCount());
         }
-        if (renderer->getPostProcessPipeline()->isFXAAEnabled()) {
+        if (renderer->getPostProcessPipeline() && renderer->getPostProcessPipeline()->isFXAAEnabled()) {
             if (renderer->getPostProcessPipeline()->isFSR2Enabled()) {
                 ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.8f, 1.0f), "FXAA: ON (FSR3+FXAA combined)");
             } else {

@@ -27,9 +27,13 @@
 #include "pipeline/grass_population.hpp"
 #include "pipeline/grass_profile.hpp"
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class Texture; }
+#endif
+
 namespace wowee {
 namespace core { class Window; }
-namespace rendering { class VkContext; }
+namespace rendering { class VkContext; class MetalContext; }
 namespace game { class World; class ZoneManager; class GameHandler; }
 namespace audio { class AudioCoordinator; }
 namespace pipeline { class AssetManager; }
@@ -469,6 +473,22 @@ private:
     std::unique_ptr<OverlaySystem> overlaySystem_;
 
 
+
+#ifdef WOWEE_METAL
+    // The Metal build's frame (docs/plan-metal.md). The renderer runs there
+    // with only what has been ported: the camera, the managers, the character
+    // renderer, and the terrain manager for its ground heights. Every Vulkan
+    // sub-renderer stays null, as the rest of the renderer already allows.
+    bool initializeMetal();
+    /// The world, then the interface, onto the drawable. Called by endFrame.
+    void renderFrameMetal();
+    MetalContext* metal_ = nullptr;
+    MTL::Texture* mtlDepth_ = nullptr;      // memoryless, drawable-sized
+    uint32_t mtlDepthWidth_ = 0;
+    uint32_t mtlDepthHeight_ = 0;
+    MTL::Buffer* mtlFrameData_ = nullptr;   // MetalContext::kRingSize GPUPerFrameData
+    bool mtlWorldRequested_ = false;        // renderWorld was called this frame
+#endif
 
     // Vulkan frame state
     VkContext* vkCtx = nullptr;

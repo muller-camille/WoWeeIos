@@ -730,6 +730,9 @@ void WorldLoader::loadOnlineWorldTerrain(uint32_t mapId, float x, float y, float
     // --- Loading screen for online mode ---
     rendering::LoadingScreen loadingScreen;
     loadingScreen.setVkContext(window_->getVkContext());
+#ifdef WOWEE_METAL
+    loadingScreen.setMetalContext(window_->getMetalContext());
+#endif
     loadingScreen.setSDLWindow(window_->getSDLWindow());
     bool loadingScreenOk = loadingScreen.initialize();
 

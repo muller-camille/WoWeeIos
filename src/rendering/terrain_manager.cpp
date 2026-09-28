@@ -158,9 +158,11 @@ bool TerrainManager::initialize(pipeline::AssetManager* assets, TerrainRenderer*
         return false;
     }
 
+    // No renderer is allowed: the Metal build streams tiles for their heights
+    // - what the camera and the character stand on - before the terrain is
+    // drawn there (docs/plan-metal.md, M3). Everything below asks first.
     if (!terrainRenderer) {
-        LOG_ERROR("Terrain renderer is null");
-        return false;
+        LOG_WARNING("Terrain manager without a terrain renderer: heights only");
     }
 
     // Set dynamic tile cache budget.
@@ -981,7 +983,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
         // Upload pre-loaded textures (once)
         if (!ft.terrainPreloaded) {
             LOG_DEBUG("Finalizing tile [", x, ",", y, "] (incremental)");
-            if (!pending->preloadedTextures.empty()) {
+            if (!pending->preloadedTextures.empty() && terrainRenderer) {
                 terrainRenderer->uploadPreloadedTextures(pending->preloadedTextures);
             }
             ft.terrainPreloaded = true;
@@ -1001,7 +1003,7 @@ bool TerrainManager::advanceFinalization(FinalizingTile& ft) {
                 ft.phase = FinalizationPhase::DONE;
                 return true;
             }
-            bool allDone = terrainRenderer->loadTerrainIncremental(
+            bool allDone = !terrainRenderer || terrainRenderer->loadTerrainIncremental(
                 pending->mesh, pending->terrain.textures, x, y,
                 ft.terrainChunkNext, 16);
             if (!allDone) {

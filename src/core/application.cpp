@@ -321,18 +321,15 @@ bool Application::initialize() {
         }
     }
 
-#ifndef WOWEE_METAL
     // Create renderer
     //
-    // Not in the Metal build yet: until the world's renderers are ported (M2,
-    // M3 of docs/plan-metal.md) it draws the interface and nothing else, and
-    // everything past this point already allows for there being no renderer.
+    // In the Metal build too, where it has only what has been ported so far
+    // (docs/plan-metal.md) and draws the rest of the world as nothing.
     renderer = std::make_unique<rendering::Renderer>();
     if (!renderer->initialize(window.get())) {
         LOG_FATAL("Failed to initialize renderer");
         return false;
     }
-#endif
 
     // Create and initialize audio coordinator (owns all audio managers)
     audioCoordinator_ = std::make_unique<audio::AudioCoordinator>();
@@ -4214,8 +4211,11 @@ void Application::render() {
 #endif
 
 #ifdef WOWEE_METAL
-    renderInterfaceOnly();
-    return;
+    // Only if the renderer could not be made; it draws the frame otherwise.
+    if (!renderer) {
+        renderInterfaceOnly();
+        return;
+    }
 #endif
 
     if (!renderer) {
