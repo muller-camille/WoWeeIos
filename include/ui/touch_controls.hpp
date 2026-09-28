@@ -35,14 +35,20 @@ class TouchControls {
 public:
     TouchControls() { buttonFinger_.fill(kNoFinger); }
 
-    /// The stick and the pinch only apply in the world. On the login and
-    /// character screens every touch is left to be a mouse.
+    /// The stick only applies in the world. On the login and character
+    /// screens every touch is left to be a mouse, but for the pinch, which
+    /// is the wheel everywhere: it zooms the character preview there.
     void setInWorld(bool inWorld);
     [[nodiscard]] bool isInWorld() const { return inWorld_; }
 
     /// True while a thumb is on the stick, which is when the camera has to be
     /// held still.
     [[nodiscard]] bool isStickHeld() const { return stickFingerId_ != kNoFinger; }
+
+    /// True while two fingers are down as a pinch. The finger SDL makes the
+    /// mouse of is one of them, so anything that drags on the mouse - the
+    /// preview's turn - holds off while this is true.
+    [[nodiscard]] bool isPinching() const { return pinching_; }
 
     /// The camera to steer. Without one the look finger does nothing.
     void setCameraController(rendering::CameraController* camera) { camera_ = camera; }
@@ -172,6 +178,10 @@ private:
     /// The button under a point, or -1.
     int buttonAt(float x, float y, float w, float h) const;
     void pressButton(int index, SDL_FingerID finger, bool down);
+    /// Off the world: nothing but the pinch.
+    void handleMenuPinch(const SDL_Event& event, float x, float y);
+    /// A pinch that has moved far enough, sent on as the wheel it stands for.
+    void sendPinchAsWheel(float spacing);
     static void sendKey(SDL_Scancode key, bool down, SDL_WindowID window);
 
     // Which finger holds which button, so the key comes up with the finger.

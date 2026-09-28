@@ -6,6 +6,7 @@
 #include "core/application.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/dbc_layout.hpp"
+#include "ui/touch_controls.hpp"
 #include <imgui.h>
 #include <algorithm>
 
@@ -500,7 +501,8 @@ void CharacterCreateScreen::render(game::GameHandler& /*gameHandler*/) {
 
         // Mouse drag rotation and hover-only wheel zoom on the preview image.
         if (ui_.hover(imgA, imgB)) {
-            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            // Not while two fingers pinch: the mouse is one of them.
+            if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) && !touchControls().isPinching()) {
                 preview_->rotate(ImGui::GetIO().MouseDelta.x * 0.2f);
             }
             if (ImGui::GetIO().MouseWheel != 0.0f) {
@@ -508,7 +510,12 @@ void CharacterCreateScreen::render(game::GameHandler& /*gameHandler*/) {
             }
         }
         ui_.textCentered(page.x0 + previewW * 0.5f, imgB.y + mat + px(4),
-                         "Drag to turn  -  scroll to zoom", smallSize, theme.pencil);
+#ifdef WOWEE_MOBILE
+                         "Drag to turn  -  pinch to zoom",
+#else
+                         "Drag to turn  -  scroll to zoom",
+#endif
+                         smallSize, theme.pencil);
     } else {
         ui_.textCentered(page.x0 + previewW * 0.5f, bodyTop + px(20),
                          "No picture yet.", bodySize, theme.pencil);

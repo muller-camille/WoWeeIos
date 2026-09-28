@@ -81,7 +81,10 @@ void TouchControls::handleEvent(const SDL_Event& event, int windowWidth, int win
         }
     }
 
-    if (!inWorld_) return;
+    if (!inWorld_) {
+        handleMenuPinch(event, x, y);
+        return;
+    }
 
     if (event.type == SDL_EVENT_FINGER_DOWN) {
         // A thumb button or the menu row takes the finger outright, ahead of
@@ -175,7 +178,34 @@ void TouchControls::handleEvent(const SDL_Event& event, int windowWidth, int win
     else return;
 
     if (!pinching_ || pinchA_ == kNoFinger || pinchB_ == kNoFinger) return;
-    const float spacing = std::hypot(pinchAX_ - pinchBX_, pinchAY_ - pinchBY_);
+    sendPinchAsWheel(std::hypot(pinchAX_ - pinchBX_, pinchAY_ - pinchBY_));
+}
+
+void TouchControls::handleMenuPinch(const SDL_Event& event, float x, float y) {
+    const SDL_FingerID id = event.tfinger.fingerID;
+    if (event.type == SDL_EVENT_FINGER_DOWN) {
+        if (pinchA_ == kNoFinger) {
+            pinchA_ = id; pinchAX_ = x; pinchAY_ = y;
+        } else if (pinchB_ == kNoFinger) {
+            pinchB_ = id; pinchBX_ = x; pinchBY_ = y;
+            lastPinchSpacing_ = std::hypot(pinchAX_ - pinchBX_, pinchAY_ - pinchBY_);
+            pinching_ = true;
+        }
+        return;
+    }
+    if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+        if (id == pinchA_) { pinchA_ = kNoFinger; pinching_ = false; }
+        if (id == pinchB_) { pinchB_ = kNoFinger; pinching_ = false; }
+        return;
+    }
+    if (id == pinchA_) { pinchAX_ = x; pinchAY_ = y; }
+    else if (id == pinchB_) { pinchBX_ = x; pinchBY_ = y; }
+    else return;
+    if (!pinching_ || pinchA_ == kNoFinger || pinchB_ == kNoFinger) return;
+    sendPinchAsWheel(std::hypot(pinchAX_ - pinchBX_, pinchAY_ - pinchBY_));
+}
+
+void TouchControls::sendPinchAsWheel(float spacing) {
     const float moved = spacing - lastPinchSpacing_;
     if (std::abs(moved) < kPinchPixelsPerNotch) return;
     lastPinchSpacing_ = spacing;
@@ -186,6 +216,11 @@ void TouchControls::handleEvent(const SDL_Event& event, int windowWidth, int win
     SDL_Event wheel{};
     wheel.type = SDL_EVENT_MOUSE_WHEEL;
     wheel.wheel.timestamp = SDL_GetTicks();
+    // The window, as the other events made here carry: ImGui drops a wheel it
+    // cannot place in one of its windows, which on the character screens -
+    // where the pinch is ImGui's wheel rather than the camera's - was all of
+    // them.
+    wheel.wheel.windowID = windowId_;
     // One float axis in SDL3: the integer y and the precise one were the
     // same measurement at two precisions, and only the finer one survived.
     wheel.wheel.y = moved / kPinchPixelsPerNotch;
