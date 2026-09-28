@@ -1796,6 +1796,48 @@ if(NOT MSVC)
     target_compile_options(wowee PRIVATE $<$<CONFIG:Release>:-fvisibility=hidden -fvisibility-inlines-hidden>)
 endif()
 
+# The Metal renderer's shaders, compiled into the library the app loads with
+# newDefaultLibrary. The MSL is generated from the tracked SPIR-V by
+# tools/metal/convert_shaders.py and tracked too, so this needs only Xcode.
+# Built from the start of the Metal port (docs/plan-metal.md, M0) so a shader
+# SPIRV-Cross translates into something Metal refuses is found at build time,
+# not when the renderer first asks for it.
+if(IOS)
+    file(GLOB WOWEE_METAL_SOURCES CONFIGURE_DEPENDS
+         ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/metal/*.metal)
+    set(WOWEE_METAL_AIR_DIR ${CMAKE_CURRENT_BINARY_DIR}/metal-air)
+    set(WOWEE_METALLIB ${CMAKE_CURRENT_BINARY_DIR}/default.metallib)
+    file(MAKE_DIRECTORY ${WOWEE_METAL_AIR_DIR})
+    set(WOWEE_METAL_AIRS)
+    foreach(_wowee_metal_src ${WOWEE_METAL_SOURCES})
+        # terrain.frag.metal -> terrain.frag.air: NAME_WE would drop both
+        # extensions and give a vertex and a fragment shader the same name.
+        get_filename_component(_wowee_metal_name ${_wowee_metal_src} NAME)
+        string(REGEX REPLACE "\\.metal$" ".air" _wowee_metal_air ${_wowee_metal_name})
+        set(_wowee_metal_air ${WOWEE_METAL_AIR_DIR}/${_wowee_metal_air})
+        add_custom_command(
+            OUTPUT ${_wowee_metal_air}
+            COMMAND xcrun -sdk iphoneos metal -std=metal3.0 -c ${_wowee_metal_src}
+                    -o ${_wowee_metal_air}
+            DEPENDS ${_wowee_metal_src}
+            COMMENT "Compiling Metal: ${_wowee_metal_name}"
+            VERBATIM)
+        list(APPEND WOWEE_METAL_AIRS ${_wowee_metal_air})
+    endforeach()
+    add_custom_command(
+        OUTPUT ${WOWEE_METALLIB}
+        COMMAND xcrun -sdk iphoneos metallib ${WOWEE_METAL_AIRS} -o ${WOWEE_METALLIB}
+        DEPENDS ${WOWEE_METAL_AIRS}
+        COMMENT "Linking default.metallib"
+        VERBATIM)
+    add_custom_target(wowee_metallib DEPENDS ${WOWEE_METALLIB})
+    add_dependencies(wowee wowee_metallib)
+    add_custom_command(TARGET wowee POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${WOWEE_METALLIB} $<TARGET_FILE_DIR:wowee>/default.metallib
+        VERBATIM)
+endif()
+
 # Copy assets next to the executable (runs every build, not just configure).
 # Uses $<TARGET_FILE_DIR:wowee> so MSVC multi-config generators place assets
 # in bin/Debug/ or bin/Release/ alongside the exe, not the common bin/ parent.

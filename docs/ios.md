@@ -10,6 +10,12 @@ linked into the executable, and the touch controls Android already has.
 > see [Memory](#how-it-differs-from-the-other-platforms) - and nothing has been
 > tried on an iPhone yet.
 
+> [!IMPORTANT]
+> **The renderer is being rewritten on Metal**, and this fork will then support
+> iPhone and iPad only. Until that reaches parity the MoltenVK build described
+> here is the one that plays. [plan-metal.md](plan-metal.md) has the plan and
+> where it stands.
+
 ## What you need
 
 - A Mac with Xcode 16 or newer, and CMake 3.28 or newer (`brew install cmake`)

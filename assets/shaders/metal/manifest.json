@@ -1,0 +1,1910 @@
+{
+ "excluded": {
+  "editor_water.frag.spv": "belongs to the desktop world editor",
+  "editor_water.vert.spv": "belongs to the desktop world editor",
+  "fsr2_accumulate.comp.spv": "the temporal upscaler becomes MetalFX",
+  "fsr2_motion.comp.spv": "the temporal upscaler becomes MetalFX",
+  "fsr2_sharpen.frag.spv": "the temporal upscaler becomes MetalFX",
+  "recording_dot.frag.spv": "screen recording needs FFmpeg, which iOS does not have",
+  "rt_filter.comp.spv": "ray traced lighting is not ported",
+  "rt_prepare.comp.spv": "ray traced lighting is not ported",
+  "rt_prepare_ms.comp.spv": "ray traced lighting is not ported",
+  "rt_temporal.comp.spv": "ray traced lighting is not ported",
+  "rt_trace.comp.spv": "ray traced lighting is not ported",
+  "rt_trace_hw.comp.spv": "ray traced lighting is not ported"
+ },
+ "functions": {
+  "basic_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "buffer": 0,
+     "set": 1,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "basic.frag.metal",
+   "stage": "fragment"
+  },
+  "basic_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "basic.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec3"
+    },
+    {
+     "location": 2,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "celestial_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "celestial.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "celestial_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "celestial.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "character_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "sampler": 5,
+     "set": 0,
+     "texture": 5,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 3,
+     "set": 0,
+     "texture": 3,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 4,
+     "sampler": 1,
+     "set": 0,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 0,
+     "sampler": 4,
+     "set": 1,
+     "texture": 4,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 2,
+     "set": 1,
+     "texture": 2,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "character.frag.metal",
+   "stage": "fragment"
+  },
+  "character_shadow_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "character_shadow.frag.metal",
+   "stage": "fragment"
+  },
+  "character_shadow_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 1,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "character_shadow.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec4"
+    },
+    {
+     "location": 2,
+     "type": "uvec4"
+    },
+    {
+     "location": 3,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "character_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 2,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 2,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 3,
+   "file": "character.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec4"
+    },
+    {
+     "location": 2,
+     "type": "uvec4"
+    },
+    {
+     "location": 3,
+     "type": "vec3"
+    },
+    {
+     "location": 4,
+     "type": "vec2"
+    },
+    {
+     "location": 5,
+     "type": "vec4"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "charge_dust_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "charge_dust.frag.metal",
+   "stage": "fragment"
+  },
+  "charge_dust_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "charge_dust.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "charge_ribbon_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "charge_ribbon.frag.metal",
+   "stage": "fragment"
+  },
+  "charge_ribbon_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "charge_ribbon.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    },
+    {
+     "location": 3,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "clouds_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "clouds.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "clouds_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "clouds.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "footprint_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "footprint.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "footprint_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "footprint.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "fsr_easu_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "fsr_easu.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "fsr_rcas_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "fsr_rcas.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "fxaa_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "fxaa.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "grass_cull_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 0,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 2,
+     "buffer": 3,
+     "set": 0,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 3,
+     "buffer": 2,
+     "set": 0,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 4,
+   "file": "grass_cull.comp.metal",
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    64,
+    1,
+    1
+   ]
+  },
+  "grass_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "grass.frag.metal",
+   "stage": "fragment"
+  },
+  "grass_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 4,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 1,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 1,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 2,
+     "buffer": 2,
+     "set": 1,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 5,
+   "file": "grass.vert.metal",
+   "inputs": [],
+   "push_constants": {
+    "buffer": 3
+   },
+   "stage": "vertex"
+  },
+  "hiz_build_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "set": 0,
+     "texture": 1,
+     "type": "storage_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "hiz_build.comp.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    8,
+    8,
+    1
+   ]
+  },
+  "lens_flare_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "lens_flare.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "lens_flare_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "lens_flare.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec2"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "lightning_bolt_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "lightning_bolt.frag.metal",
+   "stage": "fragment"
+  },
+  "lightning_bolt_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "lightning_bolt.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "lightning_flash_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "lightning_flash.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "lightning_flash_vert": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "lightning_flash.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec2"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "m2_cull_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 0,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 2,
+     "buffer": 2,
+     "set": 0,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 3,
+   "file": "m2_cull.comp.metal",
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    64,
+    1,
+    1
+   ]
+  },
+  "m2_cull_hiz_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 0,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 2,
+     "buffer": 2,
+     "set": 0,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 3,
+   "file": "m2_cull_hiz.comp.metal",
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    64,
+    1,
+    1
+   ]
+  },
+  "m2_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "sampler": 4,
+     "set": 0,
+     "texture": 4,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 2,
+     "set": 0,
+     "texture": 2,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 4,
+     "sampler": 1,
+     "set": 0,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 0,
+     "sampler": 3,
+     "set": 1,
+     "texture": 3,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "m2.frag.metal",
+   "stage": "fragment"
+  },
+  "m2_particle_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "m2_particle.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "m2_particle_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "m2_particle.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec4"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    },
+    {
+     "location": 3,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "m2_ribbon_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 0,
+   "file": "m2_ribbon.frag.metal",
+   "stage": "fragment"
+  },
+  "m2_ribbon_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "m2_ribbon.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec3"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    },
+    {
+     "location": 3,
+     "type": "vec2"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "m2_smoke_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "m2_smoke.frag.metal",
+   "stage": "fragment"
+  },
+  "m2_smoke_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "m2_smoke.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    },
+    {
+     "location": 3,
+     "type": "float"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "m2_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 3,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 2,
+     "set": 2,
+     "type": "storage_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 3,
+     "type": "storage_buffer"
+    }
+   ],
+   "buffers_used": 4,
+   "file": "m2.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec3"
+    },
+    {
+     "location": 2,
+     "type": "vec2"
+    },
+    {
+     "location": 3,
+     "type": "vec4"
+    },
+    {
+     "location": 4,
+     "type": "vec4"
+    },
+    {
+     "location": 5,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "minimap_display_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "minimap_display.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "minimap_display_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "minimap_display.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec2"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "minimap_tile_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 0,
+   "file": "minimap_tile.frag.metal",
+   "stage": "fragment"
+  },
+  "minimap_tile_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "minimap_tile.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec2"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "mount_dust_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "mount_dust.frag.metal",
+   "stage": "fragment"
+  },
+  "mount_dust_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "mount_dust.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "overlay_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "overlay.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "postprocess_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 0,
+   "file": "postprocess.frag.metal",
+   "stage": "fragment"
+  },
+  "postprocess_vert": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "postprocess.vert.metal",
+   "inputs": [],
+   "stage": "vertex"
+  },
+  "quest_marker_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "quest_marker.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "quest_marker_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "quest_marker.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "selection_circle_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "selection_circle.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "selection_circle_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "selection_circle.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "shadow_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "shadow.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "shadow_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "shadow.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "skybox_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "skybox.frag.metal",
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "fragment"
+  },
+  "skybox_vert": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "skybox.vert.metal",
+   "inputs": [],
+   "stage": "vertex"
+  },
+  "starfield_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "starfield.frag.metal",
+   "stage": "fragment"
+  },
+  "starfield_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "starfield.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    },
+    {
+     "location": 3,
+     "type": "float"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "sun_shafts_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "set": 0,
+     "texture": 0,
+     "type": "storage_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "sun_shafts.comp.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    8,
+    8,
+    1
+   ]
+  },
+  "sun_shafts_composite_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 0,
+   "file": "sun_shafts_composite.frag.metal",
+   "stage": "fragment"
+  },
+  "swim_bubble_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "swim_bubble.frag.metal",
+   "stage": "fragment"
+  },
+  "swim_bubble_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "swim_bubble.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "swim_insect_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "swim_insect.frag.metal",
+   "stage": "fragment"
+  },
+  "swim_ripple_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "swim_ripple.frag.metal",
+   "stage": "fragment"
+  },
+  "swim_ripple_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "swim_ripple.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "float"
+    },
+    {
+     "location": 2,
+     "type": "float"
+    }
+   ],
+   "stage": "vertex"
+  },
+  "terrain_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "sampler": 10,
+     "set": 0,
+     "texture": 10,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 2,
+     "set": 0,
+     "texture": 2,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 4,
+     "sampler": 1,
+     "set": 0,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 0,
+     "sampler": 3,
+     "set": 1,
+     "texture": 3,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "sampler": 5,
+     "set": 1,
+     "texture": 5,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 7,
+     "set": 1,
+     "texture": 7,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 9,
+     "set": 1,
+     "texture": 9,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 4,
+     "sampler": 4,
+     "set": 1,
+     "texture": 4,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 5,
+     "sampler": 6,
+     "set": 1,
+     "texture": 6,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 6,
+     "sampler": 8,
+     "set": 1,
+     "texture": 8,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 7,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "terrain.frag.metal",
+   "stage": "fragment"
+  },
+  "terrain_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "terrain.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec3"
+    },
+    {
+     "location": 2,
+     "type": "vec2"
+    },
+    {
+     "location": 3,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "volumetric_fog_inject_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "set": 1,
+     "texture": 2,
+     "type": "storage_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 1,
+     "set": 1,
+     "texture": 1,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "volumetric_fog_inject.comp.metal",
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    4,
+    4,
+    4
+   ]
+  },
+  "volumetric_fog_integrate_comp": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 4,
+     "sampler": 0,
+     "set": 1,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 5,
+     "set": 1,
+     "texture": 1,
+     "type": "storage_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "volumetric_fog_integrate.comp.metal",
+   "stage": "kernel",
+   "threads_per_threadgroup": [
+    8,
+    8,
+    1
+   ]
+  },
+  "water_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 0,
+     "buffer": 2,
+     "set": 1,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 0,
+     "sampler": 1,
+     "set": 2,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "sampler": 2,
+     "set": 2,
+     "texture": 2,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 3,
+     "set": 2,
+     "texture": 3,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "buffer": 3,
+     "set": 2,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 4,
+   "file": "water.frag.metal",
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "fragment"
+  },
+  "water_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "water.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 1
+   },
+   "stage": "vertex"
+  },
+  "weather_frag": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "weather.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "weather_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "weather.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "wmo_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 0,
+     "set": 0,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 1,
+     "sampler": 5,
+     "set": 0,
+     "texture": 5,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 2,
+     "sampler": 3,
+     "set": 0,
+     "texture": 3,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 3,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 4,
+     "sampler": 1,
+     "set": 0,
+     "texture": 1,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 0,
+     "sampler": 4,
+     "set": 1,
+     "texture": 4,
+     "type": "sampled_texture"
+    },
+    {
+     "binding": 1,
+     "buffer": 1,
+     "set": 1,
+     "type": "uniform_buffer"
+    },
+    {
+     "binding": 2,
+     "sampler": 2,
+     "set": 1,
+     "texture": 2,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "wmo.frag.metal",
+   "stage": "fragment"
+  },
+  "wmo_occlusion_frag": {
+   "bindings": [],
+   "buffers_used": 0,
+   "file": "wmo_occlusion.frag.metal",
+   "stage": "fragment"
+  },
+  "wmo_occlusion_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "wmo_occlusion.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "wmo_vert": {
+   "bindings": [
+    {
+     "binding": 0,
+     "buffer": 1,
+     "set": 0,
+     "type": "uniform_buffer"
+    }
+   ],
+   "buffers_used": 2,
+   "file": "wmo.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec3"
+    },
+    {
+     "location": 1,
+     "type": "vec3"
+    },
+    {
+     "location": 2,
+     "type": "vec2"
+    },
+    {
+     "location": 3,
+     "type": "vec4"
+    },
+    {
+     "location": 4,
+     "type": "vec4"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  },
+  "world_map_fog_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 1,
+   "file": "world_map_fog.frag.metal",
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "fragment"
+  },
+  "world_map_frag": {
+   "bindings": [
+    {
+     "binding": 0,
+     "sampler": 0,
+     "set": 0,
+     "texture": 0,
+     "type": "sampled_texture"
+    }
+   ],
+   "buffers_used": 0,
+   "file": "world_map.frag.metal",
+   "stage": "fragment"
+  },
+  "world_map_vert": {
+   "bindings": [],
+   "buffers_used": 1,
+   "file": "world_map.vert.metal",
+   "inputs": [
+    {
+     "location": 0,
+     "type": "vec2"
+    },
+    {
+     "location": 1,
+     "type": "vec2"
+    }
+   ],
+   "push_constants": {
+    "buffer": 0
+   },
+   "stage": "vertex"
+  }
+ },
+ "msl_version": "30000"
+}
