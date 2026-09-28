@@ -233,7 +233,7 @@ void GameScreen::updateCharacterGeosets(game::Inventory& inventory) {
         }
     }
 
-    // Kneepads: group 9 (always default 902)
+    // Kneepads: group 9 (always the default, none)
     geosets.insert(core::kGeosetDefaultKneepads);
 
     // Legs/Pants: inventoryType 7 → group 13 (trousers/thighs)

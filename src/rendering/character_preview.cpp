@@ -760,6 +760,13 @@ bool CharacterPreview::loadCharacter(game::Race race, game::Gender gender,
     facialHair_ = facialHair;
 
     std::unordered_set<uint16_t> activeGeosets = buildBaseGeosets();
+    // The no-cloak panel, as the in-world player gets it before equipment is
+    // known (EntitySpawner): it is what closes the back of the neck and the
+    // top of the back, and without it the character creation screen drew a
+    // hole there, through which the inside of the face showed. Exactly 1501,
+    // never a substitute - the rest of group 15 is cloaks - so a model with no
+    // such panel draws nothing more. applyEquipment decides group 15 itself.
+    activeGeosets.insert(core::kGeosetNoCape);
     charRenderer_->setActiveGeosets(instanceId_, activeGeosets);
 
     // Play idle animation (Stand = animation ID 0)

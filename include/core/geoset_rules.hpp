@@ -34,7 +34,13 @@ constexpr uint16_t kGeosetBareForearms     = 401;   // Group  4: no gloves
 constexpr uint16_t kGeosetBareShins        = 501;   // Group  5: no boots
 constexpr uint16_t kGeosetDefaultEars      = 702;   // Group  7: ears
 constexpr uint16_t kGeosetBareSleeves      = 801;   // Group  8: no chest armor sleeves
-constexpr uint16_t kGeosetDefaultKneepads  = 902;   // Group  9: kneepads
+/// Variant 01, as for the other groups: no kneepads. It was 902, which is a
+/// real kneepad - a shell standing 2-4cm proud of the leg around the knee on
+/// the stock human male - so every character with bare legs wore one, and on
+/// the character creation screen it read as a break in the leg. The stock
+/// models have no 901 at all: the bare shin (501) and bare thigh (1301)
+/// already overlap there.
+constexpr uint16_t kGeosetDefaultKneepads  = 901;   // Group  9: no kneepads
 constexpr uint16_t kGeosetDefaultTabard    = 1201;  // Group 12: tabard base
 constexpr uint16_t kGeosetBarePants        = 1301;  // Group 13: no leggings
 constexpr uint16_t kGeosetNoCape           = 1501;  // Group 15: no cape
