@@ -24,6 +24,10 @@
 #include <future>
 #include <algorithm>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 
 namespace pipeline {
@@ -31,6 +35,9 @@ namespace pipeline {
 }
 
 namespace rendering {
+#ifdef WOWEE_METAL
+class MetalContext;
+#endif
 
 class Camera;
 class VkContext;
@@ -107,6 +114,10 @@ struct M2ModelGPU {
     VmaAllocation vertexAlloc = VK_NULL_HANDLE;
     ::VkBuffer indexBuffer = VK_NULL_HANDLE;
     VmaAllocation indexAlloc = VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+    MTL::Buffer* mtlVertexBuffer = nullptr;
+    MTL::Buffer* mtlIndexBuffer = nullptr;
+#endif
     uint32_t indexCount = 0;
     uint32_t vertexCount = 0;
     std::vector<BatchGPU> batches;
@@ -468,6 +479,20 @@ public:
     void dispatchCullCompute(VkCommandBuffer cmd, uint32_t frameIndex, const Camera& camera);
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera);
 
+#ifdef WOWEE_METAL
+    /// The same renderer on Metal (docs/plan-metal.md): everything but the GPU
+    /// calls is shared with render(). No GPU culling, particles, ribbons,
+    /// glow sprites or shadows there yet; the CPU culling render() falls back
+    /// to already covers the first. Formats are MTL::PixelFormat values.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* am,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount);
+    /// Copies this frame's bones, then draws into an encoder whose pass has the
+    /// formats initializeMetal was given. perFrame holds a GPUPerFrameData.
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera);
+#endif
+
     /** Gather the nearest authored glow cards as inexpensive scene point lights. */
     uint32_t gatherLocalLights(const glm::vec3& cameraPos,
                                glm::vec4* outPosRadius,
@@ -734,6 +759,34 @@ public:
     void setPredecodedBLPCache(std::unordered_map<std::string, pipeline::BLPImage>* cache) { predecodedBLPCache_ = cache; }
 
 private:
+    /// The main pass's pipelines, named rather than held, so the draw loop
+    /// that picks one is the same for both backends.
+    enum class PipelineKind : uint8_t { Opaque, AlphaTest, Cutout, Alpha, Additive };
+    [[nodiscard]] VkPipeline vulkanPipeline(PipelineKind kind) const;
+    /// Culling, LOD, sorting and both passes of render(), shared by the
+    /// backends; Sink makes the backend's calls.
+    template <typename Sink>
+    void renderImpl(Sink& sink, const Camera& camera);
+    void renderGlowSpritesVulkan(VkCommandBuffer cmd, VkDescriptorSet perFrameSet);
+#ifdef WOWEE_METAL
+    void shutdownMetal();
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* metalPipelines_[5] = {};
+    /// A ring of MetalContext::kRingSize each: written by the CPU every frame,
+    /// read by up to two frames still in flight.
+    MTL::Buffer* mtlBones_[3] = {};
+    MTL::Buffer* mtlInstances_[3] = {};
+    /// A quarter of the Vulkan buffer's capacity, kept three times over: 8 MB
+    /// a slot. Past it an instance draws in its bind pose, as on Vulkan.
+    static constexpr uint32_t kMetalBoneCapacity = 4096 * 32;
+    /// Where m2_vert and m2_frag take each binding, from the shader manifest.
+    struct MetalSlots {
+        int vertPerFrame = -1, vertPush = -1, vertBones = -1, vertInstances = -1;
+        int fragPerFrame = -1, fragMaterial = -1, fragTexture = -1, fragTextureSampler = -1;
+        int fragShadow = -1, fragShadowSampler = -1, fragFog = -1, fragFogSampler = -1;
+        int fragRtA = -1, fragRtASampler = -1, fragRtB = -1, fragRtBSampler = -1;
+    } mtlSlots_;
+#endif
     bool initialized_ = false;
     bool insideInterior = false;
     pipeline::AssetManager* assetManager = nullptr;

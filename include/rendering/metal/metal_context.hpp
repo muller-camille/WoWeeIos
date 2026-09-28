@@ -82,6 +82,16 @@ public:
                                               bool mipmaps = false);
     void releaseTexture(MTL::Texture*& texture);
 
+    /// A block-compressed texture from its levels, largest first, as a BLP
+    /// keeps them. format is an MTL::PixelFormat (BC1, BC2 or BC3); blockBytes
+    /// is 8 for BC1 and 16 for the others. Null when a level is short or the
+    /// device refuses the format. Retained; give it back with releaseTexture.
+    [[nodiscard]] MTL::Texture* uploadCompressedTexture(uint32_t format, uint32_t width,
+                                                        uint32_t height, uint32_t blockBytes,
+                                                        const std::vector<std::vector<uint8_t>>& levels);
+    /// Whether the GPU samples BC1-BC3. Where it does not, a BLP is decoded.
+    [[nodiscard]] bool supportsBC() const { return supportsBC_; }
+
     /// An interface texture that lives as long as this context, as those from
     /// VkContext::uploadImGuiTexture do: not the caller's to release.
     [[nodiscard]] MTL::Texture* uploadInterfaceTexture(const uint8_t* rgba, uint32_t width,
@@ -98,8 +108,9 @@ public:
     [[nodiscard]] MTL::SamplerState* sampler(Filter filter, Address address);
     /// Compares against the reference, for sampler2DShadow.
     [[nodiscard]] MTL::SamplerState* shadowSampler();
-    /// Depth test less-than, writing or not. Kept for the context's life.
-    [[nodiscard]] MTL::DepthStencilState* depthState(bool test, bool write);
+    /// Depth test less-than - or less-or-equal, as the M2 pipelines ask for -
+    /// writing or not. Kept for the context's life.
+    [[nodiscard]] MTL::DepthStencilState* depthState(bool test, bool write, bool lessEqual = false);
 
     /// Stand-ins for a binding a pass does not use but the shader declares:
     /// 1x1 white, a 1x1 depth texture at 1.0, a 1x1x1 volume.
@@ -146,10 +157,11 @@ private:
     uint32_t drawableHeight_ = 0;
     bool presentationPaused_ = false;
     bool readableDrawables_ = false;
+    bool supportsBC_ = false;
     uint64_t frameNumber_ = 0;
     std::unordered_map<uint16_t, MTL::SamplerState*> samplers_;
     MTL::SamplerState* shadowSampler_ = nullptr;
-    MTL::DepthStencilState* depthStates_[4] = {};
+    MTL::DepthStencilState* depthStates_[8] = {};
     MTL::Texture* white_ = nullptr;
     MTL::Texture* neutralDepth_ = nullptr;
     MTL::Texture* neutralVolume_ = nullptr;

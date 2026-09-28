@@ -1,5 +1,10 @@
 #include "rendering/shadow_params.hpp"
 #include "rendering/m2_renderer.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include "rendering/m2_renderer_internal.h"
 #include "rendering/m2_sway.hpp"
 #include "rendering/m2_blend_mode.hpp"
@@ -693,6 +698,20 @@ static const bool kM2NoSkinning = envFlagEnabled("WOWEE_M2_NO_SKINNING");
 void M2Renderer::prepareRender(uint32_t frameIndex, const Camera& camera) {
     if (!initialized_ || instances.empty()) return;
     (void)camera;  // reserved for future frustum-based culling
+    // Where this frame's bones go. On Metal it is the ring slot frameIndex
+    // names, written whole every frame: the dirty tracking below counts two
+    // Vulkan frame slots, and a ring of three would read it wrong.
+    void* boneBase = frameIndex < 2 ? megaBoneMapped_[frameIndex] : nullptr;
+    uint32_t boneCapacity = MEGA_BONE_MATRIX_CAPACITY;
+    bool writeAll = false;
+#ifdef WOWEE_METAL
+    if (metal_) {
+        boneBase = mtlBones_[frameIndex] ? mtlBones_[frameIndex]->contents() : nullptr;
+        boneCapacity = kMetalBoneCapacity;
+        writeAll = true;
+        frameIndex = 0;  // for the Vulkan dirty flags below, which Metal ignores
+    }
+#endif
 
     // --- Mega bone SSBO: assign ranges and upload all animated instance bones ---
     // Offset 0 is reserved as the identity/no-bones sentinel; animated instances
@@ -756,7 +775,7 @@ void M2Renderer::prepareRender(uint32_t frameIndex, const Camera& camera) {
         }
 
         const uint32_t boneCount = static_cast<uint32_t>(instance.boneMatrices.size());
-        if (boneCount > MEGA_BONE_MATRIX_CAPACITY - nextOffset) {
+        if (boneCount > boneCapacity - nextOffset) {
             instance.megaBoneOffset = 0;  // Overflow - use identity
             continue;
         }
@@ -768,10 +787,10 @@ void M2Renderer::prepareRender(uint32_t frameIndex, const Camera& camera) {
         // slot moved (animated set changed). Most animated instances are
         // distance/frustum/frame-skip culled and keep their previous bones, so
         // skipping their memcpy avoids megabytes of redundant writes per frame.
-        if (megaBoneMapped_[frameIndex] &&
-            (instance.bonesDirty[frameIndex] ||
+        if (boneBase &&
+            (writeAll || instance.bonesDirty[frameIndex] ||
              instance.megaBoneUploadedSlot[frameIndex] != instance.megaBoneOffset)) {
-            auto* dst = static_cast<glm::mat4*>(megaBoneMapped_[frameIndex]) + instance.megaBoneOffset;
+            auto* dst = static_cast<glm::mat4*>(boneBase) + instance.megaBoneOffset;
             memcpy(dst, instance.boneMatrices.data(), boneCount * sizeof(glm::mat4));
             instance.bonesDirty[frameIndex] = false;
             instance.megaBoneUploadedSlot[frameIndex] = instance.megaBoneOffset;
@@ -965,8 +984,20 @@ void M2Renderer::dispatchCullCompute(VkCommandBuffer cmd, uint32_t frameIndex, c
     cmdPipelineBarrier2(cmd, dep);
 }
 
-void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
-    if (instances.empty() || !opaquePipeline_) {
+namespace {
+struct M2PushConstants {
+    int32_t texCoordSet;        // UV set index (0 or 1)
+    int32_t isFoliage;          // -1 = sky, 0 = none, 1 = wind foliage, 2 = ground clutter
+    int32_t instanceDataOffset; // Base index into instance SSBO for this draw group
+    float swayRefHeight;        // Model-space height the wind normalises against
+    float swayAmp;              // Wind amplitude scale; 1.0 = the tree-sized default
+    float plantHeight;          // The model's own height, for the player brush
+};
+}  // namespace
+
+template <typename Sink>
+void M2Renderer::renderImpl(Sink& sink, const Camera& camera) {
+    if (instances.empty() || !sink.ready()) {
         return;
     }
 
@@ -1008,9 +1039,9 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
 
     // GPU cull results - dispatchCullCompute() already updated smoothedRenderDist_.
     // Use the cached value (set by dispatchCullCompute or fallback below).
-    const uint32_t frameIndex = vkCtx_->getCurrentFrame();
+    const uint32_t frameIndex = sink.frameIndex();
     const uint32_t numInstances = std::min(static_cast<uint32_t>(instances.size()), MAX_CULL_INSTANCES);
-    const uint32_t* visibility = static_cast<const uint32_t*>(cullOutputMapped_[frameIndex]);
+    const uint32_t* visibility = sink.visibility();
     const bool gpuCullAvailable = (cullPipeline_ != VK_NULL_HANDLE && visibility != nullptr);
 
     // Scatter the GPU visibility results back onto the instances they were
@@ -1282,18 +1313,8 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     bool currentModelValid = false;
 
     // State tracking
-    VkPipeline currentPipeline = VK_NULL_HANDLE;
-    VkDescriptorSet currentMaterialSet = VK_NULL_HANDLE;
 
     // Push constants now carry per-batch data only; per-instance data is in instance SSBO.
-    struct M2PushConstants {
-        int32_t texCoordSet;        // UV set index (0 or 1)
-        int32_t isFoliage;          // -1 = sky, 0 = none, 1 = wind foliage, 2 = ground clutter
-        int32_t instanceDataOffset; // Base index into instance SSBO for this draw group
-        float swayRefHeight;        // Model-space height the wind normalises against
-        float swayAmp;              // Wind amplitude scale; 1.0 = the tree-sized default
-        float plantHeight;          // The model's own height, for the player brush
-    };
 
     // Fill the sway half of the push constants for one model.
     //
@@ -1336,38 +1357,11 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     };
 
     // Validate per-frame descriptor set before any Vulkan commands
-    if (!perFrameSet) {
-        LOG_ERROR("M2Renderer::render: perFrameSet is VK_NULL_HANDLE - skipping M2 render");
-        return;
-    }
-
-    // Bind per-frame descriptor set (set 0) - shared across all draws
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
-
-    // Start with opaque pipeline
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipeline_);
-    currentPipeline = opaquePipeline_;
-
-    // Bind dummy bone set (set 2) so non-animated draws have a valid binding.
-    // Bind mega bone SSBO instead - all instances index into one buffer via boneBase.
-    if (megaBoneSet_[frameIndex]) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout_, 2, 1, &megaBoneSet_[frameIndex], 0, nullptr);
-    } else if (dummyBoneSet_) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout_, 2, 1, &dummyBoneSet_, 0, nullptr);
-    }
-
-    // Bind instance data SSBO (set 3) - per-instance transforms, fade, bones
-    if (instanceSet_[frameIndex]) {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipelineLayout_, 3, 1, &instanceSet_[frameIndex], 0, nullptr);
-    }
-
-    // Reset instance SSBO write cursor for this frame
+    // Set 0, the bones and the instance data, and the opaque pipeline.
+    if (!sink.begin()) return;
+    PipelineKind currentPipeline = PipelineKind::Opaque;
     instanceDataCount_ = 0;
-    auto* instSSBO = static_cast<M2InstanceGPU*>(instanceMapped_[frameIndex]);
+    auto* instSSBO = sink.instanceData();
 
     // =====================================================================
     // Opaque pass - instanced draws grouped by (modelId, LOD)
@@ -1416,7 +1410,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 visStart = groupEnd;
                 continue;
             }
-            if (!model.vertexBuffer || !model.indexBuffer) {
+            if (!sink.hasGeometry(model)) {
                 visStart = groupEnd;
                 continue;
             }
@@ -1475,9 +1469,7 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                       [](const PendingInstance& a, const PendingInstance& b) { return a.targetLOD < b.targetLOD; });
 
             // Bind vertex/index buffers once per model group
-            VkDeviceSize vbOffset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &vbOffset);
-            vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            sink.bindGeometry(model);
 
             // Write base instance data to SSBO (uvOffset=0 - overridden for tex-anim batches)
             uint32_t baseSSBOOffset = instanceDataCount_;
@@ -1842,19 +1834,19 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                     }
                     if (forceCutout) effectiveBlendMode = 1;
 
-                    VkPipeline desiredPipeline;
+                    PipelineKind desiredPipeline;
                     if (forceCutout) {
-                        desiredPipeline = cutoutPipeline_;
+                        desiredPipeline = PipelineKind::Cutout;
                     } else {
                         switch (effectiveBlendMode) {
-                            case 0: desiredPipeline = opaquePipeline_; break;
-                            case 1: desiredPipeline = alphaTestPipeline_; break;
-                            case 2: desiredPipeline = alphaPipeline_; break;
-                            default: desiredPipeline = additivePipeline_; break;
+                            case 0: desiredPipeline = PipelineKind::Opaque; break;
+                            case 1: desiredPipeline = PipelineKind::AlphaTest; break;
+                            case 2: desiredPipeline = PipelineKind::Alpha; break;
+                            default: desiredPipeline = PipelineKind::Additive; break;
                         }
                     }
                     if (desiredPipeline != currentPipeline) {
-                        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
+                        sink.bindPipeline(desiredPipeline);
                         currentPipeline = desiredPipeline;
                     }
 
@@ -1877,20 +1869,14 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                     }
 
                     // Bind material descriptor set (set 1)
-                    if (!batch.materialSet) continue;
-                    if (batch.materialSet != currentMaterialSet) {
-                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                                pipelineLayout_, 1, 1, &batch.materialSet, 0, nullptr);
-                        currentMaterialSet = batch.materialSet;
-                    }
+                    if (!sink.bindMaterial(batch)) continue;
 
                     // Push constants + instanced draw
                     M2PushConstants pc;
                     pc.texCoordSet = static_cast<int32_t>(batch.textureUnit);
                     fillSway(pc, model, skyMode_);
                     pc.instanceDataOffset = static_cast<int32_t>(drawOffset);
-                    vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-                    vkCmdDrawIndexed(cmd, batch.indexCount, groupSize, batch.indexStart, 0, 0);
+                    sink.draw(pc, batch.indexCount, groupSize, batch.indexStart);
                     if (skyMode_) ++skyDiagDrawsOpaque_;
                     lastDrawCallCount++;
                 }
@@ -1914,8 +1900,8 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
     currentModelId = UINT32_MAX;
     currentModel = nullptr;
     currentModelValid = false;
-    currentPipeline = opaquePipeline_;
-    currentMaterialSet = VK_NULL_HANDLE;
+    currentPipeline = PipelineKind::Opaque;
+    sink.resetMaterial();
 
     for (const auto& entry : transparentVisible_) {
         if (entry.index >= instances.size()) continue;
@@ -1931,11 +1917,9 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
             if (!currentModel) continue;
             if (currentModel->isInstancePortal) continue;
             if (!currentModel->hasTransparentBatches && !currentModel->isSpellEffect) continue;
-            if (!currentModel->vertexBuffer || !currentModel->indexBuffer) continue;
+            if (!sink.hasGeometry(*currentModel)) continue;
             currentModelValid = true;
-            VkDeviceSize vbOff = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &currentModel->vertexBuffer, &vbOff);
-            vkCmdBindIndexBuffer(cmd, currentModel->indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            sink.bindGeometry(*currentModel);
         }
         if (!currentModelValid) continue;
 
@@ -2075,15 +2059,15 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 else if (effectiveBlendMode == 4 || effectiveBlendMode == 5) effectiveBlendMode = 3;
             }
 
-            VkPipeline desiredPipeline;
+            PipelineKind desiredPipeline;
             switch (effectiveBlendMode) {
-                case 2: desiredPipeline = alphaPipeline_; break;
-                default: desiredPipeline = additivePipeline_; break;
+                case 2: desiredPipeline = PipelineKind::Alpha; break;
+                default: desiredPipeline = PipelineKind::Additive; break;
             }
             // An opaque layer of a faded instance: blended by its fade.
-            if (instanceFaded && effectiveBlendMode <= 1) desiredPipeline = alphaPipeline_;
+            if (instanceFaded && effectiveBlendMode <= 1) desiredPipeline = PipelineKind::Alpha;
             if (desiredPipeline != currentPipeline) {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
+                sink.bindPipeline(desiredPipeline);
                 currentPipeline = desiredPipeline;
             }
 
@@ -2123,25 +2107,55 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
                 }
             }
 
-            if (!batch.materialSet) continue;
-            if (batch.materialSet != currentMaterialSet) {
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        pipelineLayout_, 1, 1, &batch.materialSet, 0, nullptr);
-                currentMaterialSet = batch.materialSet;
-            }
+            if (!sink.bindMaterial(batch)) continue;
 
             // Push constants + single-instance draw
             M2PushConstants pc;
             pc.texCoordSet = static_cast<int32_t>(batch.textureUnit);
             fillSway(pc, model, skyMode_);
             pc.instanceDataOffset = static_cast<int32_t>(drawOffset);
-            vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-            vkCmdDrawIndexed(cmd, batch.indexCount, 1, batch.indexStart, 0, 0);
+            sink.draw(pc, batch.indexCount, 1, batch.indexStart);
             if (skyMode_) ++skyDiagDrawsTransparent_;
             lastDrawCallCount++;
         }
     }
 
+    // Glow sprites, which only the Vulkan backend draws so far.
+    sink.finish();
+
+    // How many of the sky's layers were actually drawn this frame.
+    //
+    // The instance-level report says DRAWN every frame, which is a different
+    // question: it counts instances that survived culling, not batches that
+    // reached a draw call. Every per-batch gate between the two is meant to be
+    // constant here - the material flags are static, the LOD is chosen by a
+    // distance that does not change for a dome centred on the camera, and the
+    // batch opacity is baked at load - so this number should never move. If it
+    // moves while the camera turns, the flicker is layers appearing and
+    // disappearing and one of those gates is not as constant as it reads.
+    if (skyMode_ && (skyDiagDrawsOpaque_ != skyDiagLastOpaque_ ||
+                     skyDiagDrawsTransparent_ != skyDiagLastTransparent_)) {
+        LOG_INFO("skyM2 draws: opaque=", skyDiagDrawsOpaque_,
+                 " transparent=", skyDiagDrawsTransparent_,
+                 " (was ", skyDiagLastOpaque_, "/", skyDiagLastTransparent_, ")");
+        skyDiagLastOpaque_ = skyDiagDrawsOpaque_;
+        skyDiagLastTransparent_ = skyDiagDrawsTransparent_;
+    }
+
+    if (m2Profile) {
+        const auto m2T3 = std::chrono::steady_clock::now();
+        const auto ms = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        sayPhases({.cull = ms(m2T0, m2T1),
+                   .sort = ms(m2T1, m2T2),
+                   .record = ms(m2T2, m2T3),
+                   .visible = sortedVisible_.size(),
+                   .instances = instances.size()});
+    }
+}
+
+void M2Renderer::renderGlowSpritesVulkan(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     // Render glow sprites as billboarded additive point lights
     if (!glowSprites_.empty() && particleAdditivePipeline_ && glowVB_ && glowTexDescSet_) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particleAdditivePipeline_);
@@ -2175,37 +2189,84 @@ void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const 
         vkCmdBindVertexBuffers(cmd, 0, 1, &glowVB_, &offset);
         vkCmdDraw(cmd, static_cast<uint32_t>(uploadCount), 1, 0, 0);
     }
+}
 
-    // How many of the sky's layers were actually drawn this frame.
-    //
-    // The instance-level report says DRAWN every frame, which is a different
-    // question: it counts instances that survived culling, not batches that
-    // reached a draw call. Every per-batch gate between the two is meant to be
-    // constant here - the material flags are static, the LOD is chosen by a
-    // distance that does not change for a dome centred on the camera, and the
-    // batch opacity is baked at load - so this number should never move. If it
-    // moves while the camera turns, the flicker is layers appearing and
-    // disappearing and one of those gates is not as constant as it reads.
-    if (skyMode_ && (skyDiagDrawsOpaque_ != skyDiagLastOpaque_ ||
-                     skyDiagDrawsTransparent_ != skyDiagLastTransparent_)) {
-        LOG_INFO("skyM2 draws: opaque=", skyDiagDrawsOpaque_,
-                 " transparent=", skyDiagDrawsTransparent_,
-                 " (was ", skyDiagLastOpaque_, "/", skyDiagLastTransparent_, ")");
-        skyDiagLastOpaque_ = skyDiagDrawsOpaque_;
-        skyDiagLastTransparent_ = skyDiagDrawsTransparent_;
-    }
+void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
+    // The Vulkan calls renderImpl makes.
+    struct VulkanSink {
+        M2Renderer& r;
+        VkCommandBuffer cmd;
+        VkDescriptorSet perFrameSet;
+        VkDescriptorSet currentMaterialSet = VK_NULL_HANDLE;
 
-    if (m2Profile) {
-        const auto m2T3 = std::chrono::steady_clock::now();
-        const auto ms = [](auto a, auto b) {
-            return std::chrono::duration<double, std::milli>(b - a).count();
-        };
-        sayPhases({.cull = ms(m2T0, m2T1),
-                   .sort = ms(m2T1, m2T2),
-                   .record = ms(m2T2, m2T3),
-                   .visible = sortedVisible_.size(),
-                   .instances = instances.size()});
-    }
+        bool ready() const { return r.opaquePipeline_ != VK_NULL_HANDLE; }
+        uint32_t frameIndex() const { return r.vkCtx_->getCurrentFrame(); }
+        const uint32_t* visibility() const {
+            return static_cast<const uint32_t*>(r.cullOutputMapped_[frameIndex()]);
+        }
+        bool begin() {
+            if (!perFrameSet) {
+                LOG_ERROR("M2Renderer::render: perFrameSet is VK_NULL_HANDLE - skipping M2 render");
+                return false;
+            }
+            const uint32_t fi = frameIndex();
+            // Bind per-frame descriptor set (set 0) - shared across all draws
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    r.pipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
+            // Start with opaque pipeline
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.opaquePipeline_);
+            // The mega bone SSBO, which every animated instance indexes into
+            // through its boneBase; the dummy set where there is none, so
+            // non-animated draws still have a valid binding.
+            if (r.megaBoneSet_[fi]) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        r.pipelineLayout_, 2, 1, &r.megaBoneSet_[fi], 0, nullptr);
+            } else if (r.dummyBoneSet_) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        r.pipelineLayout_, 2, 1, &r.dummyBoneSet_, 0, nullptr);
+            }
+            // Instance data SSBO (set 3) - per-instance transforms, fade, bones
+            if (r.instanceSet_[fi]) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        r.pipelineLayout_, 3, 1, &r.instanceSet_[fi], 0, nullptr);
+            }
+            return true;
+        }
+        M2InstanceGPU* instanceData() const {
+            return static_cast<M2InstanceGPU*>(r.instanceMapped_[frameIndex()]);
+        }
+        bool hasGeometry(const M2ModelGPU& model) const {
+            return model.vertexBuffer && model.indexBuffer;
+        }
+        void bindGeometry(const M2ModelGPU& model) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        }
+        void bindPipeline(PipelineKind kind) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.vulkanPipeline(kind));
+        }
+        // Set 1, the batch's texture and material; the material itself is
+        // read by the GPU from the buffer the draw loop has just written.
+        bool bindMaterial(const M2ModelGPU::BatchGPU& batch) {
+            if (!batch.materialSet) return false;
+            if (batch.materialSet != currentMaterialSet) {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        r.pipelineLayout_, 1, 1, &batch.materialSet, 0, nullptr);
+                currentMaterialSet = batch.materialSet;
+            }
+            return true;
+        }
+        void resetMaterial() { currentMaterialSet = VK_NULL_HANDLE; }
+        void draw(const M2PushConstants& pc, uint32_t indexCount, uint32_t instanceCount,
+                  uint32_t indexStart) {
+            vkCmdPushConstants(cmd, r.pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+            vkCmdDrawIndexed(cmd, indexCount, instanceCount, indexStart, 0, 0);
+        }
+        void finish() { r.renderGlowSpritesVulkan(cmd, perFrameSet); }
+    };
+    VulkanSink sink{*this, cmd, perFrameSet};
+    renderImpl(sink, camera);
 }
 
 bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
@@ -2515,6 +2576,100 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
         }
     }
 }
+
+#ifdef WOWEE_METAL
+void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                             size_t offset, const Camera& camera) {
+    if (!metal_ || !encoder || !metalPipelines_[0]) return;
+    const uint32_t slot = static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize);
+    prepareRender(slot, camera);
+
+    // The Metal calls renderImpl makes.
+    struct MetalSink {
+        M2Renderer& r;
+        MTL::RenderCommandEncoder* encoder;
+        MTL::Buffer* perFrame;
+        size_t perFrameOffset;
+        uint32_t slot;
+        MTL::Buffer* indexBuffer = nullptr;
+
+        bool ready() const { return r.metalPipelines_[0] != nullptr; }
+        // No GPU culling on Metal yet: renderImpl culls on the CPU when there
+        // is no visibility to read, and the frame index only indexes that.
+        uint32_t frameIndex() const { return 0; }
+        const uint32_t* visibility() const { return nullptr; }
+        bool begin() {
+            if (!r.mtlBones_[slot] || !r.mtlInstances_[slot]) return false;
+            const MetalSlots& s = r.mtlSlots_;
+            MetalContext& m = *r.metal_;
+            encoder->setVertexBuffer(perFrame, perFrameOffset, s.vertPerFrame);
+            encoder->setFragmentBuffer(perFrame, perFrameOffset, s.fragPerFrame);
+            MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
+                                                       MetalContext::Address::ClampToEdge);
+            // Stand-ins for the shadow map, the fog volume and the ray traced
+            // light, none of which the Metal renderer has yet.
+            encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+            encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
+            encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+            encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
+            encoder->setFragmentTexture(m.whiteTexture(), s.fragRtA);
+            encoder->setFragmentSamplerState(clampLinear, s.fragRtASampler);
+            encoder->setFragmentTexture(m.whiteTexture(), s.fragRtB);
+            encoder->setFragmentSamplerState(clampLinear, s.fragRtBSampler);
+            encoder->setVertexBuffer(r.mtlBones_[slot], 0, s.vertBones);
+            encoder->setVertexBuffer(r.mtlInstances_[slot], 0, s.vertInstances);
+            encoder->setCullMode(MTL::CullModeNone);
+            bindPipeline(PipelineKind::Opaque);
+            return true;
+        }
+        M2InstanceGPU* instanceData() const {
+            return static_cast<M2InstanceGPU*>(r.mtlInstances_[slot]->contents());
+        }
+        bool hasGeometry(const M2ModelGPU& model) const {
+            return model.mtlVertexBuffer && model.mtlIndexBuffer;
+        }
+        void bindGeometry(const M2ModelGPU& model) {
+            encoder->setVertexBuffer(model.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+            indexBuffer = model.mtlIndexBuffer;
+        }
+        void bindPipeline(PipelineKind kind) {
+            encoder->setRenderPipelineState(r.metalPipelines_[static_cast<size_t>(kind)]);
+            // Depth writes as the Vulkan pipelines have them; never for the sky.
+            const bool write = !r.skyMode_ &&
+                (kind == PipelineKind::Opaque || kind == PipelineKind::AlphaTest ||
+                 kind == PipelineKind::Cutout);
+            encoder->setDepthStencilState(r.metal_->depthState(true, write, /*lessEqual=*/true));
+        }
+        // The texture, and the material as the draw loop has just written it:
+        // copied into the command stream here, so each draw keeps its own.
+        bool bindMaterial(const M2ModelGPU::BatchGPU& batch) {
+            if (!batch.materialUBOMapped) return false;
+            VkTexture* tex = (batch.texture && batch.texture->isValid())
+                ? batch.texture : r.whiteTexture_.get();
+            if (!tex || !tex->isValid()) return false;
+            const MetalSlots& s = r.mtlSlots_;
+            encoder->setFragmentTexture(tex->metalTexture(), s.fragTexture);
+            encoder->setFragmentSamplerState(tex->metalSampler(), s.fragTextureSampler);
+            encoder->setFragmentBytes(batch.materialUBOMapped, sizeof(M2MaterialUBO),
+                                      s.fragMaterial);
+            return true;
+        }
+        void resetMaterial() {}
+        void draw(const M2PushConstants& pc, uint32_t indexCount, uint32_t instanceCount,
+                  uint32_t indexStart) {
+            if (!indexBuffer) return;
+            encoder->setVertexBytes(&pc, sizeof(pc), r.mtlSlots_.vertPush);
+            encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, indexCount,
+                                           MTL::IndexTypeUInt16, indexBuffer,
+                                           static_cast<NS::UInteger>(indexStart) * sizeof(uint16_t),
+                                           instanceCount);
+        }
+        void finish() {}
+    };
+    MetalSink sink{*this, encoder, perFrame, offset, slot};
+    renderImpl(sink, camera);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

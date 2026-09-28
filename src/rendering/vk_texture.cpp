@@ -33,6 +33,43 @@ bool VkTexture::uploadMetal(MetalContext& ctx, const uint8_t* rgba, uint32_t wid
     return true;
 }
 
+bool VkTexture::uploadBLPMetal(MetalContext& ctx, const pipeline::BLPImage& image) {
+    if (!image.isValid()) return false;
+    {
+        float rgb[3];
+        image.averageColor(rgb, alphaCoverage_);
+        averageColor_ = glm::vec3(rgb[0], rgb[1], rgb[2]);
+    }
+    const auto width = static_cast<uint32_t>(image.width);
+    const auto height = static_cast<uint32_t>(image.height);
+    if (!image.isBlockCompressed()) {
+        return uploadMetal(ctx, image.data.data(), width, height, true);
+    }
+    MTL::PixelFormat format = MTL::PixelFormatInvalid;
+    uint32_t blockBytes = 16;
+    switch (image.compression) {
+        case pipeline::BLPCompression::DXT1: format = MTL::PixelFormatBC1_RGBA; blockBytes = 8; break;
+        case pipeline::BLPCompression::DXT3: format = MTL::PixelFormatBC2_RGBA; break;
+        case pipeline::BLPCompression::DXT5: format = MTL::PixelFormatBC3_RGBA; break;
+        default: break;
+    }
+    if (format != MTL::PixelFormatInvalid && ctx.supportsBC()) {
+        releaseMetal();
+        mtlTexture_ = ctx.uploadCompressedTexture(format, width, height, blockBytes,
+                                                  image.mipmaps);
+        if (mtlTexture_) {
+            image_.extent = {width, height};
+            mipLevels_ = static_cast<uint32_t>(mtlTexture_->mipmapLevelCount());
+            return true;
+        }
+    }
+    // No BC on this GPU, or the levels would not go: the base level decoded,
+    // its chain made again on the GPU.
+    const std::vector<uint8_t> rgba = pipeline::BLPLoader::decodeBaseLevel(image);
+    if (rgba.size() < static_cast<size_t>(width) * height * 4) return false;
+    return uploadMetal(ctx, rgba.data(), width, height, true);
+}
+
 void VkTexture::releaseMetal() {
     // The command buffers that sample it retain it, so a frame still in flight
     // keeps it alive past this.

@@ -1,5 +1,8 @@
 #include <cstdlib>
 #include "rendering/m2_renderer.hpp"
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include "rendering/m2_renderer_internal.h"
 #include "rendering/m2_model_classifier.hpp"
 #include "rendering/vk_context.hpp"
@@ -350,6 +353,11 @@ void M2Renderer::removeInstances(const std::vector<uint32_t>& instanceIds) {
 }
 
 void M2Renderer::clear() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        for (auto& [id, model] : models) destroyModelGPU(model);
+    }
+#endif
     if (vkCtx_) {
         vkDeviceWaitIdle(vkCtx_->getDevice());
         for (auto& [id, model] : models) {
@@ -703,7 +711,8 @@ size_t M2Renderer::evictUnreferencedTextures(size_t bytesNeeded) {
         // has fenced. std::function needs a copyable capture, hence the shared
         // pointer around what was a unique one.
         auto doomed = std::shared_ptr<VkTexture>(it->second.texture.release());
-        vkCtx_->deferAfterAllFrameFences([doomed]() mutable { doomed.reset(); });
+        // On Metal the command buffers retain what they sample, so it can go now.
+        if (vkCtx_) vkCtx_->deferAfterAllFrameFences([doomed]() mutable { doomed.reset(); });
         textureCache.erase(it);
         ++dropped;
     }
@@ -821,6 +830,16 @@ VkTexture* M2Renderer::loadTexture(const std::string& path, uint32_t texFlags) {
 
     // Create Vulkan texture
     auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        tex->uploadBLPMetal(*metal_, blp);
+        // Clamped or repeating as the flags ask; Metal's samplers are shared,
+        // one per combination, so the two axes wrap alike here.
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             (texFlags & 0x3) ? MetalContext::Address::Repeat
+                                                              : MetalContext::Address::ClampToEdge));
+    } else
+#endif
     tex->uploadBLP(*vkCtx_, blp);
 
     // M2Texture flags: bit 0 = WrapS (1=repeat, 0=clamp), bit 1 = WrapT
@@ -843,8 +862,10 @@ VkTexture* M2Renderer::loadTexture(const std::string& path, uint32_t texFlags) {
         const char* set = std::getenv("WOWEE_SKY_MIP_BIAS");
         return set ? std::strtof(set, nullptr) : 0.0f;
     }();
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, wrapS, wrapT,
-                       16.0f, skyMode_ ? skyMipBias : 0.0f);
+    if (vkCtx_) {
+        tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, wrapS, wrapT,
+                           16.0f, skyMode_ ? skyMipBias : 0.0f);
+    }
 
     VkTexture* texPtr = tex.get();
 

@@ -68,6 +68,8 @@ bool MetalContext::initialize(SDL_Window* window) {
     }
 
     frameSlots_ = dispatch_semaphore_create(kFramesInFlight);
+    supportsBC_ = device_->supportsBCTextureCompression();
+    LOG_INFO("Metal: BC textures ", supportsBC_ ? "sampled directly" : "decoded on upload");
 
     // The stand-ins every pass can bind where the shader declares something
     // the pass has none of.
@@ -286,6 +288,57 @@ MTL::Texture* MetalContext::uploadTexture(const uint8_t* rgba, uint32_t width, u
     return texture;
 }
 
+MTL::Texture* MetalContext::uploadCompressedTexture(uint32_t format, uint32_t width,
+                                                    uint32_t height, uint32_t blockBytes,
+                                                    const std::vector<std::vector<uint8_t>>& levels) {
+    if (!device_ || levels.empty() || width == 0 || height == 0) return nullptr;
+    auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
+        static_cast<MTL::PixelFormat>(format), width, height, false);
+    desc->setMipmapLevelCount(levels.size());
+    desc->setUsage(MTL::TextureUsageShaderRead);
+    desc->setStorageMode(MTL::StorageModePrivate);
+    MTL::Texture* texture = device_->newTexture(desc);
+    if (!texture) return nullptr;
+
+    // Every level into one staging buffer, then a copy per level.
+    size_t total = 0;
+    for (const auto& level : levels) total += level.size();
+    MTL::Buffer* staging = newBuffer(nullptr, total);
+    if (!staging) {
+        texture->release();
+        return nullptr;
+    }
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    MTL::CommandBuffer* cmd = queue_->commandBuffer();
+    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    size_t offset = 0;
+    bool ok = true;
+    for (size_t i = 0; i < levels.size(); ++i) {
+        const uint32_t w = std::max(1u, width >> i);
+        const uint32_t h = std::max(1u, height >> i);
+        const size_t rowBytes = static_cast<size_t>(std::max(1u, (w + 3) / 4)) * blockBytes;
+        const size_t imageBytes = rowBytes * std::max(1u, (h + 3) / 4);
+        if (levels[i].size() < imageBytes) {
+            ok = false;
+            break;
+        }
+        std::memcpy(static_cast<uint8_t*>(staging->contents()) + offset, levels[i].data(),
+                    imageBytes);
+        blit->copyFromBuffer(staging, offset, rowBytes, imageBytes, MTL::Size::Make(w, h, 1),
+                             texture, 0, i, MTL::Origin::Make(0, 0, 0));
+        offset += levels[i].size();
+    }
+    blit->endEncoding();
+    if (ok) cmd->commit();
+    pool->release();
+    staging->release();
+    if (!ok) {
+        texture->release();
+        return nullptr;
+    }
+    return texture;
+}
+
 MTL::Texture* MetalContext::uploadInterfaceTexture(const uint8_t* rgba, uint32_t width,
                                                    uint32_t height) {
     MTL::Texture* texture = uploadTexture(rgba, width, height);
@@ -337,11 +390,13 @@ MTL::SamplerState* MetalContext::shadowSampler() {
     return shadowSampler_;
 }
 
-MTL::DepthStencilState* MetalContext::depthState(bool test, bool write) {
-    const int index = (test ? 2 : 0) | (write ? 1 : 0);
+MTL::DepthStencilState* MetalContext::depthState(bool test, bool write, bool lessEqual) {
+    const int index = (lessEqual ? 4 : 0) | (test ? 2 : 0) | (write ? 1 : 0);
     if (depthStates_[index]) return depthStates_[index];
     auto* desc = MTL::DepthStencilDescriptor::alloc()->init();
-    desc->setDepthCompareFunction(test ? MTL::CompareFunctionLess : MTL::CompareFunctionAlways);
+    desc->setDepthCompareFunction(!test ? MTL::CompareFunctionAlways
+                                  : lessEqual ? MTL::CompareFunctionLessEqual
+                                              : MTL::CompareFunctionLess);
     desc->setDepthWriteEnabled(write);
     depthStates_[index] = device_->newDepthStencilState(desc);
     desc->release();

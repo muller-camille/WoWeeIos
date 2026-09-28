@@ -2,6 +2,11 @@
 #include "core/platform.hpp"
 #include "rendering/placement_transform.hpp"
 #include "rendering/m2_renderer.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include "rendering/rt_bvh.hpp"
 #include "rendering/rt_scene.hpp"
 #include "core/env_flag.hpp"
@@ -1087,6 +1092,12 @@ void M2Renderer::invalidateCullOutput(uint32_t frameIndex) {
 
 void M2Renderer::shutdown() {
     LOG_INFO("Shutting down M2 renderer...");
+#ifdef WOWEE_METAL
+    if (metal_) {
+        shutdownMetal();
+        return;
+    }
+#endif
     if (!vkCtx_) return;
 
     vkDeviceWaitIdle(vkCtx_->getDevice());
@@ -1213,6 +1224,19 @@ void M2Renderer::shutdown() {
 }
 
 void M2Renderer::destroyModelGPU(M2ModelGPU& model) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Command buffers still in flight retain the buffers they draw from.
+        if (model.mtlVertexBuffer) { model.mtlVertexBuffer->release(); model.mtlVertexBuffer = nullptr; }
+        if (model.mtlIndexBuffer) { model.mtlIndexBuffer->release(); model.mtlIndexBuffer = nullptr; }
+        // The material is the CPU's own on Metal, handed over with each draw.
+        for (auto& batch : model.batches) {
+            delete static_cast<M2MaterialUBO*>(batch.materialUBOMapped);
+            batch.materialUBOMapped = nullptr;
+        }
+        return;
+    }
+#endif
     if (!vkCtx_) return;
     releaseRtModel(model);
     VmaAllocator alloc = vkCtx_->getAllocator();
@@ -1787,7 +1811,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
 
     // Batch all GPU uploads (VB, IB, textures) into a single command buffer
     // submission with one fence wait, instead of one fence wait per upload.
-    vkCtx_->beginUploadBatch();
+    if (vkCtx_) vkCtx_->beginUploadBatch();
 
     if (hasGeometry) {
         // Create VBO with interleaved vertex data
@@ -1821,8 +1845,21 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
             vertexData.push_back(static_cast<float>(std::min(v.boneIndices[3], uint8_t(127))));
         }
 
+#ifdef WOWEE_METAL
+        if (metal_) {
+            // Shared and written once: the GPU reads the CPU's memory directly.
+            gpuModel.mtlVertexBuffer = metal_->newBuffer(vertexData.data(),
+                                                         vertexData.size() * sizeof(float));
+            gpuModel.mtlIndexBuffer = metal_->newBuffer(model.indices.data(),
+                                                        model.indices.size() * sizeof(uint16_t));
+            if (!gpuModel.mtlVertexBuffer || !gpuModel.mtlIndexBuffer) {
+                LOG_ERROR("M2Renderer::loadModel: Metal buffer upload failed for model ", modelId);
+            }
+        } else
+#endif
         // Upload vertex buffer to GPU
-        {
+        if (vkCtx_) {
+            {
             auto buf = uploadBuffer(*vkCtx_,
                 vertexData.data(), vertexData.size() * sizeof(float),
                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -1841,6 +1878,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
 
         if (!gpuModel.vertexBuffer || !gpuModel.indexBuffer) {
             LOG_ERROR("M2Renderer::loadModel: GPU buffer upload failed for model ", modelId);
+        }
         }
     }
 
@@ -1956,7 +1994,7 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     // Pre-allocate one stable descriptor set per particle emitter to avoid per-frame allocation.
     // This prevents materialDescPool_ exhaustion when many emitters are active each frame.
     if (particleTexLayout_ && materialDescPool_ && !model.particleEmitters.empty()) {
-        VkDevice device = vkCtx_->getDevice();
+        VkDevice device = vkCtx_ ? vkCtx_->getDevice() : VK_NULL_HANDLE;
         gpuModel.particleTexSets.resize(model.particleEmitters.size(), VK_NULL_HANDLE);
         for (size_t ei = 0; ei < model.particleEmitters.size(); ei++) {
             VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -1987,7 +2025,9 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     // Copy ribbon emitter data and resolve textures
     gpuModel.ribbonEmitters = model.ribbonEmitters;
     if (!model.ribbonEmitters.empty()) {
-        VkDevice device = vkCtx_->getDevice();
+        // Null on Metal, which has no ribbon sets to allocate yet; the
+        // textures are still resolved, for when it does.
+        VkDevice device = vkCtx_ ? vkCtx_->getDevice() : VK_NULL_HANDLE;
         gpuModel.ribbonTextures.resize(model.ribbonEmitters.size(), whiteTexture_.get());
         gpuModel.ribbonTexSets.resize(model.ribbonEmitters.size(), VK_NULL_HANDLE);
         for (size_t ri = 0; ri < model.ribbonEmitters.size(); ri++) {
@@ -2469,10 +2509,33 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
         }
     }
 
-    vkCtx_->endUploadBatch();
+    if (vkCtx_) vkCtx_->endUploadBatch();
 
     // Allocate Vulkan descriptor sets and UBOs for each batch
     for (auto& bgpu : gpuModel.batches) {
+#ifdef WOWEE_METAL
+        // The material as the CPU keeps it, passed with each draw. Written
+        // here as below, and by the draw loop as on Vulkan.
+        if (metal_) {
+            auto* mat = new M2MaterialUBO{};
+            mat->hasTexture = (bgpu.texture != nullptr && bgpu.texture != whiteTexture_.get()) ? 1 : 0;
+            mat->alphaTest = m2BatchNeedsAlphaTest(bgpu.blendMode, bgpu.hasAlpha) ? 1 : 0;
+            mat->colorKeyBlack = m2BatchWantsColorKey(bgpu.blendMode, bgpu.colorKeyBlack) ? 1 : 0;
+            mat->tintR = bgpu.tint.r;
+            mat->tintG = bgpu.tint.g;
+            mat->tintB = bgpu.tint.b;
+            mat->colorKeyThreshold = 0.08f;
+            mat->unlit = (bgpu.materialFlags & 0x01) ? 1 : 0;
+            mat->blendMode = bgpu.blendMode;
+            mat->volumetricBeam = bgpu.volumetricBeam ? 1 : 0;
+            mat->fadeAlpha = 1.0f;
+            mat->interiorDarken = 0.0f;
+            mat->specularIntensity = 0.5f;
+            mat->emissiveBoost = bgpu.preserveGlowMesh ? 2.4f : 1.0f;
+            bgpu.materialUBOMapped = mat;
+            continue;
+        }
+#endif
         // Create combined UBO for M2Params (binding 1) + M2Material (binding 2)
         // We allocate them as separate buffers for clarity
         VmaAllocationInfo matAllocInfo{};
@@ -2704,6 +2767,166 @@ void M2Renderer::syncRtScene() {
         }
     }
 }
+
+VkPipeline M2Renderer::vulkanPipeline(PipelineKind kind) const {
+    switch (kind) {
+        case PipelineKind::Opaque: return opaquePipeline_;
+        case PipelineKind::AlphaTest: return alphaTestPipeline_;
+        case PipelineKind::Cutout: return cutoutPipeline_;
+        case PipelineKind::Alpha: return alphaPipeline_;
+        case PipelineKind::Additive: return additivePipeline_;
+    }
+    return opaquePipeline_;
+}
+
+#ifdef WOWEE_METAL
+bool M2Renderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* assets,
+                                 uint32_t colorFormat, uint32_t depthFormat,
+                                 uint32_t sampleCount) {
+    if (initialized_) { assetManager = assets; return true; }
+    if (!ctx) return false;
+    metal_ = ctx;
+    assetManager = assets;
+    instances.reserve(65536);
+
+    const unsigned hc = std::thread::hardware_concurrency();
+    const size_t availableCores = (hc > 1u) ? static_cast<size_t>(hc - 1u) : 1ull;
+    const size_t defaultAnimThreads = std::max<size_t>(1, availableCores / 2);
+    numAnimThreads_ = static_cast<uint32_t>(std::max<size_t>(
+        1, envSizeOrDefault("WOWEE_M2_ANIM_THREADS", defaultAnimThreads)));
+    LOG_INFO("Initializing M2 renderer (Metal, ", numAnimThreads_, " anim threads)...");
+
+    const MetalBindings vert("m2_vert");
+    const MetalBindings frag("m2_frag");
+    mtlSlots_.vertPerFrame = vert.buffer(0, 0);
+    mtlSlots_.vertBones = vert.buffer(2, 0);
+    mtlSlots_.vertInstances = vert.buffer(3, 0);
+    mtlSlots_.vertPush = vert.pushConstants();
+    mtlSlots_.fragPerFrame = frag.buffer(0, 0);
+    mtlSlots_.fragMaterial = frag.buffer(1, 2);
+    mtlSlots_.fragTexture = frag.texture(1, 0);
+    mtlSlots_.fragTextureSampler = frag.sampler(1, 0);
+    mtlSlots_.fragShadow = frag.texture(0, 1);
+    mtlSlots_.fragShadowSampler = frag.sampler(0, 1);
+    mtlSlots_.fragFog = frag.texture(0, 2);
+    mtlSlots_.fragFogSampler = frag.sampler(0, 2);
+    mtlSlots_.fragRtA = frag.texture(0, 3);
+    mtlSlots_.fragRtASampler = frag.sampler(0, 3);
+    mtlSlots_.fragRtB = frag.texture(0, 4);
+    mtlSlots_.fragRtBSampler = frag.sampler(0, 4);
+    if (!vert.valid() || !frag.valid()) {
+        LOG_ERROR("M2 (Metal): the shader manifest does not match the M2 shaders");
+        metal_ = nullptr;
+        return false;
+    }
+
+    // Eighteen floats a vertex, as buildMainPassPipelines describes it.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    struct Attr { uint32_t location; MTL::VertexFormat format; uint32_t floatOffset; };
+    const Attr attrs[] = {
+        {0, MTL::VertexFormatFloat3, 0},   // position
+        {1, MTL::VertexFormatFloat3, 3},   // normal
+        {2, MTL::VertexFormatFloat2, 6},   // texCoord0
+        {5, MTL::VertexFormatFloat2, 8},   // texCoord1
+        {3, MTL::VertexFormatFloat4, 10},  // boneWeights
+        {4, MTL::VertexFormatFloat4, 14},  // boneIndices, as floats
+    };
+    for (const Attr& a : attrs) {
+        auto* attr = vd->attributes()->object(a.location);
+        attr->setFormat(a.format);
+        attr->setOffset(a.floatOffset * sizeof(float));
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(18 * sizeof(float));
+
+    struct Spec { PipelineKind kind; MetalBlend blend; bool alphaToCoverage; const char* label; };
+    const Spec specs[] = {
+        {PipelineKind::Opaque, MetalBlend::None, false, "m2 opaque"},
+        {PipelineKind::AlphaTest, MetalBlend::Alpha, false, "m2 alpha test"},
+        {PipelineKind::Cutout, MetalBlend::None, true, "m2 cutout"},
+        {PipelineKind::Alpha, MetalBlend::Alpha, false, "m2 alpha"},
+        {PipelineKind::Additive, MetalBlend::Additive, false, "m2 additive"},
+    };
+    bool built = true;
+    for (const Spec& spec : specs) {
+        MetalPipelineDesc desc;
+        desc.vertexFunction = "m2_vert";
+        desc.fragmentFunction = "m2_frag";
+        desc.vertexDescriptor = vd;
+        desc.colorFormat = colorFormat;
+        desc.depthFormat = depthFormat;
+        desc.sampleCount = sampleCount;
+        desc.blend = spec.blend;
+        desc.alphaToCoverage = spec.alphaToCoverage && sampleCount > 1;
+        desc.label = spec.label;
+        auto*& slot = metalPipelines_[static_cast<size_t>(spec.kind)];
+        slot = buildMetalPipeline(*metal_, desc);
+        built = built && slot != nullptr;
+    }
+    vd->release();
+
+    // The bones and the instance data, a ring of each. Bone slot 0 is the
+    // identity every unanimated instance points at.
+    const glm::mat4 identity(1.0f);
+    for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
+        mtlBones_[i] = metal_->newBuffer(nullptr, kMetalBoneCapacity * sizeof(glm::mat4));
+        mtlInstances_[i] = metal_->newBuffer(nullptr, MAX_INSTANCE_DATA * sizeof(M2InstanceGPU));
+        if (!mtlBones_[i] || !mtlInstances_[i]) built = false;
+        else std::memcpy(mtlBones_[i]->contents(), &identity, sizeof(identity));
+    }
+
+    const uint8_t white[4] = {255, 255, 255, 255};
+    whiteTexture_ = std::make_unique<VkTexture>();
+    whiteTexture_->uploadMetal(*metal_, white, 1, 1, false);
+    whiteTexture_->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                   MetalContext::Address::Repeat));
+
+    if (!built) {
+        LOG_ERROR("M2 (Metal): pipelines or buffers could not be made");
+        shutdownMetal();
+        return false;
+    }
+
+    textureCacheBudgetBytes_ =
+        envSizeMBOrDefault("WOWEE_M2_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
+    modelCacheLimit_ = envSizeMBOrDefault("WOWEE_M2_MODEL_LIMIT", 6000);
+    LOG_INFO("M2 texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
+    initialized_ = true;
+    LOG_INFO("M2 renderer initialized (Metal)");
+    return true;
+}
+
+void M2Renderer::shutdownMetal() {
+    for (auto& [id, model] : models) destroyModelGPU(model);
+    models.clear();
+    pinnedModelIds_.clear();
+    instances.clear();
+    spatialGrid.clear();
+    instanceIndexById.clear();
+    instanceDedupMap_.clear();
+    // Released with the unique_ptrs; command buffers in flight hold their own.
+    textureCache.clear();
+    whiteTexture_.reset();
+    glowTexture_.reset();
+    textureCacheBytes_ = 0;
+    textureCacheCounter_ = 0;
+    texturePropsByPtr_.clear();
+    failedTextureCache_.clear();
+    failedTextureRetryAt_.clear();
+    loggedTextureLoadFails_.clear();
+    textureLookupSerial_ = 0;
+    smokeParticles.clear();
+    for (auto*& pipeline : metalPipelines_) {
+        if (pipeline) { pipeline->release(); pipeline = nullptr; }
+    }
+    for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
+        if (mtlBones_[i]) { mtlBones_[i]->release(); mtlBones_[i] = nullptr; }
+        if (mtlInstances_[i]) { mtlInstances_[i]->release(); mtlInstances_[i] = nullptr; }
+    }
+    metal_ = nullptr;
+    initialized_ = false;
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee
