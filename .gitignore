@@ -84,6 +84,7 @@ extern/*
 !extern/FidelityFX-FSR2
 !extern/vk_mem_alloc.h
 !extern/lua-5.1.5
+!extern/metal-cpp
 !extern/VERSIONS.md
 
 # ImGui state

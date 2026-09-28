@@ -15,4 +15,5 @@ when upgrading any dependency so maintainers can track drift.
 | stb_image | 2.30 | https://github.com/nothings/stb | Single header |
 | stb_image_write | 1.16 | https://github.com/nothings/stb | Single header |
 | Catch2 | amalgamated (Catch2 v3.x) | https://github.com/catchorg/Catch2 | Vendored `catch_amalgamated.{cpp,hpp}` — test build only |
+| metal-cpp | macOS 26 / iOS 26 (`metal-cpp_26.zip`, sha256 4df3c078…a3a4) | https://developer.apple.com/metal/cpp/ | Headers only, `SingleHeader/` left out. iOS build only (docs/plan-metal.md) |
 | Lua | 5.1.5 | https://www.lua.org/ | Intentionally 5.1 for WoW addon API compatibility |
