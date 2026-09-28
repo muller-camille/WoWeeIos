@@ -25,6 +25,7 @@ struct ImVec2;
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering { class VkContext; }
+namespace core { class Window; }
 
 namespace ui {
 
@@ -33,7 +34,8 @@ struct Widget;
 
 class WidgetRenderer {
 public:
-    void initialize(pipeline::AssetManager* assets, rendering::VkContext* vkCtx);
+    /// The window is where the textures go: its Vulkan or Metal context.
+    void initialize(pipeline::AssetManager* assets, core::Window* window);
 
     /// Lay the tree out for this screen and draw it. Safe to call with no
     /// device or assets - it simply does nothing, which is what the headless
@@ -153,6 +155,8 @@ private:
                       float x0, float y0, float x1, float y1);
 
     pipeline::AssetManager* assets_ = nullptr;
+    core::Window* window_ = nullptr;
+    /// The window's Vulkan context, for the upload batches; null on Metal.
     rendering::VkContext* vkCtx_ = nullptr;
     std::unordered_map<std::string, VkDescriptorSet> textures_;
     /// The cached set for a path, or null when nothing is cached for it -

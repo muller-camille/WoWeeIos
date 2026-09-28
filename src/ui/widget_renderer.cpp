@@ -12,6 +12,8 @@
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/blp_loader.hpp"
 #include "rendering/vk_context.hpp"
+#include "rendering/imgui_texture.hpp"
+#include "core/window.hpp"
 #include "core/app_clock.hpp"
 #include "core/env_flag.hpp"
 #include "ui/interface_fonts.hpp"
@@ -59,10 +61,10 @@ std::string strippedText(const std::string& in) {
 
 } // namespace
 
-void WidgetRenderer::initialize(pipeline::AssetManager* assets,
-                                rendering::VkContext* vkCtx) {
+void WidgetRenderer::initialize(pipeline::AssetManager* assets, core::Window* window) {
     assets_ = assets;
-    vkCtx_ = vkCtx;
+    window_ = window;
+    vkCtx_ = window ? window->getVkContext() : nullptr;
 }
 
 // Additive art is uploaded as its own image, because the same file can be
@@ -143,7 +145,9 @@ VkDescriptorSet WidgetRenderer::texture(const std::string& path, bool add) {
     const std::string key = cacheKey(path, add);
     auto it = textures_.find(key);
     if (it != textures_.end()) return it->second;
-    if (!assets_ || !vkCtx_ || path.empty()) return kMissing;
+    if (!assets_ || !rendering::hasInterfaceTextureBackend(window_) || path.empty()) {
+        return kMissing;
+    }
 
     std::string resolved;
     auto data = readTextureFile(path, resolved);
@@ -171,8 +175,8 @@ VkDescriptorSet WidgetRenderer::texture(const std::string& path, bool add) {
             image.data[i + 3] = static_cast<uint8_t>((image.data[i + 3] * lum) / 255);
         }
     }
-    VkDescriptorSet set = vkCtx_->uploadImGuiTexture(image.data.data(),
-                                                     image.width, image.height);
+    VkDescriptorSet set = rendering::uploadInterfaceTexture(window_, image.data.data(),
+                                                            image.width, image.height);
     textures_[key] = set;
     return set;
 }
@@ -2199,6 +2203,10 @@ void WidgetRenderer::draw(WidgetTree& tree, float screenW, float screenH) {
         vkCtx_->beginUploadBatch();
         for (const auto& p : wanted) texture(*p.first, p.second);
         vkCtx_->endUploadBatchSync();
+    } else if (!wanted.empty()) {
+        // Metal: each upload is its own blit on the queue, committed before
+        // the frame that draws with it.
+        for (const auto& p : wanted) texture(*p.first, p.second);
     }
 
     // Interface units to pixels. The tree is laid out against a virtual screen

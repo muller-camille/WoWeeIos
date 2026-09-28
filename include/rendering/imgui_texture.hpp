@@ -9,6 +9,7 @@
 #include "rendering/vk_texture.hpp"
 
 namespace wowee {
+namespace core { class Window; }
 namespace rendering {
 
 class VkContext;
@@ -27,6 +28,17 @@ class VkContext;
 /// those run in an order no single call site controls, so the check belongs
 /// here rather than in an ordering that has to be got right everywhere.
 void removeImGuiTexture(VkDescriptorSet& descriptorSet);
+
+/// An RGBA8 picture as a texture the interface draws, on whichever backend
+/// the window draws through: VkContext::uploadImGuiTexture on Vulkan, and on
+/// Metal the MTL::Texture itself - the ImTextureID ImGui's Metal backend
+/// expects - carried in the same handle until the type goes with Vulkan at M6.
+/// Either way it lives as long as the context and is not the caller's to free.
+/// Null when there is no context to upload to.
+VkDescriptorSet uploadInterfaceTexture(core::Window* window, const uint8_t* rgba,
+                                       int width, int height);
+/// Whether the window has a context uploadInterfaceTexture can use.
+bool hasInterfaceTextureBackend(const core::Window* window);
 
 struct ImGuiTexture {
     std::unique_ptr<VkTexture> texture;

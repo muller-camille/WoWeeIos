@@ -863,8 +863,7 @@ bool Application::initialize() {
         };
         // The widget renderer needs the asset manager for Interface\ art and the
         // device to upload it; both exist by now.
-        widgetRenderer_.initialize(assetManager.get(),
-                                   window ? window->getVkContext() : nullptr);
+        widgetRenderer_.initialize(assetManager.get(), window.get());
         if (addonManager_->initialize(gameHandler.get(), luaSvc)) {
             // FrameXML and the AddOns folder are loose directories on disk, not
             // assets reached through the manifest, and they belong to the

@@ -4,7 +4,7 @@
 #include "core/window.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/blp_loader.hpp"
-#include "rendering/vk_context.hpp"
+#include "rendering/imgui_texture.hpp"
 #include "pipeline/dbc_layout.hpp"
 #include "core/logger.hpp"
 
@@ -27,11 +27,11 @@ VkDescriptorSet uploadUiTextureFromBlp(pipeline::AssetManager* assetManager,
     auto image = pipeline::BLPLoader::load(blpData);
     if (!image.isValid()) return fail(UiTextureLoad::DecodeFailed);
 
-    auto* vkCtx = window ? window->getVkContext() : nullptr;
-    if (!vkCtx) return fail(UiTextureLoad::NoContext);
+    if (!rendering::hasInterfaceTextureBackend(window)) return fail(UiTextureLoad::NoContext);
 
     if (why) *why = UiTextureLoad::Ok;
-    return vkCtx->uploadImGuiTexture(image.data.data(), image.width, image.height);
+    return rendering::uploadInterfaceTexture(window, image.data.data(), image.width,
+                                             image.height);
 }
 
 

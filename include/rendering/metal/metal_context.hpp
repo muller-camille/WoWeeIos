@@ -4,6 +4,7 @@
 #include <dispatch/dispatch.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct SDL_Window;
 
@@ -81,6 +82,11 @@ public:
                                               bool mipmaps = false);
     void releaseTexture(MTL::Texture*& texture);
 
+    /// An interface texture that lives as long as this context, as those from
+    /// VkContext::uploadImGuiTexture do: not the caller's to release.
+    [[nodiscard]] MTL::Texture* uploadInterfaceTexture(const uint8_t* rgba, uint32_t width,
+                                                       uint32_t height);
+
     /// A shared buffer, filled from data when it is given. Retained.
     [[nodiscard]] MTL::Buffer* newBuffer(const void* data, size_t bytes);
 
@@ -147,6 +153,7 @@ private:
     MTL::Texture* white_ = nullptr;
     MTL::Texture* neutralDepth_ = nullptr;
     MTL::Texture* neutralVolume_ = nullptr;
+    std::vector<MTL::Texture*> interfaceTextures_;
     std::string capturePath_;
 };
 

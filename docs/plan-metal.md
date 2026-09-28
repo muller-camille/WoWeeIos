@@ -4,7 +4,7 @@
 iPhone and iPad as its only platforms. Vulkan, MoltenVK, and the Linux, Windows, macOS and
 Android builds go at the end of the port (M6), not the start.
 
-**Status:** M0 done, M1 nearly done, M2 under way. On 2026-09-28 the Mac build compiled all 80
+**Status:** M0 and M1 done, M2 under way. On 2026-09-28 the Mac build compiled all 80
 translated shaders into `default.metallib` with no error or warning, the library in the app holds
 exactly the 80 functions the manifest lists, and the MoltenVK build still played on the iPad.
 
@@ -20,8 +20,13 @@ With `WOWEE_METAL` (on by default for iOS) the iPad draws, through Metal:
   indices from `MetalBindings`, which reads the manifest and fails at pipeline creation when an
   entry is missing. The preview's multisampled colour and depth are memoryless.
 
-Entering the world is refused in the Metal build until M3. Left for M1: the widget textures
-(`ui_texture_load`, `widget_renderer`) the world's interface uses. Left for M2: `M2Renderer`, BC
+Every interface texture now goes through `uploadInterfaceTexture`, which uploads to whichever
+context the window has: the icons, cursors and raid marks of `ui_texture_load` and FrameXML's art
+in `widget_renderer`. Those are only drawn in the world, so on the device they wait for M3 to be
+seen; both backends compile them. The world map's layers and the loading screen keep their Vulkan
+textures until M4 and M3, where the rest of them is ported.
+
+Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
 textures where the GPU has them, and checking the character list's preview and the equipment on
 the device. `WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config
 root.

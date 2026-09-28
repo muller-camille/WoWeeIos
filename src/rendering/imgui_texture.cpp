@@ -4,6 +4,10 @@
 #include <backends/imgui_impl_vulkan.h>
 
 #include "rendering/vk_context.hpp"
+#include "core/window.hpp"
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -18,6 +22,29 @@ void removeImGuiTexture(VkDescriptorSet& descriptorSet) {
         ImGui_ImplVulkan_RemoveTexture(descriptorSet);
     }
     descriptorSet = VK_NULL_HANDLE;
+}
+
+VkDescriptorSet uploadInterfaceTexture(core::Window* window, const uint8_t* rgba,
+                                       int width, int height) {
+    if (!window || !rgba || width <= 0 || height <= 0) return VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+    if (auto* metal = window->getMetalContext()) {
+        return reinterpret_cast<VkDescriptorSet>(metal->uploadInterfaceTexture(
+            rgba, static_cast<uint32_t>(width), static_cast<uint32_t>(height)));
+    }
+#endif
+    if (auto* vkCtx = window->getVkContext()) {
+        return vkCtx->uploadImGuiTexture(rgba, width, height);
+    }
+    return VK_NULL_HANDLE;
+}
+
+bool hasInterfaceTextureBackend(const core::Window* window) {
+    if (!window) return false;
+#ifdef WOWEE_METAL
+    if (window->getMetalContext()) return true;
+#endif
+    return window->getVkContext() != nullptr;
 }
 
 void ImGuiTexture::destroy(VkDevice device, VmaAllocator allocator) {

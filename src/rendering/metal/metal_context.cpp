@@ -133,6 +133,8 @@ void MetalContext::shutdown() {
     for (auto*& state : depthStates_) {
         if (state) { state->release(); state = nullptr; }
     }
+    for (MTL::Texture*& texture : interfaceTextures_) releaseTexture(texture);
+    interfaceTextures_.clear();
     releaseTexture(white_);
     releaseTexture(neutralDepth_);
     releaseTexture(neutralVolume_);
@@ -281,6 +283,13 @@ MTL::Texture* MetalContext::uploadTexture(const uint8_t* rgba, uint32_t width, u
     pool->release();
     // The command buffer holds it until the copy is done.
     staging->release();
+    return texture;
+}
+
+MTL::Texture* MetalContext::uploadInterfaceTexture(const uint8_t* rgba, uint32_t width,
+                                                   uint32_t height) {
+    MTL::Texture* texture = uploadTexture(rgba, width, height);
+    if (texture) interfaceTextures_.push_back(texture);
     return texture;
 }
 
