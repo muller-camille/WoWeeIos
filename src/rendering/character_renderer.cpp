@@ -3225,7 +3225,9 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         uint32_t frameSlot;
         uint32_t uboStride;
         uint32_t ringCapacityBytes;
-        decltype(getMaterialDescriptorSet)& getMaterialDescriptorSet;
+        // Not named after the lambda: GCC refuses a member whose name changes
+        // meaning inside the class that declares it (-Wchanges-meaning).
+        decltype(getMaterialDescriptorSet)& materialSetFor;
 
         bool hasGeometry(const M2ModelGPU& gpuModel) const {
             return gpuModel.vertexBuffer != VK_NULL_HANDLE;
@@ -3274,7 +3276,7 @@ void CharacterRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             memcpy(static_cast<char*>(r.materialRingMapped_[frameSlot]) + matOffset, &matData, sizeof(CharMaterialUBO));
             r.materialRingOffset_[frameSlot] = matOffset + uboStride;
 
-            VkDescriptorSet materialSet = getMaterialDescriptorSet(bindTex, normalMap);
+            VkDescriptorSet materialSet = materialSetFor(bindTex, normalMap);
             if (!materialSet) return;
 
             // Bind material descriptor set (set 1)
