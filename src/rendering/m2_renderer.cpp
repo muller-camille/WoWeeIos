@@ -2,6 +2,7 @@
 #include "core/platform.hpp"
 #include "rendering/placement_transform.hpp"
 #include "rendering/m2_renderer.hpp"
+#include "rendering/vertex_layout.hpp"
 #ifdef WOWEE_METAL
 #include <Metal/Metal.hpp>
 #include "rendering/metal/metal_context.hpp"
@@ -2893,6 +2894,17 @@ bool M2Renderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* asse
     whiteTexture_->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
                                                    MetalContext::Address::Repeat));
 
+    // Nor are the shadows: position and the first texture coordinate of the
+    // eighteen-float vertex are all shadow.vert reads.
+    if (built && !skyMode_ && mtlShadowSlots_.load()) {
+        const VertexAttribute shadowAttrs[] = {
+            {.location = 0, .componentCount = 3, .offset = 0},
+            {.location = 1, .componentCount = 2, .offset = 6 * sizeof(float)},
+        };
+        mtlShadowPipeline_ = buildMetalShadowPipeline(*metal_, shadowAttrs, 2,
+                                                      18 * sizeof(float), "m2 shadow");
+    }
+
     // The effects are not worth failing the models over: without them the
     // world still draws, only without its fires and trails.
     if (built && !skyMode_ && !initializeEffectsMetal(colorFormat, depthFormat, sampleCount)) {
@@ -3040,6 +3052,7 @@ void M2Renderer::shutdownMetal() {
     for (auto*& pipeline : mtlParticlePipelines_) release(pipeline);
     for (auto*& pipeline : mtlRibbonPipelines_) release(pipeline);
     release(mtlSmokePipeline_);
+    release(mtlShadowPipeline_);
     for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
         release(mtlBones_[i]);
         release(mtlInstances_[i]);

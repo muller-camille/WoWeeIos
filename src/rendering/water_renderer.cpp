@@ -2287,13 +2287,18 @@ void WaterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer*
                                                MetalContext::Address::ClampToEdge);
     encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
     encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
-    // No scene copy yet (sceneValid is 0 below, so the colour is not read),
-    // the depth reads as far, and the reflection as none.
-    encoder->setFragmentTexture(m.blackTexture(), s.fragSceneColor);
+    // The world as drawn before the water, when the renderer copied it:
+    // refraction and the shoreline fade. Without it the colour is not read
+    // (sceneValid is 0 below) and the depth reads as far.
+    const bool haveScene = mtlSceneColor_ && mtlSceneDepth_;
+    encoder->setFragmentTexture(haveScene ? mtlSceneColor_ : m.blackTexture(), s.fragSceneColor);
     encoder->setFragmentSamplerState(clampLinear, s.fragSceneColorSampler);
-    encoder->setFragmentTexture(m.whiteTexture(), s.fragSceneDepth);
-    encoder->setFragmentSamplerState(clampLinear, s.fragSceneDepthSampler);
-    encoder->setFragmentTexture(m.blackTexture(), s.fragReflection);
+    encoder->setFragmentTexture(haveScene ? mtlSceneDepth_ : m.whiteTexture(), s.fragSceneDepth);
+    encoder->setFragmentSamplerState(m.sampler(MetalContext::Filter::Nearest,
+                                               MetalContext::Address::ClampToEdge),
+                                     s.fragSceneDepthSampler);
+    encoder->setFragmentTexture(mtlReflection_ ? mtlReflection_ : m.blackTexture(),
+                                s.fragReflection);
     encoder->setFragmentSamplerState(clampLinear, s.fragReflectionSampler);
 
     Frustum frustum;
@@ -2327,7 +2332,7 @@ void WaterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer*
         push.screenSize = glm::vec2(static_cast<float>(drawableWidth),
                                     static_cast<float>(drawableHeight));
         push.depthRange = glm::vec2(camera.getNearPlane(), camera.getFarPlane());
-        push.sceneValid = 0.0f;
+        push.sceneValid = haveScene ? 1.0f : 0.0f;
         encoder->setVertexBytes(&push, sizeof(push), s.vertPush);
         encoder->setFragmentBytes(&push, sizeof(push), s.fragPush);
         encoder->setFragmentBytes(surface.mtlMaterial, sizeof(surface.mtlMaterial), s.fragMaterial);

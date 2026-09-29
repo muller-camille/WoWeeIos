@@ -26,6 +26,7 @@
 
 #ifdef WOWEE_METAL
 namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#include "rendering/metal/metal_pipeline.hpp"
 #endif
 
 namespace wowee {
@@ -502,6 +503,10 @@ public:
     /// the Vulkan frame draws them after the models. screenHeight in pixels.
     void renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
                             size_t offset, uint32_t screenHeight);
+    /// The doodads the light sees into the shadow map's pass, foliage
+    /// alpha-tested and bent by the wind as on Vulkan.
+    void renderShadowMetal(MTL::RenderCommandEncoder* encoder, const glm::mat4& lightSpaceMatrix,
+                           float globalTime, float shadowRadius);
 #endif
 
     /** Gather the nearest authored glow cards as inexpensive scene point lights. */
@@ -779,6 +784,11 @@ private:
     template <typename Sink>
     void renderImpl(Sink& sink, const Camera& camera);
     void renderGlowSpritesVulkan(VkCommandBuffer cmd, VkDescriptorSet perFrameSet);
+    /// The shadow pass's culling, grouping and draws, shared by the
+    /// backends; Sink makes the backend's calls.
+    template <typename Sink>
+    void renderShadowImpl(Sink& sink, const glm::mat4& lightSpaceMatrix, float globalTime,
+                          float shadowRadius);
     /// The effects' vertices, written into dst for either backend: how many
     /// were written. The particles and ribbons also fill particleRuns_ and
     /// ribbonDraws_, the draws that go with them.
@@ -808,6 +818,8 @@ private:
     MTL::RenderPipelineState* mtlParticlePipelines_[2] = {};
     MTL::RenderPipelineState* mtlRibbonPipelines_[2] = {};
     MTL::RenderPipelineState* mtlSmokePipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlShadowPipeline_ = nullptr;
+    MetalShadowSlots mtlShadowSlots_;
     MTL::Buffer* mtlParticleVB_[3] = {};
     MTL::Buffer* mtlRibbonVB_[3] = {};
     MTL::Buffer* mtlGlowVB_[3] = {};

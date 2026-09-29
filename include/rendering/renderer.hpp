@@ -29,6 +29,7 @@
 
 #ifdef WOWEE_METAL
 namespace MTL { class Buffer; class Texture; }
+namespace MTLFX { class SpatialScaler; }
 #endif
 
 namespace wowee {
@@ -257,6 +258,12 @@ private:
     void renderUnderwaterOverlay(VkCommandBuffer cmd);
     void renderPostSceneOverlays(VkCommandBuffer cmd, game::GameHandler* gameHandler);
     void renderMinimapOverlay(VkCommandBuffer cmd, game::GameHandler* gameHandler);
+    /// The reflection's per-frame data - the camera mirrored in the nearest
+    /// water - and the water renderer's reflected matrix with it. False when
+    /// there is nothing to reflect: no water, or the eye under it.
+    bool reflectionFrameData(GPUPerFrameData& reflData);
+    /// The sky's parameters for the reflection: no lens flare, no weather.
+    SkyParams reflectionSkyParams() const;
     /// Where the minimap is centred and which way its arrow points, for
     /// either renderer. False when there is no camera to centre it on.
     bool minimapView(game::GameHandler* gameHandler, glm::vec3& center,
@@ -442,6 +449,9 @@ private:
     bool msaaChangePending_ = false;
     void renderShadowPass();
     glm::mat4 computeLightSpaceMatrix();
+    /// SHADOW_MAP_SIZE from the stored extShadowQuality, 1024 by default on a
+    /// phone and 2048 elsewhere.
+    void applyStoredShadowQuality();
 
     std::vector<pipeline::CustomZoneInfo> customZones_;
     pipeline::AssetManager* cachedAssetManager = nullptr;
@@ -487,7 +497,33 @@ private:
     /// The world, then the interface, onto the drawable. Called by endFrame.
     void renderFrameMetal();
     MetalContext* metal_ = nullptr;
-    MTL::Texture* mtlDepth_ = nullptr;      // memoryless, drawable-sized
+    MTL::Texture* mtlDepth_ = nullptr;      // the world's size, stored
+    /// The world is drawn at mtlRenderScale_ of the screen into
+    /// mtlWorldColor_, and MetalFX's spatial scaler brings it up to
+    /// mtlUpscaled_, which is copied to the drawable under the interface -
+    /// what the MoltenVK build does with FSR 1 at its iOS default of 0.67.
+    float mtlRenderScale_ = 1.0f;
+    MTL::Texture* mtlWorldColor_ = nullptr;
+    MTL::Texture* mtlUpscaled_ = nullptr;
+    MTLFX::SpatialScaler* mtlScaler_ = nullptr;
+    uint32_t mtlScalerOutW_ = 0, mtlScalerOutH_ = 0;
+    MTL::Texture* mtlShadowMap_ = nullptr;  // SHADOW_MAP_SIZE square, depth only
+    /// The world as drawn before the water, copied each frame there is water:
+    /// what its refraction and shoreline fade read.
+    MTL::Texture* mtlSceneColor_ = nullptr;
+    MTL::Texture* mtlSceneDepth_ = nullptr;
+    /// The water's reflection: the sky, terrain and buildings seen from the
+    /// camera mirrored in the nearest water, as renderReflectionPass draws
+    /// them on Vulkan. Its per-frame data is the second half of mtlFrameData_.
+    MTL::Texture* mtlReflColor_ = nullptr;
+    MTL::Texture* mtlReflDepth_ = nullptr;
+    void renderReflectionPassMetal(size_t reflOffset);
+    /// Makes the scaler and its output for a screen this size; false when
+    /// MetalFX cannot, and the world is then drawn at full size.
+    bool ensureMetalScaler(uint32_t outW, uint32_t outH);
+    uint32_t mtlShadowMapSize_ = 0;
+    /// The casters into the shadow map, before the world pass samples it.
+    void renderShadowPassMetal();
     uint32_t mtlDepthWidth_ = 0;
     uint32_t mtlDepthHeight_ = 0;
     MTL::Buffer* mtlFrameData_ = nullptr;   // MetalContext::kRingSize GPUPerFrameData

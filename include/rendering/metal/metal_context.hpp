@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <dispatch/dispatch.h>
 #include <string>
@@ -122,6 +123,12 @@ public:
     /// water's reflection - where black means none.
     [[nodiscard]] MTL::Texture* blackTexture() const { return black_; }
     [[nodiscard]] MTL::Texture* neutralDepthTexture() const { return neutralDepth_; }
+    /// The world's shadow map, which the renderer sets once it has one;
+    /// until then, and for anything drawn without it, the neutral depth.
+    void setShadowMap(MTL::Texture* map) { shadowMap_ = map; }
+    [[nodiscard]] MTL::Texture* shadowMap() const {
+        return shadowMap_ ? shadowMap_ : neutralDepth_;
+    }
     [[nodiscard]] MTL::Texture* neutralVolumeTexture() const { return neutralVolume_; }
 
     /// Counts beginFrame calls. With two frames in flight, anything the CPU
@@ -135,6 +142,12 @@ public:
     /// possible when WOWEE_SCREENSHOT was set at initialize: the drawables are
     /// otherwise framebuffer-only and cannot be read back.
     void captureNextFrame(const std::string& path) { capturePath_ = path; }
+
+    /// The GPU's time on the last frame that finished, and how long the last
+    /// beginFrame waited for a frame slot - the CPU waiting on the GPU. For
+    /// WOWEE_FRAME_PROFILE.
+    [[nodiscard]] double lastGpuMs() const { return lastGpuMs_.load(std::memory_order_relaxed); }
+    [[nodiscard]] double lastSlotWaitMs() const { return lastSlotWaitMs_; }
 
     [[nodiscard]] uint32_t drawableWidth() const { return drawableWidth_; }
     [[nodiscard]] uint32_t drawableHeight() const { return drawableHeight_; }
@@ -172,6 +185,9 @@ private:
     MTL::Texture* black_ = nullptr;
     MTL::Texture* neutralDepth_ = nullptr;
     MTL::Texture* neutralVolume_ = nullptr;
+    MTL::Texture* shadowMap_ = nullptr;  // the renderer's; not owned
+    std::atomic<double> lastGpuMs_{0.0};
+    double lastSlotWaitMs_ = 0.0;
     std::vector<MTL::Texture*> interfaceTextures_;
     std::string capturePath_;
 };

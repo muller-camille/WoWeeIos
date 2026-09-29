@@ -3425,6 +3425,25 @@ bool CharacterRenderer::initializeShadow(VkRenderPass shadowRenderPass) {
     return true;
 }
 
+bool CharacterRenderer::shadowBatchCasts(const CharacterInstance& inst,
+                                         const M2ModelGPU& gpuModel,
+                                         const pipeline::M2Batch& batch,
+                                         uint16_t& blendMode) const {
+    blendMode = 0;
+    if (batch.materialIndex < gpuModel.data.materials.size()) {
+        blendMode = gpuModel.data.materials[batch.materialIndex].blendMode;
+    }
+    if (blendMode >= 2) return false; // skip transparent
+    const bool applyGeosetFilter = !inst.activeGeosets.empty();
+    if (applyGeosetFilter &&
+        inst.activeGeosets.find(batch.submeshId) == inst.activeGeosets.end()) return false;
+    if (!applyGeosetFilter) {
+        uint16_t grp = batch.submeshId / 100;
+        if (grp == 17 || grp == 18) return false;
+    }
+    return true;
+}
+
 void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix,
                                      const glm::vec3& shadowCenter, float shadowRadius) {
     if (!shadowPipeline_ || !shadowParams_.set) return;
@@ -3553,19 +3572,9 @@ void CharacterRenderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& light
         vkCmdBindVertexBuffers(cmd, 0, 1, &gpuModel.vertexBuffer, &offset);
         vkCmdBindIndexBuffer(cmd, gpuModel.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
-        bool applyGeosetFilter = !inst.activeGeosets.empty();
         for (const auto& batch : gpuModel.data.batches) {
             uint16_t blendMode = 0;
-            if (batch.materialIndex < gpuModel.data.materials.size()) {
-                blendMode = gpuModel.data.materials[batch.materialIndex].blendMode;
-            }
-            if (blendMode >= 2) continue; // skip transparent
-            if (applyGeosetFilter &&
-                inst.activeGeosets.find(batch.submeshId) == inst.activeGeosets.end()) continue;
-            if (!applyGeosetFilter) {
-                uint16_t grp = batch.submeshId / 100;
-                if (grp == 17 || grp == 18) continue;
-            }
+            if (!shadowBatchCasts(inst, gpuModel, batch, blendMode)) continue;
 
             // An alpha-keyed batch casts the shape of its texture; everything
             // else keeps the white fallback and casts solid. Only the set at
@@ -4530,6 +4539,45 @@ bool CharacterRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManage
     vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(CharVertexGPU));
     vd->layouts()->object(kMetalVertexBufferIndex)->setStepFunction(MTL::VertexStepFunctionPerVertex);
 
+    // The shadow casters: position, the skinning inputs and the texture
+    // coordinate, from the same vertex. Not for the preview, which has no
+    // shadow pass, and not worth failing over.
+    if (!offscreenPreview) {
+        const MetalBindings shadowVert("character_shadow_vert");
+        const MetalBindings shadowFrag("character_shadow_frag");
+        mtlShadowVertBones_ = shadowVert.buffer(1, 0);
+        mtlShadowVertPush_ = shadowVert.pushConstants();
+        mtlShadowFragTex_ = shadowFrag.texture(0, 0);
+        mtlShadowFragSampler_ = shadowFrag.sampler(0, 0);
+        mtlShadowFragParams_ = shadowFrag.buffer(0, 1);
+        if (shadowVert.valid() && shadowFrag.valid()) {
+            auto* svd = MTL::VertexDescriptor::alloc()->init();
+            struct ShadowAttr { uint32_t location; MTL::VertexFormat format; size_t offset; };
+            const ShadowAttr shadowAttrs[] = {
+                {0, MTL::VertexFormatFloat3, offsetof(CharVertexGPU, position)},
+                {1, MTL::VertexFormatUChar4Normalized, offsetof(CharVertexGPU, boneWeights)},
+                {2, MTL::VertexFormatUChar4, offsetof(CharVertexGPU, boneIndices)},
+                {3, MTL::VertexFormatFloat2, offsetof(CharVertexGPU, texCoords)},
+            };
+            for (const ShadowAttr& a : shadowAttrs) {
+                auto* attr = svd->attributes()->object(a.location);
+                attr->setFormat(a.format);
+                attr->setOffset(a.offset);
+                attr->setBufferIndex(kMetalVertexBufferIndex);
+            }
+            svd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(CharVertexGPU));
+            MetalPipelineDesc shadowDesc;
+            shadowDesc.vertexFunction = "character_shadow_vert";
+            shadowDesc.fragmentFunction = "character_shadow_frag";
+            shadowDesc.vertexDescriptor = svd;
+            shadowDesc.colorFormat = 0;  // depth only
+            shadowDesc.depthFormat = kMetalShadowDepthFormat;
+            shadowDesc.label = "character shadow";
+            mtlShadowPipeline_ = buildMetalPipeline(*ctx, shadowDesc);
+            svd->release();
+        }
+    }
+
     // The five of buildMainPassPipelines: blend and alpha-to-coverage here,
     // depth writes in the depth state renderMetal sets with each.
     struct Spec { PipelineKind kind; MetalBlend blend; bool alphaToCoverage; const char* label; };
@@ -4601,6 +4649,7 @@ void CharacterRenderer::shutdownMetal() {
     for (auto*& pipeline : metalPipelines_) {
         if (pipeline) { pipeline->release(); pipeline = nullptr; }
     }
+    if (mtlShadowPipeline_) { mtlShadowPipeline_->release(); mtlShadowPipeline_ = nullptr; }
     metal_ = nullptr;
 }
 
@@ -4615,7 +4664,9 @@ void CharacterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
     encoder->setFragmentBuffer(perFrame, offset, slot.fragPerFrame);
     MTL::SamplerState* clampLinear = metal_->sampler(MetalContext::Filter::Linear,
                                                      MetalContext::Address::ClampToEdge);
-    encoder->setFragmentTexture(metal_->neutralDepthTexture(), slot.fragShadow);
+    // The preview is lit without the world's shadows.
+    encoder->setFragmentTexture(metalPreview_ ? metal_->neutralDepthTexture()
+                                              : metal_->shadowMap(), slot.fragShadow);
     encoder->setFragmentSamplerState(metal_->shadowSampler(), slot.fragShadowSampler);
     encoder->setFragmentTexture(metal_->neutralVolumeTexture(), slot.fragFog);
     encoder->setFragmentSamplerState(clampLinear, slot.fragFogSampler);
@@ -4648,20 +4699,8 @@ void CharacterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
                           const glm::mat4& modelMat) {
             encoder->setVertexBytes(&modelMat, sizeof(glm::mat4), r.mtlSlots_.vertPush);
 
-            const int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), MAX_BONES);
-            MTL::Buffer*& bones = instance.mtlBones[ringSlot];
-            if (!bones) {
-                bones = r.metal_->newBuffer(nullptr, MAX_BONES * sizeof(glm::mat4));
-                if (!bones) return false;
-                // Identity everywhere, so an index past the skeleton skins to
-                // nothing rather than to garbage - as prepareRender does.
-                auto* dst = static_cast<glm::mat4*>(bones->contents());
-                for (int j = 0; j < MAX_BONES; j++) dst[j] = glm::mat4(1.0f);
-            }
-            if (numBones > 0) {
-                std::memcpy(bones->contents(), instance.boneMatrices.data(),
-                            static_cast<size_t>(numBones) * sizeof(glm::mat4));
-            }
+            MTL::Buffer* bones = r.metalBones(instance, ringSlot);
+            if (!bones) return false;
             encoder->setVertexBuffer(bones, 0, r.mtlSlots_.vertBones);
             encoder->setVertexBuffer(gpuModel.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
             currentIndexBuffer = gpuModel.mtlIndexBuffer;
@@ -4692,6 +4731,81 @@ void CharacterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
     MetalSink sink{*this, encoder,
                    static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize)};
     drawInstances(sink, camera);
+}
+
+MTL::Buffer* CharacterRenderer::metalBones(CharacterInstance& instance, uint32_t ringSlot) {
+    const int numBones = std::min(static_cast<int>(instance.boneMatrices.size()), MAX_BONES);
+    MTL::Buffer*& bones = instance.mtlBones[ringSlot];
+    if (!bones) {
+        bones = metal_->newBuffer(nullptr, MAX_BONES * sizeof(glm::mat4));
+        if (!bones) return nullptr;
+        // Identity everywhere, so an index past the skeleton skins to
+        // nothing rather than to garbage - as prepareRender does.
+        auto* dst = static_cast<glm::mat4*>(bones->contents());
+        for (int j = 0; j < MAX_BONES; j++) dst[j] = glm::mat4(1.0f);
+    }
+    if (numBones > 0) {
+        std::memcpy(bones->contents(), instance.boneMatrices.data(),
+                    static_cast<size_t>(numBones) * sizeof(glm::mat4));
+    }
+    return bones;
+}
+
+void CharacterRenderer::renderShadowMetal(MTL::RenderCommandEncoder* encoder,
+                                          const glm::mat4& lightSpaceMatrix,
+                                          const glm::vec3& shadowCenter, float shadowRadius) {
+    if (!metal_ || !mtlShadowPipeline_ || !encoder) return;
+    if (instances.empty() || models.empty()) return;
+    const uint32_t ringSlot = static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize);
+
+    encoder->setRenderPipelineState(mtlShadowPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, true, /*lessEqual=*/true));
+    encoder->setDepthBias(0.05f, 0.20f, 0.0f);
+    encoder->setCullMode(MTL::CullModeNone);
+    // Alpha testing on, as the Vulkan pass's params have it: an opaque batch
+    // draws with white and passes, an alpha-keyed one with its own texture.
+    const struct { int32_t alphaTest, colorKeyBlack; } params{1, 0};
+    encoder->setFragmentBytes(&params, sizeof(params), mtlShadowFragParams_);
+    MTL::SamplerState* sampler = metal_->sampler(MetalContext::Filter::Linear,
+                                                 MetalContext::Address::ClampToEdge);
+
+    const float shadowRadiusSq = shadowRadius * shadowRadius;
+    for (auto& pair : instances) {
+        auto& inst = pair.second;
+        if (!inst.visible) continue;
+        glm::vec3 diff = inst.position - shadowCenter;
+        if (glm::dot(diff, diff) > shadowRadiusSq) continue;
+        if (!inst.cachedModel) continue;
+        const M2ModelGPU& gpuModel = *inst.cachedModel;
+        if (!gpuModel.mtlVertexBuffer || !gpuModel.mtlIndexBuffer) continue;
+
+        MTL::Buffer* bones = metalBones(inst, ringSlot);
+        if (!bones) continue;
+        const glm::mat4 modelMat = inst.hasOverrideModelMatrix ? inst.overrideModelMatrix
+                                                               : getModelMatrix(inst);
+        const ShadowPush push{.lightSpaceModel = lightSpaceMatrix * modelMat};
+        encoder->setVertexBytes(&push, sizeof(push), mtlShadowVertPush_);
+        encoder->setVertexBuffer(bones, 0, mtlShadowVertBones_);
+        encoder->setVertexBuffer(gpuModel.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+
+        for (const auto& batch : gpuModel.data.batches) {
+            uint16_t blendMode = 0;
+            if (!shadowBatchCasts(inst, gpuModel, batch, blendMode)) continue;
+            VkTexture* tex = nullptr;
+            if (blendMode == 1) tex = resolveBatchTexture(inst, gpuModel, batch);
+            if (tex && tex->metalTexture() && tex->metalSampler()) {
+                encoder->setFragmentTexture(tex->metalTexture(), mtlShadowFragTex_);
+                encoder->setFragmentSamplerState(tex->metalSampler(), mtlShadowFragSampler_);
+            } else {
+                encoder->setFragmentTexture(metal_->whiteTexture(), mtlShadowFragTex_);
+                encoder->setFragmentSamplerState(sampler, mtlShadowFragSampler_);
+            }
+            encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, batch.indexCount,
+                                           MTL::IndexTypeUInt16, gpuModel.mtlIndexBuffer,
+                                           static_cast<NS::UInteger>(batch.indexStart) *
+                                               sizeof(uint16_t));
+        }
+    }
 }
 #endif
 

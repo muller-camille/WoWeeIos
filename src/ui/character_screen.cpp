@@ -234,12 +234,16 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
                     }
                 }
             } else if (!characters.empty()) {
-                // The one played last, where it is still there.
+                // WOWEE_AUTO_CHARACTER by name, else the one played last,
+                // where it is still there.
                 autoEntered = true;
+                const char* wanted = std::getenv("WOWEE_AUTO_CHARACTER");
                 const uint64_t lastGuid = loadLastCharacter();
-                const auto last = std::find_if(characters.begin(), characters.end(),
-                    [&](const game::Character& c) { return c.guid == lastGuid; });
-                enterWorld(last != characters.end() ? *last : characters.front());
+                const auto pick = std::find_if(characters.begin(), characters.end(),
+                    [&](const game::Character& c) {
+                        return (wanted && *wanted) ? c.name == wanted : c.guid == lastGuid;
+                    });
+                enterWorld(pick != characters.end() ? *pick : characters.front());
             }
         }
     }

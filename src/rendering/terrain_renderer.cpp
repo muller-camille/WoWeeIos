@@ -1463,6 +1463,12 @@ bool TerrainRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager*
     textureCacheBudgetBytes_ =
         envSizeMBOrDefault("WOWEE_TERRAIN_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     LOG_INFO("Terrain texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
+    // The chunks' shadows: without them the ground is only unshadowed.
+    if (mtlShadowSlots_.load()) {
+        mtlShadowPipeline_ = buildMetalShadowPipeline(
+            *metal_, kTerrainShadowVertexAttributes.data(), kTerrainShadowVertexAttributes.size(),
+            sizeof(pipeline::TerrainVertex), "terrain shadow");
+    }
     return true;
 }
 
@@ -1476,6 +1482,7 @@ void TerrainRenderer::shutdownMetal() {
     whiteTexture.reset();
     opaqueAlphaTexture.reset();
     if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlShadowPipeline_) { mtlShadowPipeline_->release(); mtlShadowPipeline_ = nullptr; }
     metal_ = nullptr;
 }
 
@@ -1496,7 +1503,7 @@ void TerrainRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffe
     // Stand-ins for the shadow map, the fog volume and the ray traced light.
     MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
                                                MetalContext::Address::ClampToEdge);
-    encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+    encoder->setFragmentTexture(m.shadowMap(), s.fragShadow);
     encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
     encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
     encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
@@ -1559,6 +1566,27 @@ void TerrainRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffe
                                        MTL::IndexTypeUInt32, chunk.mtlIndexBuffer, 0);
         renderedChunks++;
         if (distSq > furthestDrawnSq_) furthestDrawnSq_ = distSq;
+    }
+}
+
+void TerrainRenderer::renderShadowMetal(MTL::RenderCommandEncoder* encoder,
+                                        const glm::mat4& lightSpaceMatrix,
+                                        const glm::vec3& shadowCenter, float shadowRadius) {
+    if (!metal_ || !mtlShadowPipeline_ || !encoder || chunks.empty()) return;
+    beginMetalShadowDraws(*metal_, encoder, mtlShadowPipeline_, mtlShadowSlots_);
+    // Terrain is already in world space: the combined matrix is the light's.
+    const ShadowPush push{.lightSpaceModel = lightSpaceMatrix};
+    encoder->setVertexBytes(&push, sizeof(push), mtlShadowSlots_.vertPush);
+    encoder->setFragmentBytes(&push, sizeof(push), mtlShadowSlots_.fragPush);
+    for (const auto& chunk : chunks) {
+        if (!chunk.mtlVertexBuffer || !chunk.mtlIndexBuffer) continue;
+        // Sphere-cull chunk against shadow region, as renderShadow does.
+        glm::vec3 diff = chunk.boundingSphereCenter - shadowCenter;
+        float combinedRadius = shadowRadius + chunk.boundingSphereRadius;
+        if (glm::dot(diff, diff) > combinedRadius * combinedRadius) continue;
+        encoder->setVertexBuffer(chunk.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+        encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, chunk.indexCount,
+                                       MTL::IndexTypeUInt32, chunk.mtlIndexBuffer, 0);
     }
 }
 #endif

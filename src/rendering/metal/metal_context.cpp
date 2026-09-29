@@ -1,5 +1,7 @@
 #include "rendering/metal/metal_context.hpp"
 
+#include <chrono>
+
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
@@ -51,11 +53,11 @@ bool MetalContext::initialize(SDL_Window* window) {
     // The format the Vulkan swapchain asks for, B8G8R8A8_UNORM, so the
     // interface's colours come out the same in both builds.
     layer_->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
-    // Read back only when a screenshot was asked for: a framebuffer-only
-    // drawable is cheaper to render to and present.
-    readableDrawables_ = std::getenv("WOWEE_SCREENSHOT") != nullptr ||
-                         std::getenv("WOWEE_WORLD_SCREENSHOT") != nullptr;
-    layer_->setFramebufferOnly(!readableDrawables_);
+    // Readable: the water's refraction copies the finished world out of the
+    // drawable every frame, and the screenshots read it back. A
+    // framebuffer-only drawable is cheaper, and cannot be copied from.
+    readableDrawables_ = true;
+    layer_->setFramebufferOnly(false);
     refreshDrawableSize();
 
     // Missing is not fatal in M1, where nothing draws with it: the interface
@@ -169,7 +171,10 @@ bool MetalContext::beginFrame() {
 
     // The slot of the frame before last: its command buffer is the one whose
     // completion hands it back.
+    const auto waitStart = std::chrono::steady_clock::now();
     dispatch_semaphore_wait(frameSlots_, DISPATCH_TIME_FOREVER);
+    lastSlotWaitMs_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - waitStart).count();
 
     // The drawable, the pass descriptor and the command buffer are all
     // autoreleased, and nothing else drains a pool once a frame on iOS.
@@ -187,7 +192,11 @@ bool MetalContext::beginFrame() {
     ++frameNumber_;
     commandBuffer_ = queue_->commandBuffer();
     dispatch_semaphore_t slots = frameSlots_;
-    commandBuffer_->addCompletedHandler([slots](MTL::CommandBuffer*) {
+    std::atomic<double>* gpuMs = &lastGpuMs_;
+    commandBuffer_->addCompletedHandler([slots, gpuMs](MTL::CommandBuffer* cb) {
+        // How long the GPU spent on the frame, for WOWEE_FRAME_PROFILE.
+        gpuMs->store((cb->GPUEndTime() - cb->GPUStartTime()) * 1000.0,
+                     std::memory_order_relaxed);
         dispatch_semaphore_signal(slots);
     });
 

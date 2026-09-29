@@ -316,6 +316,21 @@ void GameScreen::updateCharacterGeosets(game::Inventory& inventory) {
     // bare-headed and bald. The measurement that ruled out the DBC is at
     // entity_spawner.cpp, and what remains unproven is which of the two
     // possible answers this is.
+    // Which meshes the player is drawn with, said whenever that changes: a
+    // part of the body that looks wrong is one of these, and a warnings-only
+    // log is what comes back from a device.
+    {
+        std::vector<uint16_t> sorted(geosets.begin(), geosets.end());
+        std::sort(sorted.begin(), sorted.end());
+        static std::vector<uint16_t> lastSaid;
+        if (sorted != lastSaid) {
+            lastSaid = sorted;
+            std::string list;
+            for (uint16_t g : sorted) list += (list.empty() ? "" : " ") + std::to_string(g);
+            LOG_WARNING("Player geosets: ", list);
+        }
+    }
+
     if (!hasEquippedType({1})) {
         bool hasStyleScalp = false;
         for (uint16_t g : geosets) {

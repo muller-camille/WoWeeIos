@@ -111,6 +111,10 @@ public:
     /// Vulkan.
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera);
+    /// The characters near the light's view, skinned, into the shadow map's
+    /// pass. Their bones are the frame's, written as renderMetal writes them.
+    void renderShadowMetal(MTL::RenderCommandEncoder* encoder, const glm::mat4& lightSpaceMatrix,
+                           const glm::vec3& shadowCenter, float shadowRadius);
 #endif
     void recreatePipelines();
     /// The five main-pass pipelines, which initialize() and
@@ -590,6 +594,20 @@ private:
     VkDescriptorPool shadowTexPool_[kShadowTexPoolFrames] = {};
     std::unordered_map<VkImageView, VkDescriptorSet> shadowTexSetCache_;
     VkDescriptorSet shadowTexDescSet(VkTexture* tex, uint32_t frameIndex);
+
+    /// Whether a batch goes into the shadow map, for both backends, and its
+    /// blend mode: transparent batches, and geosets the instance does not
+    /// show, do not.
+    bool shadowBatchCasts(const CharacterInstance& inst, const M2ModelGPU& gpuModel,
+                          const pipeline::M2Batch& batch, uint16_t& blendMode) const;
+#ifdef WOWEE_METAL
+    /// This frame's bone buffer for an instance, with its bones written: the
+    /// shadow pass and the main pass both bind it.
+    MTL::Buffer* metalBones(CharacterInstance& instance, uint32_t ringSlot);
+    MTL::RenderPipelineState* mtlShadowPipeline_ = nullptr;
+    int mtlShadowVertBones_ = -1, mtlShadowVertPush_ = -1;
+    int mtlShadowFragParams_ = -1, mtlShadowFragTex_ = -1, mtlShadowFragSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

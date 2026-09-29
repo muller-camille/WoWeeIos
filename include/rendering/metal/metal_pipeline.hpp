@@ -4,6 +4,7 @@
 #include <string>
 
 namespace MTL {
+class RenderCommandEncoder;
 class RenderPipelineState;
 class VertexDescriptor;
 }  // namespace MTL
@@ -12,6 +13,7 @@ namespace wowee {
 namespace rendering {
 
 class MetalContext;
+struct VertexAttribute;
 
 /// Where the vertex buffers go: from index 30 down, clear of the shaders' own
 /// buffers, of which no shader uses more than five (docs/plan-metal.md, 3.5).
@@ -67,6 +69,30 @@ struct MetalPipelineDesc {
 /// is missing or Metal refuses the combination. The caller releases it.
 [[nodiscard]] MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx,
                                                            const MetalPipelineDesc& desc);
+
+/// The shadow map's format: depth alone, 32-bit float.
+inline constexpr uint32_t kMetalShadowDepthFormat = 252;  // MTL::PixelFormatDepth32Float
+
+/// Where shadow.vert and shadow.frag take their bindings: the ShadowPush
+/// block, and the texture the foliage pass alpha-tests.
+struct MetalShadowSlots {
+    int vertPush = -1, fragPush = -1, fragTexture = -1, fragSampler = -1;
+    /// From the manifest; false when it does not describe the shaders.
+    bool load();
+};
+
+/// The depth-only pipeline shadow.vert and shadow.frag draw casters with, for
+/// geometry laid out as attrs: only locations 0 (position) and 1 (texture
+/// coordinate) are read. The caller releases it.
+[[nodiscard]] MTL::RenderPipelineState* buildMetalShadowPipeline(
+    MetalContext& ctx, const VertexAttribute* attrs, size_t count, uint32_t stride,
+    const char* label);
+
+/// What every caster's pass sets the same way: the pipeline, depth tested
+/// and written, the Vulkan pipelines' depth bias, no culling, and a white
+/// texture for the alpha test to pass on.
+void beginMetalShadowDraws(MetalContext& ctx, MTL::RenderCommandEncoder* encoder,
+                           MTL::RenderPipelineState* pipeline, const MetalShadowSlots& slots);
 
 }  // namespace rendering
 }  // namespace wowee

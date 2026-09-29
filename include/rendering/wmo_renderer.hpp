@@ -23,6 +23,7 @@
 
 #ifdef WOWEE_METAL
 namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#include "rendering/metal/metal_pipeline.hpp"
 #endif
 
 namespace wowee {
@@ -238,6 +239,9 @@ public:
                                        uint32_t sampleCount);
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera, const glm::vec3* viewerPos = nullptr);
+    /// The buildings near the light's view into the shadow map's pass.
+    void renderShadowMetal(MTL::RenderCommandEncoder* encoder, const glm::mat4& lightSpaceMatrix,
+                           const glm::vec3& shadowCenter, float shadowRadius);
 #endif
 
     /**
@@ -840,6 +844,8 @@ private:
     void shutdownMetal();
     MetalContext* metal_ = nullptr;
     MTL::RenderPipelineState* mtlPipelines_[3] = {};
+    MTL::RenderPipelineState* mtlShadowPipeline_ = nullptr;
+    MetalShadowSlots mtlShadowSlots_;
     /// Where wmo_vert and wmo_frag take each binding, from the shader manifest.
     struct MetalSlots {
         int vertPerFrame = -1, vertPush = -1;

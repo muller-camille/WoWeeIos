@@ -4660,6 +4660,13 @@ bool WMORenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* ass
         return false;
     }
 
+    // The buildings' shadows: without them they are only unshadowed.
+    if (mtlShadowSlots_.load()) {
+        mtlShadowPipeline_ = buildMetalShadowPipeline(
+            *metal_, kWmoShadowVertexAttributes.data(), kWmoShadowVertexAttributes.size(),
+            sizeof(WMOVertex), "wmo shadow");
+    }
+
     textureCacheBudgetBytes_ =
         envSizeMBOrDefault("WOWEE_WMO_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
     modelCacheLimit_ = envSizeMBOrDefault("WOWEE_WMO_MODEL_LIMIT", 4000);
@@ -4677,8 +4684,57 @@ void WMORenderer::shutdownMetal() {
     for (auto*& pipeline : mtlPipelines_) {
         if (pipeline) { pipeline->release(); pipeline = nullptr; }
     }
+    if (mtlShadowPipeline_) { mtlShadowPipeline_->release(); mtlShadowPipeline_ = nullptr; }
     metal_ = nullptr;
     initialized_ = false;
+}
+
+void WMORenderer::renderShadowMetal(MTL::RenderCommandEncoder* encoder,
+                                    const glm::mat4& lightSpaceMatrix,
+                                    const glm::vec3& shadowCenter, float shadowRadius) {
+    if (!metal_ || !mtlShadowPipeline_ || !encoder) return;
+    if (instances.empty() || loadedModels.empty()) return;
+    beginMetalShadowDraws(*metal_, encoder, mtlShadowPipeline_, mtlShadowSlots_);
+
+    // As renderShadow: the ortho half-extent rather than the proximity
+    // radius, so distant buildings whose shadows reach the player still cast.
+    const float wmoCullRadius = std::max(shadowRadius, 180.0f);
+    const float wmoCullRadiusSq = wmoCullRadius * wmoCullRadius;
+    for (const auto& instance : instances) {
+        glm::vec3 closest = glm::clamp(shadowCenter, instance.worldBoundsMin, instance.worldBoundsMax);
+        glm::vec3 diff = closest - shadowCenter;
+        if (glm::dot(diff, diff) > wmoCullRadiusSq) continue;
+        auto modelIt = loadedModels.find(instance.modelId);
+        if (modelIt == loadedModels.end()) continue;
+        const ModelData& model = modelIt->second;
+
+        // A building does not sway, so the sway slot stays zero.
+        const ShadowPush push{.lightSpaceModel = lightSpaceMatrix * instance.modelMatrix};
+        encoder->setVertexBytes(&push, sizeof(push), mtlShadowSlots_.vertPush);
+        encoder->setFragmentBytes(&push, sizeof(push), mtlShadowSlots_.fragPush);
+
+        for (size_t gi = 0; gi < model.groups.size(); ++gi) {
+            const auto& group = model.groups[gi];
+            if (!group.mtlVertexBuffer || !group.mtlIndexBuffer) continue;
+            if (group.groupFlags & 0x4000000) continue;  // antiportal
+            if (group.isLOD) continue;  // overlaps the real geometry
+            if (gi < instance.worldGroupBounds.size()) {
+                const auto& [gMin, gMax] = instance.worldGroupBounds[gi];
+                glm::vec3 gClosest = glm::clamp(shadowCenter, gMin, gMax);
+                glm::vec3 gDiff = gClosest - shadowCenter;
+                if (glm::dot(gDiff, gDiff) > wmoCullRadiusSq) continue;
+            }
+            encoder->setVertexBuffer(group.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+            for (const auto& mb : group.mergedBatches) {
+                for (const auto& dr : mb.draws) {
+                    encoder->drawIndexedPrimitives(
+                        MTL::PrimitiveTypeTriangle, NS::UInteger(dr.indexCount),
+                        MTL::IndexTypeUInt16, group.mtlIndexBuffer,
+                        NS::UInteger(dr.firstIndex) * sizeof(uint16_t));
+                }
+            }
+        }
+    }
 }
 
 void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
@@ -4717,7 +4773,7 @@ void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* p
             MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
                                                        MetalContext::Address::ClampToEdge);
             // Stand-ins for the shadow map, the fog volume and the ray traced light.
-            encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+            encoder->setFragmentTexture(m.shadowMap(), s.fragShadow);
             encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
             encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
             encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);

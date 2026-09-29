@@ -26,7 +26,20 @@ in `widget_renderer`. Those are only drawn in the world, so on the device they w
 seen; both backends compile them. The loading screen and the world map's layers have
 their Metal textures too.
 
-From M4, done and seen on the iPad (2026-09-29): the minimap (its 3x3 tile composite, then the
+From M4, shadows (2026-09-29): one depth map drawn each frame before the world pass, with the
+terrain, buildings, doodads (foliage alpha-tested and bent by the wind, through the same
+M2Renderer::renderShadowImpl as Vulkan) and characters (skinned) as casters, and every surface
+sampling it. The sampler, bias, culling and compare match the Vulkan pipeline. Open: at night some
+foliage goes solid black with shadows on - not yet compared against the MoltenVK build, which is
+the test that says whether it is Metal's.
+
+Water refraction and the shoreline fade (2026-09-29, seen on the iPad): where there is water the
+world pass stops before it, the drawable's colour and the depth so far are copied out, and the
+pass is taken up again with its attachments loaded, as Vulkan's scene continuation pass does.
+The world's depth is stored rather than memoryless for it, and drawables are readable. The
+reflection pass is next.
+
+Also from M4, done and seen on the iPad (2026-09-29): the minimap (its 3x3 tile composite, then the
 disc over the world) and the world map (its tile and explored-overlay composite, the zone
 highlights and the player and corpse markers). Each composite is a pass of its own recorded before
 the world's, from a draw list both backends share.

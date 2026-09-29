@@ -9,6 +9,7 @@
 
 #include "core/logger.hpp"
 #include "rendering/metal/metal_context.hpp"
+#include "rendering/vertex_layout.hpp"
 
 namespace wowee {
 namespace rendering {
@@ -154,6 +155,56 @@ MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx, const MetalPipel
     if (fragmentFn) fragmentFn->release();
     pool->release();
     return state;
+}
+
+bool MetalShadowSlots::load() {
+    const MetalBindings vert("shadow_vert");
+    const MetalBindings frag("shadow_frag");
+    vertPush = vert.pushConstants();
+    fragPush = frag.pushConstants();
+    fragTexture = frag.texture(0, 0);
+    fragSampler = frag.sampler(0, 0);
+    return vert.valid() && frag.valid();
+}
+
+MTL::RenderPipelineState* buildMetalShadowPipeline(MetalContext& ctx, const VertexAttribute* attrs,
+                                                   size_t count, uint32_t stride,
+                                                   const char* label) {
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    for (size_t i = 0; i < count; ++i) {
+        const VertexAttribute& a = attrs[i];
+        if (a.location > 1) continue;  // the bone inputs shadow.vert no longer has
+        auto* attr = vd->attributes()->object(a.location);
+        attr->setFormat(a.componentCount == 2   ? MTL::VertexFormatFloat2
+                        : a.componentCount == 3 ? MTL::VertexFormatFloat3
+                                                : MTL::VertexFormatFloat4);
+        attr->setOffset(a.offset);
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(stride);
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "shadow_vert";
+    desc.fragmentFunction = "shadow_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = 0;  // depth only
+    desc.depthFormat = kMetalShadowDepthFormat;
+    desc.label = label;
+    MTL::RenderPipelineState* pipeline = buildMetalPipeline(ctx, desc);
+    vd->release();
+    return pipeline;
+}
+
+void beginMetalShadowDraws(MetalContext& ctx, MTL::RenderCommandEncoder* encoder,
+                           MTL::RenderPipelineState* pipeline, const MetalShadowSlots& slots) {
+    encoder->setRenderPipelineState(pipeline);
+    encoder->setDepthStencilState(ctx.depthState(true, true, /*lessEqual=*/true));
+    // buildShadowPipeline's setDepthBias(0.05, 0.20).
+    encoder->setDepthBias(0.05f, 0.20f, 0.0f);
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setFragmentTexture(ctx.whiteTexture(), slots.fragTexture);
+    encoder->setFragmentSamplerState(ctx.sampler(MetalContext::Filter::Linear,
+                                                 MetalContext::Address::ClampToEdge),
+                                     slots.fragSampler);
 }
 
 }  // namespace rendering

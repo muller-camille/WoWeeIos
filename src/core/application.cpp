@@ -1372,9 +1372,11 @@ void Application::run() {
     // of its own so a long world load is covered too. The first time the
     // footprint passes 2.3 GB, every VMA allocation is written beside the log
     // as vma_stats.json, which is what says whose memory it is.
-    if (core::envFlagEnabled("WOWEE_MEMORY_REPORT", false) && window &&
-        window->getVkContext()) {
-        VmaAllocator vma = window->getVkContext()->getAllocator();
+    // On Metal there is no VMA, so the report stops at the process's own
+    // figures.
+    if (core::envFlagEnabled("WOWEE_MEMORY_REPORT", false) && window) {
+        VmaAllocator vma = window->getVkContext() ? window->getVkContext()->getAllocator()
+                                                  : VK_NULL_HANDLE;
         std::thread([vma]() {
             bool dumped = false;
             for (;;) {
@@ -1384,7 +1386,7 @@ void Application::run() {
                     reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS;
                 const uint64_t footprint = haveInfo ? info.phys_footprint : 0;
                 VmaTotalStatistics stats{};
-                vmaCalculateStatistics(vma, &stats);
+                if (vma) vmaCalculateStatistics(vma, &stats);
                 constexpr uint64_t kMB = 1024ull * 1024ull;
                 // Graphics is Metal's own memory, VMA's blocks and MoltenVK's
                 // alike; heap is what malloc and new hold. Whatever neither
@@ -1405,7 +1407,7 @@ void Application::run() {
                     dumped = true;
                     logHeapHistogram();
                     char* json = nullptr;
-                    vmaBuildStatsString(vma, &json, VK_TRUE);
+                    if (vma) vmaBuildStatsString(vma, &json, VK_TRUE);
                     if (json) {
                         std::ofstream out(core::getConfigRoot() + "/vma_stats.json");
                         out << json;

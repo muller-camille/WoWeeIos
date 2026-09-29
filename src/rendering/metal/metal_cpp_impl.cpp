@@ -5,3 +5,5 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 #include <QuartzCore/QuartzCore.hpp>
+#define MTLFX_PRIVATE_IMPLEMENTATION
+#include <MetalFX/MetalFX.hpp>

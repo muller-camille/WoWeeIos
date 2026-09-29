@@ -1485,6 +1485,9 @@ if(IOS)
         target_compile_definitions(wowee PRIVATE WOWEE_METAL=1)
         target_include_directories(wowee SYSTEM PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/extern/metal-cpp)
+        # The world is drawn below the screen's size and upscaled, as the
+        # MoltenVK build does with FSR 1.
+        target_link_libraries(wowee PRIVATE "-framework MetalFX")
     endif()
     target_link_libraries(wowee PRIVATE
         "-framework AVFoundation" "-framework AudioToolbox" "-framework CoreAudio")

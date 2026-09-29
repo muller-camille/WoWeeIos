@@ -2363,62 +2363,9 @@ bool M2Renderer::initializeShadow(VkRenderPass shadowRenderPass) {
     return true;
 }
 
-void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix, float globalTime,
-                              const glm::vec3& /*shadowCenter*/, float shadowRadius) {
-    if (!shadowPipeline_ || !shadowParams_.set) return;
-    if (instances.empty() || models.empty()) return;
-
-    // Reset this frame slot's texture descriptor pool (safe: fence was waited on in beginFrame)
-    const uint32_t frameIdx = vkCtx_->getCurrentFrame();
-    VkDescriptorPool curShadowTexPool = shadowTexPool_[frameIdx];
-    if (curShadowTexPool) {
-        vkResetDescriptorPool(vkCtx_->getDevice(), curShadowTexPool, 0);
-    }
-    // Cache: texture imageView -> allocated descriptor set (avoids duplicates within frame)
-    // Reuse persistent map - pool reset already invalidated the sets.
-    shadowTexSetCache_.clear();
-    auto& texSetCache = shadowTexSetCache_;
-
-    auto getTexDescSet = [&](VkTexture* tex) -> VkDescriptorSet {
-        VkImageView iv = tex->getImageView();
-        auto cacheIt = texSetCache.find(iv);
-        if (cacheIt != texSetCache.end()) return cacheIt->second;
-
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo ai{};
-        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ai.descriptorPool = curShadowTexPool;
-        ai.descriptorSetCount = 1;
-        ai.pSetLayouts = &shadowParams_.layout;
-        if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &set) != VK_SUCCESS) {
-            return shadowParams_.set; // fallback to white texture
-        }
-        VkDescriptorImageInfo imgInfo{};
-        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imgInfo.imageView = iv;
-        imgInfo.sampler = tex->getSampler();
-        VkDescriptorBufferInfo bufInfo{};
-        bufInfo.buffer = shadowParams_.ubo;
-        bufInfo.offset = 0;
-        bufInfo.range = sizeof(ShadowParamsUBO);
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = set;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &imgInfo;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = set;
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[1].pBufferInfo = &bufInfo;
-        vkUpdateDescriptorSets(vkCtx_->getDevice(), 2, writes, 0, nullptr);
-        texSetCache[iv] = set;
-        return set;
-    };
-
+template <typename Sink>
+void M2Renderer::renderShadowImpl(Sink& sink, const glm::mat4& lightSpaceMatrix, float globalTime,
+                                  float shadowRadius) {
     // How many casters each pass drew, so a shadow that comes and goes can say
     // whether its caster was culled or its texture was missing.
     uint32_t castersDrawn[2] = {0, 0};
@@ -2475,9 +2422,7 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                                    foliagePass ? 1 : 0, 0};
         const glm::vec4 wind{globalTime, 0.0f, 0.0f, 0.0f};
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout_,
-            0, 1, &shadowParams_.set, 0, nullptr);
+        sink.beginPass();
 
         const auto& casters = shadowCasters_[foliagePass ? 1 : 0];
         for (std::size_t g = 0; g < casters.size();) {
@@ -2496,9 +2441,7 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                                           model.boundMin.z, model.boundMax.z,
                                           model.isStandingCloth);
             const glm::vec2 modelSwayZW(sway.refHeight, sway.amp);
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &offset);
-            vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            if (!sink.bindModel(model)) { g = groupEnd; continue; }
 
             for (const auto& batch : model.batches) {
                 if (batch.submeshLevel > 0) continue;
@@ -2523,12 +2466,9 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                 // instance: the texture is the batch's, and every instance of
                 // this model shares it.
                 if (foliagePass && batch.hasAlpha && batch.texture) {
-                    VkDescriptorSet texSet = getTexDescSet(batch.texture);
-                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        shadowPipelineLayout_, 0, 1, &texSet, 0, nullptr);
+                    sink.bindTexture(batch.texture);
                 } else if (foliagePass) {
-                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        shadowPipelineLayout_, 0, 1, &shadowParams_.set, 0, nullptr);
+                    sink.bindTexture(nullptr);  // white: the alpha test passes everywhere
                 }
 
                 for (std::size_t k = g; k < groupEnd; ++k) {
@@ -2542,9 +2482,7 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
                         .sway = glm::vec4(origin.x, origin.y, modelSwayZW.x, modelSwayZW.y),
                         .flags = passFlags,
                         .wind = wind};
-                    vkCmdPushConstants(cmd, shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                                       0, sizeof(ShadowPush), &push);
-                    vkCmdDrawIndexed(cmd, batch.indexCount, 1, batch.indexStart, 0, 0);
+                    sink.draw(push, batch.indexCount, batch.indexStart);
                 }
             }
             castersDrawn[foliagePass ? 1 : 0] += static_cast<uint32_t>(groupEnd - g);
@@ -2583,6 +2521,93 @@ void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMa
     }
 }
 
+void M2Renderer::renderShadow(VkCommandBuffer cmd, const glm::mat4& lightSpaceMatrix, float globalTime,
+                              const glm::vec3& /*shadowCenter*/, float shadowRadius) {
+    if (!shadowPipeline_ || !shadowParams_.set) return;
+    if (instances.empty() || models.empty()) return;
+
+    // Reset this frame slot's texture descriptor pool (safe: fence was waited on in beginFrame)
+    const uint32_t frameIdx = vkCtx_->getCurrentFrame();
+    VkDescriptorPool curShadowTexPool = shadowTexPool_[frameIdx];
+    if (curShadowTexPool) {
+        vkResetDescriptorPool(vkCtx_->getDevice(), curShadowTexPool, 0);
+    }
+    // Cache: texture imageView -> allocated descriptor set (avoids duplicates within frame)
+    // Reuse persistent map - pool reset already invalidated the sets.
+    shadowTexSetCache_.clear();
+    auto& texSetCache = shadowTexSetCache_;
+
+    auto getTexDescSet = [&](VkTexture* tex) -> VkDescriptorSet {
+        VkImageView iv = tex->getImageView();
+        auto cacheIt = texSetCache.find(iv);
+        if (cacheIt != texSetCache.end()) return cacheIt->second;
+
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = curShadowTexPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &shadowParams_.layout;
+        if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &set) != VK_SUCCESS) {
+            return shadowParams_.set; // fallback to white texture
+        }
+        VkDescriptorImageInfo imgInfo{};
+        imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfo.imageView = iv;
+        imgInfo.sampler = tex->getSampler();
+        VkDescriptorBufferInfo bufInfo{};
+        bufInfo.buffer = shadowParams_.ubo;
+        bufInfo.offset = 0;
+        bufInfo.range = sizeof(ShadowParamsUBO);
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = set;
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &imgInfo;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = set;
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[1].pBufferInfo = &bufInfo;
+        vkUpdateDescriptorSets(vkCtx_->getDevice(), 2, writes, 0, nullptr);
+        texSetCache[iv] = set;
+        return set;
+    };
+
+    // The Vulkan calls renderShadowImpl makes.
+    struct VulkanShadowSink {
+        M2Renderer& r;
+        VkCommandBuffer cmd;
+        decltype(getTexDescSet)& texSet;
+        void beginPass() {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.shadowPipeline_);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.shadowPipelineLayout_,
+                0, 1, &r.shadowParams_.set, 0, nullptr);
+        }
+        bool bindModel(const M2ModelGPU& model) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &model.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, model.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            return true;
+        }
+        void bindTexture(VkTexture* texture) {
+            VkDescriptorSet set = texture ? texSet(texture) : r.shadowParams_.set;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                r.shadowPipelineLayout_, 0, 1, &set, 0, nullptr);
+        }
+        void draw(const ShadowPush& push, uint32_t indexCount, uint32_t indexStart) {
+            vkCmdPushConstants(cmd, r.shadowPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(ShadowPush), &push);
+            vkCmdDrawIndexed(cmd, indexCount, 1, indexStart, 0, 0);
+        }
+    };
+    VulkanShadowSink sink{*this, cmd, getTexDescSet};
+    renderShadowImpl(sink, lightSpaceMatrix, globalTime, shadowRadius);
+}
+
 #ifdef WOWEE_METAL
 void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
                              size_t offset, const Camera& camera) {
@@ -2614,7 +2639,7 @@ void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* pe
                                                        MetalContext::Address::ClampToEdge);
             // Stand-ins for the shadow map, the fog volume and the ray traced
             // light, none of which the Metal renderer has yet.
-            encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+            encoder->setFragmentTexture(m.shadowMap(), s.fragShadow);
             encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
             encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
             encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
@@ -2674,6 +2699,48 @@ void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* pe
     };
     MetalSink sink{*this, encoder, perFrame, offset, slot};
     renderImpl(sink, camera);
+}
+
+void M2Renderer::renderShadowMetal(MTL::RenderCommandEncoder* encoder,
+                                   const glm::mat4& lightSpaceMatrix, float globalTime,
+                                   float shadowRadius) {
+    if (!metal_ || !mtlShadowPipeline_ || !encoder) return;
+    if (instances.empty() || models.empty()) return;
+
+    // The Metal calls renderShadowImpl makes.
+    struct MetalShadowSink {
+        M2Renderer& r;
+        MTL::RenderCommandEncoder* encoder;
+        MTL::Buffer* indexBuffer = nullptr;
+        void beginPass() {
+            beginMetalShadowDraws(*r.metal_, encoder, r.mtlShadowPipeline_, r.mtlShadowSlots_);
+        }
+        bool bindModel(const M2ModelGPU& model) {
+            if (!model.mtlVertexBuffer || !model.mtlIndexBuffer) return false;
+            encoder->setVertexBuffer(model.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+            indexBuffer = model.mtlIndexBuffer;
+            return true;
+        }
+        void bindTexture(VkTexture* texture) {
+            MetalContext& m = *r.metal_;
+            if (texture && texture->metalTexture() && texture->metalSampler()) {
+                encoder->setFragmentTexture(texture->metalTexture(), r.mtlShadowSlots_.fragTexture);
+                encoder->setFragmentSamplerState(texture->metalSampler(),
+                                                 r.mtlShadowSlots_.fragSampler);
+            } else {
+                encoder->setFragmentTexture(m.whiteTexture(), r.mtlShadowSlots_.fragTexture);
+            }
+        }
+        void draw(const ShadowPush& push, uint32_t indexCount, uint32_t indexStart) {
+            encoder->setVertexBytes(&push, sizeof(push), r.mtlShadowSlots_.vertPush);
+            encoder->setFragmentBytes(&push, sizeof(push), r.mtlShadowSlots_.fragPush);
+            encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(indexCount),
+                                           MTL::IndexTypeUInt16, indexBuffer,
+                                           NS::UInteger(indexStart) * sizeof(uint16_t));
+        }
+    };
+    MetalShadowSink sink{*this, encoder};
+    renderShadowImpl(sink, lightSpaceMatrix, globalTime, shadowRadius);
 }
 
 void M2Renderer::renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,

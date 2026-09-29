@@ -10,7 +10,8 @@
 #include <glm/glm.hpp>
 
 #ifdef WOWEE_METAL
-namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+namespace MTL {
+class Texture; class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
 #endif
 
 namespace wowee {
@@ -127,6 +128,16 @@ public:
     /// opaque, blended over it.
     [[nodiscard]] bool initializeMetal(MetalContext* ctx, uint32_t colorFormat,
                                        uint32_t depthFormat, uint32_t sampleCount);
+    /// The world as drawn before the water, this frame: what the refraction
+    /// and the shoreline fade read. Null for neither, which draws the water
+    /// opaque as before.
+    void setMetalScene(MTL::Texture* color, MTL::Texture* depth) {
+        mtlSceneColor_ = color;
+        mtlSceneDepth_ = depth;
+    }
+    /// This frame's reflection, or null when none was drawn (it then reads
+    /// as black, as before).
+    void setMetalReflection(MTL::Texture* reflection) { mtlReflection_ = reflection; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera, uint32_t drawableWidth, uint32_t drawableHeight);
 #endif
@@ -212,6 +223,9 @@ private:
     VkContext* vkCtx = nullptr;
     [[nodiscard]] bool hasDevice() const;
 #ifdef WOWEE_METAL
+    MTL::Texture* mtlSceneColor_ = nullptr;  // the renderer's; not owned
+    MTL::Texture* mtlSceneDepth_ = nullptr;
+    MTL::Texture* mtlReflection_ = nullptr;
     MetalContext* metal_ = nullptr;
     MTL::RenderPipelineState* mtlPipeline_ = nullptr;
     struct MetalSlots {
