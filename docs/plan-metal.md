@@ -21,6 +21,14 @@ source with a Metal path parsed against metal-cpp by `tools/metal/syntax_check/c
 
 In order. What each one needs is noted, because the device work needs the Mac.
 
+   *Checked on the Mac and the iPad, 2026-09-29 late:* it all builds (after `cmake -S . -B
+   build-ios` for the new sources) and plays. At the Shadowglen pond: a frame every ~36.5 ms
+   (~27 fps), the opaque world ~21.5 ms from ~23 with the one-tap alpha masks, the picture
+   right. MetalFX still copies to the drawable here (the log says so). `WOWEE_METAL_FSR1=1`:
+   "upscaled ... by FSR 1", the picture as with MetalFX. `WOWEE_METAL_MSAA=4`: "drawn with 4x
+   MSAA", ~41 ms a frame, 1760 MB footprint. Still to look at by playing: the effects, grass,
+   fog and sun shafts, FXAA, chunk seams up close, and a tree's shadow edge.
+
 1. **Build and look at what the cloud session wrote.** First the build itself: the Metal compiler
    takes the regenerated `terrain.frag.metal`, and Xcode the new sources. Then each on the iPad:
    - *Terrain alpha masks.* The seam blur near a chunk's edge is baked into each map as it is
