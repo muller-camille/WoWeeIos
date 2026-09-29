@@ -2365,7 +2365,8 @@ void Renderer::runDeferredWorldInitStep(float deltaTime) {
             if (questMarkerRenderer && vkCtx &&
                 !questMarkerRenderer->initialize(vkCtx, perFrameSetLayout, cachedAssetManager))
                 LOG_WARNING("Quest marker renderer re-init failed (non-fatal)");
-            if (footprintRenderer && !footprintRenderer->initialize(this, vkCtx, perFrameSetLayout, cachedAssetManager))
+            if (footprintRenderer && vkCtx &&
+                !footprintRenderer->initialize(this, vkCtx, perFrameSetLayout, cachedAssetManager))
                 LOG_WARNING("Footprint renderer re-init failed (non-fatal)");
             break;
         default:
@@ -3784,6 +3785,16 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             questMarkerRenderer.reset();
         }
     }
+    if (metal_ && !footprintRenderer) {
+        // The prints feet leave, from the models' footfall events.
+        footprintRenderer = std::make_unique<FootprintRenderer>();
+        if (!footprintRenderer->initializeMetal(this, metal_, assetManager,
+                                                MTL::PixelFormatBGRA8Unorm,
+                                                MTL::PixelFormatDepth32Float, 1)) {
+            LOG_WARNING("Footprint renderer (Metal) initialization failed (non-fatal)");
+            footprintRenderer.reset();
+        }
+    }
     if (metal_ && !worldMap) {
         worldMap = std::make_unique<WorldMap>();
         if (!worldMap->initializeMetal(metal_, assetManager)) {
@@ -4012,7 +4023,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
                 if (!questMarkerRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
                     LOG_WARNING("Quest marker renderer initialization failed (non-fatal)");
             }
-            if (footprintRenderer) {
+            if (footprintRenderer && vkCtx) {  // Metal's is made with the renderers
                 if (!footprintRenderer->initialize(this, vkCtx, perFrameSetLayout, assetManager))
                     LOG_WARNING("Footprint renderer initialization failed (non-fatal)");
             }
@@ -5028,6 +5039,14 @@ bool Renderer::initializeMetal() {
         overlaySystem_.reset();
     }
 
+    // Rain, snow and storms; the zones' weather drives it from update().
+    weather = std::make_unique<Weather>();
+    if (!weather->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                  MTL::PixelFormatDepth32Float, 1)) {
+        LOG_WARNING("Weather (Metal) initialization failed - no rain or snow");
+        weather.reset();
+    }
+
     lightingManager = std::make_unique<LightingManager>();
     auto* assetManager = core::Application::getInstance().getAssetManager();
     zoneManager = std::make_unique<game::ZoneManager>();
@@ -5159,7 +5178,11 @@ void Renderer::renderFrameMetal() {
         if (waterRenderer) {
             waterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, w, h);
         }
-        // Over the water as on Vulkan: the quest givers' marks.
+        // Over the water as on Vulkan: the weather, then the quest givers' marks.
+        if (weather) weather->renderMetal(encoder, mtlFrameData_, offset);
+        if (footprintRenderer) {
+            footprintRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
         if (questMarkerRenderer) {
             questMarkerRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }

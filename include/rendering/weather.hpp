@@ -8,11 +8,20 @@
 #include <vector>
 #include <unordered_map>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 
 /**
  * @brief Weather particle system for rain and snow
@@ -180,6 +189,22 @@ private:
     bool zoneWeatherActive_ = false;         // Is zone weather currently active?
     float targetIntensity_ = 0.0f;           // Target intensity for smooth transitions
     bool zoneWeatherInitialized_ = false;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    /// A ring of MetalContext::kRingSize: written every frame, read by up to
+    /// two frames still in flight.
+    MTL::Buffer* mtlPositions_[3] = {};
+    int mtlVertPerFrame_ = -1, mtlVertPush_ = -1, mtlFragPush_ = -1;
+#endif
 };
 
 } // namespace rendering

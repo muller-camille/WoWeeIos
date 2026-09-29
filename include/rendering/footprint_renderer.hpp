@@ -12,6 +12,14 @@
 
 #include "rendering/vk_texture.hpp"
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -19,6 +27,7 @@ namespace rendering {
 class Camera;
 class Renderer;
 class VkContext;
+class MetalContext;
 
 enum class FootprintFallback : uint8_t {
     BIPED,
@@ -49,7 +58,26 @@ public:
                float yawRadians, bool leftFoot, FootprintFallback fallback);
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera);
 
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    [[nodiscard]] bool initializeMetal(Renderer* owner, MetalContext* ctx,
+                                       pipeline::AssetManager* assetManager,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera);
+#endif
+
 private:
+    /// One print as it is drawn this frame. The same for both backends.
+    struct PrintDraw {
+        uint8_t textureIndex;
+        glm::mat4 model;
+        float alpha;
+    };
+    void collectDraws(const Camera& camera);
+    std::vector<PrintDraw> draws_;
+
     struct Profile {
         uint8_t textureIndex = 0;
         float length = 1.0f;
@@ -89,6 +117,14 @@ private:
     bool loadFootprintData(pipeline::AssetManager* assetManager);
     [[nodiscard]] Profile resolveProfile(const std::string& modelName, FootprintFallback fallback) const;
     [[nodiscard]] float resolveFloorHeight(const glm::vec3& position) const;
+
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlQuad_ = nullptr;
+    int mtlVertPerFrame_ = -1, mtlVertPush_ = -1, mtlFragPush_ = -1;
+    int mtlFragTexture_ = -1, mtlFragSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

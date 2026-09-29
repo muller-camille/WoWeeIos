@@ -15,6 +15,11 @@
 #include "rendering/vk_shader.hpp"
 #include "rendering/vk_utils.hpp"
 #include "rendering/wmo_renderer.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -80,6 +85,19 @@ bool FootprintRenderer::initialize(Renderer* owner, VkContext* ctx,
 }
 
 void FootprintRenderer::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // A frame still drawing these holds its own references.
+        for (auto& texture : textures_) texture.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+        if (mtlQuad_) { mtlQuad_->release(); mtlQuad_ = nullptr; }
+        profilesByPath_.clear();
+        profilesByBasename_.clear();
+        prints_.clear();
+        owner_ = nullptr;
+        metal_ = nullptr;
+    }
+#endif
     if (!vkCtx_) return;
     VkDevice device = vkCtx_->getDevice();
     VmaAllocator allocator = vkCtx_->getAllocator();
@@ -201,13 +219,28 @@ bool FootprintRenderer::loadFootprintData(pipeline::AssetManager* assets) {
     auto textureDbc = assets->loadDBC("FootprintTextures.dbc");
     if (!textureDbc || !textureDbc->isLoaded()) return false;
 
-    VkDevice device = vkCtx_->getDevice();
     for (size_t i = 0; i < kTextureCount; ++i) {
         const int32_t row = textureDbc->findRecordById(textureIds[i]);
         if (row < 0) return false;
         std::string path = textureDbc->getString(static_cast<uint32_t>(row), 1);
         if (path.find('.') == std::string::npos) path += ".blp";
         pipeline::BLPImage image = assets->loadTexture(path);
+#ifdef WOWEE_METAL
+        if (metal_) {
+            // No sets on Metal: the texture itself is what the draw binds.
+            if (!image.isValid() ||
+                !textures_[i].uploadMetal(*metal_, image.data.data(), image.width, image.height,
+                                          true)) {
+                LOG_WARNING("FootprintRenderer: failed to load ", path);
+                return false;
+            }
+            textures_[i].setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                         MetalContext::Address::ClampToEdge));
+            indexById[textureIds[i]] = static_cast<uint8_t>(i);
+            continue;
+        }
+#endif
+        VkDevice device = vkCtx_->getDevice();
         if (!image.isValid() || !textures_[i].upload(*vkCtx_, image.data.data(), image.width, image.height,
                                                      VK_FORMAT_R8G8B8A8_UNORM, true)) {
             LOG_WARNING("FootprintRenderer: failed to load ", path);
@@ -300,7 +333,11 @@ float FootprintRenderer::resolveFloorHeight(const glm::vec3& position) const {
 
 void FootprintRenderer::spawn(const std::string& modelName, const glm::vec3& basePosition,
                               float yawRadians, bool leftFoot, FootprintFallback fallback) {
+#ifdef WOWEE_METAL
+    if (!vkCtx_ && !metal_) return;
+#else
     if (!vkCtx_) return;
+#endif
     const Profile profile = resolveProfile(modelName, fallback);
     const glm::vec2 forward(std::cos(yawRadians), std::sin(yawRadians));
     const glm::vec2 right(-forward.y, forward.x);
@@ -332,15 +369,33 @@ void FootprintRenderer::clear() {
 
 void FootprintRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
     if (prints_.empty() || !pipeline_ || !quadVB_) return;
-    const glm::vec3 cameraPos = camera.getPosition();
-    Frustum frustum;
-    frustum.extractFromMatrix(camera.getViewProjectionMatrix());
+    collectDraws(camera);
+    if (draws_.empty()) return;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
                             0, 1, &perFrameSet, 0, nullptr);
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB_, &offset);
+
+    for (const PrintDraw& draw : draws_) {
+        FootprintPushConstants push;
+        push.model = draw.model;
+        push.tint.a = draw.alpha;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+                                1, 1, &textureSets_[draw.textureIndex], 0, nullptr);
+        vkCmdPushConstants(cmd, pipelineLayout_,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(push), &push);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
+}
+
+void FootprintRenderer::collectDraws(const Camera& camera) {
+    draws_.clear();
+    const glm::vec3 cameraPos = camera.getPosition();
+    Frustum frustum;
+    frustum.extractFromMatrix(camera.getViewProjectionMatrix());
 
     for (const Print& print : prints_) {
         const glm::vec3 delta = cameraPos - print.position;
@@ -361,16 +416,89 @@ void FootprintRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         // the model's +X forward direction and mirror across local X.
         model = glm::rotate(model, print.yaw - 1.57079632679f, glm::vec3(0.0f, 0.0f, 1.0f));
         model = glm::scale(model, glm::vec3(print.signedWidth, print.length, 1.0f));
-        FootprintPushConstants push;
-        push.model = model;
-        push.tint.a = alpha;
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-                                1, 1, &textureSets_[print.textureIndex], 0, nullptr);
-        vkCmdPushConstants(cmd, pipelineLayout_,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(push), &push);
-        vkCmdDraw(cmd, 6, 1, 0, 0);
+        draws_.push_back({.textureIndex = print.textureIndex, .model = model, .alpha = alpha});
     }
 }
+
+#ifdef WOWEE_METAL
+bool FootprintRenderer::initializeMetal(Renderer* owner, MetalContext* ctx,
+                                        pipeline::AssetManager* assetManager,
+                                        uint32_t colorFormat, uint32_t depthFormat,
+                                        uint32_t sampleCount) {
+    if (!owner || !ctx || !assetManager) return false;
+    if (metal_) return true;
+    const MetalBindings vert("footprint_vert");
+    const MetalBindings frag("footprint_frag");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPush_ = frag.pushConstants();
+    mtlFragTexture_ = frag.texture(1, 0);
+    mtlFragSampler_ = frag.sampler(1, 0);
+    if (!vert.valid() || !frag.valid()) return false;
+
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(3 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(5 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "footprint_vert";
+    desc.fragmentFunction = "footprint_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "footprints";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    const float vertices[] = {
+        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
+         0.5f, -0.5f, 0.0f, 1.0f, 1.0f,
+         0.5f,  0.5f, 0.0f, 1.0f, 0.0f,
+        -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
+         0.5f,  0.5f, 0.0f, 1.0f, 0.0f,
+        -0.5f,  0.5f, 0.0f, 0.0f, 0.0f
+    };
+    mtlQuad_ = ctx->newBuffer(vertices, sizeof(vertices));
+    owner_ = owner;
+    metal_ = ctx;
+    if (!mtlPipeline_ || !mtlQuad_ || !loadFootprintData(assetManager)) {
+        LOG_WARNING("FootprintRenderer (Metal): initialization incomplete");
+        shutdown();
+        return false;
+    }
+    LOG_INFO("FootprintRenderer (Metal): loaded ", profilesByPath_.size(), " model profiles");
+    return true;
+}
+
+void FootprintRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                    size_t offset, const Camera& camera) {
+    if (prints_.empty() || !mtlPipeline_ || !encoder) return;
+    collectDraws(camera);
+    if (draws_.empty()) return;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBuffer(mtlQuad_, 0, kMetalVertexBufferIndex);
+    for (const PrintDraw& draw : draws_) {
+        const VkTexture& texture = textures_[draw.textureIndex];
+        if (!texture.metalTexture()) continue;
+        FootprintPushConstants push;
+        push.model = draw.model;
+        push.tint.a = draw.alpha;
+        encoder->setVertexBytes(&push, sizeof(push), mtlVertPush_);
+        encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
+        encoder->setFragmentTexture(texture.metalTexture(), mtlFragTexture_);
+        encoder->setFragmentSamplerState(texture.metalSampler(), mtlFragSampler_);
+        encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+    }
+}
+#endif
 
 } // namespace wowee::rendering

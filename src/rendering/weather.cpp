@@ -6,6 +6,11 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -24,6 +29,30 @@ std::mt19937& weatherRng() {
 }
 float weatherRandFloat() {
     return std::uniform_real_distribution<float>(0.0f, 1.0f)(weatherRng());
+}
+
+/// weather.vert/frag's push block: { float particleSize; 3 pads; vec4 color }.
+struct WeatherPush {
+    float particleSize;
+    float pad0;
+    float pad1;
+    float pad2;
+    glm::vec4 particleColor;
+};
+
+WeatherPush weatherPush(Weather::Type type) {
+    WeatherPush push{};
+    if (type == Weather::Type::RAIN) {
+        push.particleSize = 3.0f;
+        push.particleColor = glm::vec4(0.7f, 0.8f, 0.9f, 0.6f);
+    } else if (type == Weather::Type::STORM) {
+        push.particleSize = 3.5f;
+        push.particleColor = glm::vec4(0.6f, 0.65f, 0.75f, 0.7f);  // Darker, more opaque
+    } else {  // SNOW
+        push.particleSize = 8.0f;
+        push.particleColor = glm::vec4(1.0f, 1.0f, 1.0f, 0.9f);
+    }
+    return push;
 }
 } // namespace
 
@@ -242,26 +271,7 @@ void Weather::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
         std::memcpy(dynamicVBAllocInfo.pMappedData, particlePositions.data(), uploadSize);
     }
 
-    // Push constant data: { float particleSize; float pad0; float pad1; float pad2; vec4 particleColor; }
-    struct WeatherPush {
-        float particleSize;
-        float pad0;
-        float pad1;
-        float pad2;
-        glm::vec4 particleColor;
-    };
-
-    WeatherPush push{};
-    if (weatherType == Type::RAIN) {
-        push.particleSize = 3.0f;
-        push.particleColor = glm::vec4(0.7f, 0.8f, 0.9f, 0.6f);
-    } else if (weatherType == Type::STORM) {
-        push.particleSize = 3.5f;
-        push.particleColor = glm::vec4(0.6f, 0.65f, 0.75f, 0.7f);  // Darker, more opaque
-    } else {  // SNOW
-        push.particleSize = 8.0f;
-        push.particleColor = glm::vec4(1.0f, 1.0f, 1.0f, 0.9f);
-    }
+    const WeatherPush push = weatherPush(weatherType);
 
     // Bind pipeline
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -327,6 +337,13 @@ int Weather::getParticleCount() const {
 }
 
 void Weather::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    for (auto*& buffer : mtlPositions_) {
+        if (buffer) { buffer->release(); buffer = nullptr; }
+    }
+    metal_ = nullptr;
+#endif
     if (vkCtx) {
         destroyParticleResources(vkCtx->getDevice(), vkCtx->getAllocator(),
                                  pipeline, pipelineLayout, dynamicVB,
@@ -467,6 +484,68 @@ void Weather::updateZoneWeather(uint32_t zoneId, float deltaTime) {
         }
     }
 }
+
+#ifdef WOWEE_METAL
+bool Weather::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                              uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("weather_vert");
+    const MetalBindings frag("weather_frag");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPush_ = frag.pushConstants();
+    if (!vert.valid() || !frag.valid()) return false;
+
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(glm::vec3));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "weather_vert";
+    desc.fragmentFunction = "weather_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "weather";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlPipeline_) return false;
+
+    for (auto*& buffer : mtlPositions_) {
+        buffer = ctx->newBuffer(nullptr, MAX_PARTICLES * sizeof(glm::vec3));
+        if (!buffer) return false;
+    }
+    particles.reserve(MAX_PARTICLES);
+    particlePositions.reserve(MAX_PARTICLES);
+    metal_ = ctx;
+    LOG_INFO("Weather system initialized (Metal)");
+    return true;
+}
+
+void Weather::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                          size_t offset) {
+    if (!enabled || weatherType == Type::NONE || particlePositions.empty() || !mtlPipeline_ ||
+        !encoder) {
+        return;
+    }
+    MTL::Buffer* positions = mtlPositions_[metal_->frameNumber() % MetalContext::kRingSize];
+    const size_t count = std::min(particlePositions.size(), static_cast<size_t>(MAX_PARTICLES));
+    std::memcpy(positions->contents(), particlePositions.data(), count * sizeof(glm::vec3));
+    const WeatherPush push = weatherPush(weatherType);
+    encoder->setRenderPipelineState(mtlPipeline_);
+    // Tested against the scene, never written: see-through.
+    encoder->setDepthStencilState(metal_->depthState(true, false));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBytes(&push, sizeof(push), mtlVertPush_);
+    encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
+    encoder->setVertexBuffer(positions, 0, kMetalVertexBufferIndex);
+    encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0), NS::UInteger(count));
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee
