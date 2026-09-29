@@ -3768,6 +3768,13 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             minimap.reset();
         }
     }
+    if (metal_ && !worldMap) {
+        worldMap = std::make_unique<WorldMap>();
+        if (!worldMap->initializeMetal(metal_, assetManager)) {
+            LOG_ERROR("World map (Metal) initialization failed");
+            worldMap.reset();
+        }
+    }
     if (!metal_) {
 #else
     {
@@ -5021,6 +5028,10 @@ void Renderer::renderFrameMetal() {
         if (metal_->isPresentationPaused()) SDL_Delay(50);
         return;
     }
+
+    // The world map's picture, when the interface asked for one this frame:
+    // a pass of its own, before any other.
+    if (worldMap) worldMap->compositeMetal(metal_->commandBuffer());
 
     if (mtlWorldRequested_ && camera) {
         updatePerFrameUBO();

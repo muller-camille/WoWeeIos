@@ -9,6 +9,7 @@
 namespace wowee {
 namespace rendering {
 class VkContext;
+class MetalContext;
 }
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -18,6 +19,12 @@ class CorpseMarkerLayer : public IOverlayLayer {
 public:
     ~CorpseMarkerLayer() override;
     void initialize(VkContext* ctx, pipeline::AssetManager* am);
+#ifdef WOWEE_METAL
+    void initializeMetal(MetalContext* ctx, pipeline::AssetManager* am) {
+        metal_ = ctx;
+        assetManager_ = am;
+    }
+#endif
     void clearTexture();
     void setCorpse(bool hasCorpse, glm::vec3 renderPos) {
         hasCorpse_ = hasCorpse;
@@ -36,6 +43,7 @@ private:
     void ensureTexture();
 
     VkContext* vkCtx_ = nullptr;
+    MetalContext* metal_ = nullptr;  // only ever set on the Metal build
     pipeline::AssetManager* assetManager_ = nullptr;
     ImGuiTexture marker_;
     bool loadAttempted_ = false;

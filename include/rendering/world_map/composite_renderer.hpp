@@ -11,13 +11,23 @@
 #include <vector>
 #include <unordered_set>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class CommandBuffer;
+class RenderPipelineState;
+class Texture;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
+class MetalContext;
 class VkContext;
 class VkTexture;
 class VkRenderTarget;
 }
-namespace pipeline { class AssetManager; }
+namespace pipeline { class AssetManager; struct BLPImage; }
 namespace rendering {
 namespace world_map {
 
@@ -46,6 +56,16 @@ public:
     ~CompositeRenderer();
 
     bool initialize(VkContext* ctx, pipeline::AssetManager* am);
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* am);
+    /// compositePass on Metal: a pass of its own on the frame's command
+    /// buffer, so before any other encoder is open on it.
+    void compositeMetal(MTL::CommandBuffer* commandBuffer,
+                        const std::vector<Zone>& zones,
+                        const std::unordered_set<int>& exploredOverlays,
+                        bool hasServerMask);
+#endif
     void shutdown();
 
     /// Load base tile textures for a zone.
@@ -63,8 +83,9 @@ public:
                        const std::unordered_set<int>& exploredOverlays,
                        bool hasServerMask);
 
-    /// Descriptor set for ImGui display of the composite.
-    [[nodiscard]] VkDescriptorSet displayDescriptorSet() const { return imguiDisplaySet; }
+    /// Descriptor set for ImGui display of the composite - on Metal the
+    /// composite's MTL::Texture, which is what ImGui's Metal backend takes.
+    [[nodiscard]] VkDescriptorSet displayDescriptorSet() const;
 
     /// Destroy all loaded zone textures (on map change).
 
@@ -108,7 +129,30 @@ public:
     static constexpr float MAP_V_MAX = static_cast<float>(MAP_H) / static_cast<float>(FBO_H);
 
 private:
+    /// One quad of a composite, whichever backend records it.
+    struct CompositeDraw {
+        enum class Kind : uint8_t { Tile, Overlay, Fog } kind;
+        VkTexture* texture = nullptr;  // null for the fog, which is white
+        OverlayPush push{};            // WorldMapTilePush is its first 32 bytes
+    };
+    /// What compositing a zone draws, in order. False when there is nothing
+    /// to composite this frame; the zone is taken off the queue either way.
+    bool planComposite(const std::vector<Zone>& zones,
+                       const std::unordered_set<int>& exploredOverlays,
+                       bool hasServerMask, int& zoneIdx, std::vector<CompositeDraw>& draws);
+    /// A zone or overlay tile, uploaded on whichever backend is up.
+    std::unique_ptr<VkTexture> uploadTile(const pipeline::BLPImage& image);
+
     VkContext* vkCtx = nullptr;
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::Texture* mtlComposite_ = nullptr;
+    MTL::Buffer* mtlQuad_ = nullptr;
+    MTL::RenderPipelineState* mtlTilePipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlOverlayPipeline_ = nullptr;
+    int mtlVertPush_ = -1, mtlTileTex_ = -1, mtlTileSampler_ = -1;
+    int mtlFogFragPush_ = -1, mtlFogTex_ = -1, mtlFogSampler_ = -1;
+#endif
     pipeline::AssetManager* assetManager = nullptr;
     bool initialized = false;
 

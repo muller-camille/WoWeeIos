@@ -13,6 +13,7 @@ namespace core { class Window; }
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /// A texture together with the descriptor set that lets ImGui draw it.
 ///
@@ -43,6 +44,9 @@ bool hasInterfaceTextureBackend(const core::Window* window);
 struct ImGuiTexture {
     std::unique_ptr<VkTexture> texture;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    /// On Metal the handle is the texture's own MTL::Texture, which ImGui has
+    /// nothing registered for: releasing the texture is all there is to do.
+    bool metal = false;
 
     explicit operator bool() const { return texture != nullptr; }
 
@@ -72,6 +76,13 @@ ImGuiTexture makeImGuiTexture(VkContext& ctx, const pipeline::BLPImage& image);
 /// caller decides whether that is worth a log line.
 ImGuiTexture loadImGuiTexture(pipeline::AssetManager& assets, VkContext& ctx,
                               const std::string& path);
+
+#ifdef WOWEE_METAL
+/// The same two on the Metal renderer.
+ImGuiTexture makeImGuiTexture(MetalContext& ctx, const pipeline::BLPImage& image);
+ImGuiTexture loadImGuiTexture(pipeline::AssetManager& assets, MetalContext& ctx,
+                              const std::string& path);
+#endif
 
 }  // namespace rendering
 }  // namespace wowee

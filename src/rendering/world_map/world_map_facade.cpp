@@ -362,6 +362,28 @@ bool WorldMapFacade::initialize(VkContext* ctx, pipeline::AssetManager* am) {
     return true;
 }
 
+#ifdef WOWEE_METAL
+bool WorldMapFacade::initializeMetal(MetalContext* ctx, pipeline::AssetManager* am) {
+    impl_->assetManager = am;
+    if (!impl_->compositor.initializeMetal(ctx, am)) return false;
+    if (impl_->zoneHighlightLayer)
+        impl_->zoneHighlightLayer->initializeMetal(ctx, am);
+    if (impl_->playerMarkerLayer)
+        impl_->playerMarkerLayer->initializeMetal(ctx, am);
+    if (impl_->corpseMarkerLayer)
+        impl_->corpseMarkerLayer->initializeMetal(ctx, am);
+    impl_->initialized = true;
+    return true;
+}
+
+void WorldMapFacade::compositeMetal(MTL::CommandBuffer* commandBuffer) {
+    impl_->compositor.compositeMetal(commandBuffer,
+                                     impl_->data.zones(),
+                                     impl_->exploration.exploredOverlays(),
+                                     impl_->exploration.hasServerMask());
+}
+#endif
+
 void WorldMapFacade::shutdown() {
     if (!impl_) return;
     if (impl_->zoneHighlightLayer)

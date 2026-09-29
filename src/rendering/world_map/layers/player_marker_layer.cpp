@@ -27,15 +27,20 @@ void PlayerMarkerLayer::initialize(VkContext* ctx, pipeline::AssetManager* am) {
 
 void PlayerMarkerLayer::clearTexture() {
     if (vkCtx_) marker_.destroy(vkCtx_->getDevice(), vkCtx_->getAllocator());
+    else marker_.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);  // Metal, or nothing
     loadAttempted_ = false;
 }
 
 void PlayerMarkerLayer::ensureTexture() {
-    if (loadAttempted_ || !vkCtx_ || !assetManager_) return;
+    if (loadAttempted_ || (!vkCtx_ && !metal_) || !assetManager_) return;
     loadAttempted_ = true;
 
-    auto loaded = loadImGuiTexture(*assetManager_, *vkCtx_,
-                                   "Interface\\Minimap\\MinimapArrow.blp");
+#ifdef WOWEE_METAL
+    auto loaded = metal_ ? loadImGuiTexture(*assetManager_, *metal_, "Interface\\Minimap\\MinimapArrow.blp")
+                         : loadImGuiTexture(*assetManager_, *vkCtx_, "Interface\\Minimap\\MinimapArrow.blp");
+#else
+    auto loaded = loadImGuiTexture(*assetManager_, *vkCtx_, "Interface\\Minimap\\MinimapArrow.blp");
+#endif
     if (!loaded) {
         LOG_WARNING("PlayerMarkerLayer: icon texture unavailable");
         return;

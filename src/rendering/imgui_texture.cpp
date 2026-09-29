@@ -1,6 +1,7 @@
 #include "rendering/imgui_texture.hpp"
 
 #include <imgui.h>
+#include <cstring>
 #include <backends/imgui_impl_vulkan.h>
 
 #include "rendering/vk_context.hpp"
@@ -17,8 +18,14 @@ void removeImGuiTexture(VkDescriptorSet& descriptorSet) {
     // BackendRendererUserData is what ImGui_ImplVulkan_Init sets and
     // ImGui_ImplVulkan_Shutdown clears, so it answers whether there is still a
     // backend to give this back to.
+    //
+    // And it has to be Vulkan's: ImGui's Metal backend sets it as well, and
+    // its data read as Vulkan's is not something to hand a descriptor set to.
+    const char* backend = ImGui::GetCurrentContext() != nullptr
+        ? ImGui::GetIO().BackendRendererName : nullptr;
     if (ImGui::GetCurrentContext() != nullptr &&
-        ImGui::GetIO().BackendRendererUserData != nullptr) {
+        ImGui::GetIO().BackendRendererUserData != nullptr &&
+        backend && std::strcmp(backend, "imgui_impl_vulkan") == 0) {
         ImGui_ImplVulkan_RemoveTexture(descriptorSet);
     }
     descriptorSet = VK_NULL_HANDLE;
@@ -48,6 +55,11 @@ bool hasInterfaceTextureBackend(const core::Window* window) {
 }
 
 void ImGuiTexture::destroy(VkDevice device, VmaAllocator allocator) {
+    if (metal) {
+        descriptorSet = VK_NULL_HANDLE;
+        texture.reset();
+        return;
+    }
     removeImGuiTexture(descriptorSet);
     if (texture) {
         texture->destroy(device, allocator);
@@ -85,6 +97,26 @@ ImGuiTexture loadImGuiTexture(pipeline::AssetManager& assets, VkContext& ctx,
                               const std::string& path) {
     return makeImGuiTexture(ctx, assets.loadTexture(path));
 }
+
+#ifdef WOWEE_METAL
+ImGuiTexture makeImGuiTexture(MetalContext& ctx, const pipeline::BLPImage& image) {
+    if (!image.isValid()) return {};
+    auto texture = std::make_unique<VkTexture>();
+    if (!texture->uploadMetal(ctx, image.data.data(), image.width, image.height, false)) {
+        return {};
+    }
+    texture->setMetalSampler(ctx.sampler(MetalContext::Filter::Linear,
+                                         MetalContext::Address::ClampToEdge));
+    auto descriptorSet = reinterpret_cast<VkDescriptorSet>(texture->metalTexture());
+    return ImGuiTexture{.texture = std::move(texture), .descriptorSet = descriptorSet,
+                        .metal = true};
+}
+
+ImGuiTexture loadImGuiTexture(pipeline::AssetManager& assets, MetalContext& ctx,
+                              const std::string& path) {
+    return makeImGuiTexture(ctx, assets.loadTexture(path));
+}
+#endif
 
 }  // namespace rendering
 }  // namespace wowee

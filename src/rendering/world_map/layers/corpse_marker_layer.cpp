@@ -25,15 +25,20 @@ void CorpseMarkerLayer::initialize(VkContext* ctx, pipeline::AssetManager* am) {
 
 void CorpseMarkerLayer::clearTexture() {
     if (vkCtx_) marker_.destroy(vkCtx_->getDevice(), vkCtx_->getAllocator());
+    else marker_.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);  // Metal, or nothing
     loadAttempted_ = false;
 }
 
 void CorpseMarkerLayer::ensureTexture() {
-    if (loadAttempted_ || !vkCtx_ || !assetManager_) return;
+    if (loadAttempted_ || (!vkCtx_ && !metal_) || !assetManager_) return;
     loadAttempted_ = true;
 
-    auto loaded = loadImGuiTexture(*assetManager_, *vkCtx_,
-                                   "Interface\\Minimap\\Rotating-MinimapCorpseArrow.blp");
+#ifdef WOWEE_METAL
+    auto loaded = metal_ ? loadImGuiTexture(*assetManager_, *metal_, "Interface\\Minimap\\Rotating-MinimapCorpseArrow.blp")
+                         : loadImGuiTexture(*assetManager_, *vkCtx_, "Interface\\Minimap\\Rotating-MinimapCorpseArrow.blp");
+#else
+    auto loaded = loadImGuiTexture(*assetManager_, *vkCtx_, "Interface\\Minimap\\Rotating-MinimapCorpseArrow.blp");
+#endif
     if (!loaded) {
         LOG_WARNING("CorpseMarkerLayer: icon texture unavailable");
         return;

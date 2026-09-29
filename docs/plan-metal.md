@@ -23,8 +23,13 @@ With `WOWEE_METAL` (on by default for iOS) the iPad draws, through Metal:
 Every interface texture now goes through `uploadInterfaceTexture`, which uploads to whichever
 context the window has: the icons, cursors and raid marks of `ui_texture_load` and FrameXML's art
 in `widget_renderer`. Those are only drawn in the world, so on the device they wait for M3 to be
-seen; both backends compile them. The world map's layers and the loading screen keep their Vulkan
-textures until M4 and M3, where the rest of them is ported.
+seen; both backends compile them. The loading screen and the world map's layers have
+their Metal textures too.
+
+From M4, done and seen on the iPad (2026-09-29): the minimap (its 3x3 tile composite, then the
+disc over the world) and the world map (its tile and explored-overlay composite, the zone
+highlights and the player and corpse markers). Each composite is a pass of its own recorded before
+the world's, from a draw list both backends share.
 
 Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
 textures where the GPU has them, and checking the character list's preview and the equipment on

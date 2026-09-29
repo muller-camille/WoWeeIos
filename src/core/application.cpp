@@ -5119,7 +5119,18 @@ void Application::render() {
             if (inWorldSince.time_since_epoch().count() == 0) inWorldSince = now;
             const char* delayEnv = std::getenv("WOWEE_WORLD_SCREENSHOT_DELAY");
             const double delay = (delayEnv && *delayEnv) ? std::atof(delayEnv) : 20.0;
-            if (std::chrono::duration<double>(now - inWorldSince).count() >= delay) {
+            const double elapsed = std::chrono::duration<double>(now - inWorldSince).count();
+            // WOWEE_WORLD_SCREENSHOT_LUA: run in the interface five seconds
+            // before the picture, e.g. "ToggleWorldMap()" to see the map.
+            static bool luaRun = false;
+            if (const char* lua = std::getenv("WOWEE_WORLD_SCREENSHOT_LUA");
+                lua && *lua && !luaRun && elapsed >= delay - 5.0 && addonManager_) {
+                luaRun = true;
+                if (!addonManager_->runScript(lua)) {
+                    LOG_WARNING("WOWEE_WORLD_SCREENSHOT_LUA failed: ", lua);
+                }
+            }
+            if (elapsed >= delay) {
                 std::filesystem::path path(shot);
                 if (path.is_relative()) path = std::filesystem::path(getConfigRoot()) / path;
                 if (auto* metal = window ? window->getMetalContext() : nullptr) {

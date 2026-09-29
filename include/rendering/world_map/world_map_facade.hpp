@@ -12,9 +12,14 @@
 #include <memory>
 #include <vulkan/vulkan.h>
 
+#ifdef WOWEE_METAL
+namespace MTL { class CommandBuffer; }
+#endif
+
 namespace wowee {
 namespace rendering {
 class VkContext;
+class MetalContext;
 }
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -33,6 +38,12 @@ public:
 
     /// Off-screen composite pass - call BEFORE the main render pass begins.
     void compositePass(VkCommandBuffer cmd);
+
+#ifdef WOWEE_METAL
+    /// The same two on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* am);
+    void compositeMetal(MTL::CommandBuffer* commandBuffer);
+#endif
 
     /// ImGui overlay - call INSIDE the main render pass (during ImGui frame).
     void render(const glm::vec3& playerRenderPos,

@@ -10,6 +10,11 @@
 #include "rendering/vk_utils.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 #include <algorithm>
 #include <cstddef>
@@ -233,6 +238,19 @@ bool CompositeRenderer::initialize(VkContext* ctx, pipeline::AssetManager* am) {
 }
 
 void CompositeRenderer::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        zoneTextures.clear();
+        zoneTextureSlots_.clear();
+        fogTexture_.reset();
+        if (mtlComposite_) { mtlComposite_->release(); mtlComposite_ = nullptr; }
+        if (mtlQuad_) { mtlQuad_->release(); mtlQuad_ = nullptr; }
+        if (mtlTilePipeline_) { mtlTilePipeline_->release(); mtlTilePipeline_ = nullptr; }
+        if (mtlOverlayPipeline_) { mtlOverlayPipeline_->release(); mtlOverlayPipeline_ = nullptr; }
+        initialized = false;
+        metal_ = nullptr;
+    }
+#endif
     if (!vkCtx) return;
     VkDevice device = vkCtx->getDevice();
     VmaAllocator alloc = vkCtx->getAllocator();
@@ -275,7 +293,6 @@ void CompositeRenderer::loadZoneTextures(int zoneIdx, std::vector<Zone>& zones,
     LOG_INFO("loadZoneTextures: zone[", zoneIdx, "] areaName='", zone.areaName,
              "' areaID=", zone.areaID, " mapName='", mapName, "'");
 
-    VkDevice device = vkCtx->getDevice();
     int loaded = 0;
 
     for (int i = 0; i < 12; i++) {
@@ -287,12 +304,11 @@ void CompositeRenderer::loadZoneTextures(int zoneIdx, std::vector<Zone>& zones,
             continue;
         }
 
-        auto tex = std::make_unique<VkTexture>();
-        tex->upload(*vkCtx, blpImage.data.data(), blpImage.width, blpImage.height,
-                    VK_FORMAT_R8G8B8A8_UNORM, false);
-        tex->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                           VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
-
+        auto tex = uploadTile(blpImage);
+        if (!tex) {
+            slots.tileTextures[i] = nullptr;
+            continue;
+        }
         slots.tileTextures[i] = tex.get();
         zoneTextures.push_back(std::move(tex));
         loaded++;
@@ -312,7 +328,6 @@ void CompositeRenderer::loadOverlayTextures(int zoneIdx, std::vector<Zone>& zone
     const std::string& folder = zone.areaName;
     if (folder.empty()) return;
 
-    VkDevice device = vkCtx->getDevice();
     int totalLoaded = 0;
 
     for (size_t oi = 0; oi < zone.overlays.size(); oi++) {
@@ -331,12 +346,11 @@ void CompositeRenderer::loadOverlayTextures(int zoneIdx, std::vector<Zone>& zone
                 continue;
             }
 
-            auto tex = std::make_unique<VkTexture>();
-            tex->upload(*vkCtx, blpImage.data.data(), blpImage.width, blpImage.height,
-                        VK_FORMAT_R8G8B8A8_UNORM, false);
-            tex->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                               VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
-
+            auto tex = uploadTile(blpImage);
+            if (!tex) {
+                ovSlots.tiles[t] = nullptr;
+                continue;
+            }
             ovSlots.tiles[t] = tex.get();
             zoneTextures.push_back(std::move(tex));
             totalLoaded++;
@@ -344,6 +358,31 @@ void CompositeRenderer::loadOverlayTextures(int zoneIdx, std::vector<Zone>& zone
     }
 
     LOG_INFO("CompositeRenderer: loaded ", totalLoaded, " overlay tiles for '", folder, "'");
+}
+
+std::unique_ptr<VkTexture> CompositeRenderer::uploadTile(const pipeline::BLPImage& image) {
+    auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!tex->uploadMetal(*metal_, image.data.data(), image.width, image.height, false))
+            return nullptr;
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             MetalContext::Address::ClampToEdge));
+        return tex;
+    }
+#endif
+    tex->upload(*vkCtx, image.data.data(), image.width, image.height,
+                VK_FORMAT_R8G8B8A8_UNORM, false);
+    tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+    return tex;
+}
+
+VkDescriptorSet CompositeRenderer::displayDescriptorSet() const {
+#ifdef WOWEE_METAL
+    if (metal_) return reinterpret_cast<VkDescriptorSet>(mtlComposite_);
+#endif
+    return imguiDisplaySet;
 }
 
 void CompositeRenderer::detachZoneTextures() {
@@ -394,78 +433,43 @@ bool CompositeRenderer::hasAnyTile(int zoneIdx) const {
     return false;
 }
 
-void CompositeRenderer::compositePass(VkCommandBuffer cmd,
-                                       const std::vector<Zone>& zones,
-                                       const std::unordered_set<int>& exploredOverlays,
-                                       bool hasServerMask) {
-    if (!initialized || pendingCompositeIdx_ < 0 || !compositeTarget) return;
+bool CompositeRenderer::planComposite(const std::vector<Zone>& zones,
+                                      const std::unordered_set<int>& exploredOverlays,
+                                      bool hasServerMask, int& zoneIdx,
+                                      std::vector<CompositeDraw>& draws) {
+    if (!initialized || pendingCompositeIdx_ < 0) return false;
     if (pendingCompositeIdx_ >= static_cast<int>(zones.size())) {
         pendingCompositeIdx_ = -1;
-        return;
+        return false;
     }
 
-    int zoneIdx = pendingCompositeIdx_;
+    zoneIdx = pendingCompositeIdx_;
     pendingCompositeIdx_ = -1;
 
-    if (compositedIdx_ == zoneIdx) return;
+    if (compositedIdx_ == zoneIdx) return false;
     ensureTextureSlots(zones.size(), zones);
 
     const auto& zone = zones[zoneIdx];
     const auto& slots = zoneTextureSlots_[zoneIdx];
-    uint32_t frameIdx = vkCtx->getCurrentFrame();
-    VkDevice device = vkCtx->getDevice();
-
-    // Update tile descriptor sets for this frame
-    for (int i = 0; i < 12; i++) {
-        VkTexture* tileTex = slots.tileTextures[i];
-        if (!tileTex || !tileTex->isValid()) continue;
-
-        VkDescriptorImageInfo imgInfo = tileTex->descriptorInfo();
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = tileDescSets[frameIdx][i];
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    }
-
-    // Begin off-screen render pass
-    VkClearColorValue clearColor = {{ 0.05f, 0.08f, 0.12f, 1.0f }};
-    compositeTarget->beginPass(cmd, clearColor);
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB, &offset);
+    draws.clear();
 
     // --- Pass 1: Draw base map tiles (opaque) ---
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tilePipeline);
-
     for (int i = 0; i < 12; i++) {
         if (!slots.tileTextures[i] || !slots.tileTextures[i]->isValid()) continue;
 
         int col = i % GRID_COLS;
         int row = i / GRID_COLS;
 
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                tilePipelineLayout, 0, 1,
-                                &tileDescSets[frameIdx][i], 0, nullptr);
-
-        WorldMapTilePush push{};
-        push.gridOffset = glm::vec2(static_cast<float>(col), static_cast<float>(row));
-        push.gridCols = static_cast<float>(GRID_COLS);
-        push.gridRows = static_cast<float>(GRID_ROWS);
-        vkCmdPushConstants(cmd, tilePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT,
-                           0, sizeof(push), &push);
-
-        vkCmdDraw(cmd, 6, 1, 0, 0);
+        CompositeDraw draw{CompositeDraw::Kind::Tile, slots.tileTextures[i]};
+        draw.push.gridOffset = glm::vec2(static_cast<float>(col), static_cast<float>(row));
+        draw.push.gridCols = static_cast<float>(GRID_COLS);
+        draw.push.gridRows = static_cast<float>(GRID_ROWS);
+        draws.push_back(draw);
     }
 
     // --- Draw explored overlay textures on top of the base map ---
     bool hasOverlays = !zone.overlays.empty() && zone.areaID != 0;
-    if (hasOverlays && overlayPipeline_) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, overlayPipeline_);
-
+    if (hasOverlays) {
         uint32_t descSlot = 0;
         for (int oi = 0; oi < static_cast<int>(zone.overlays.size()); oi++) {
             if (exploredOverlays.count(oi) == 0) continue;
@@ -475,20 +479,6 @@ void CompositeRenderer::compositePass(VkCommandBuffer cmd,
             for (int t = 0; t < static_cast<int>(ovSlots.tiles.size()); t++) {
                 if (!ovSlots.tiles[t] || !ovSlots.tiles[t]->isValid()) continue;
                 if (descSlot >= MAX_OVERLAY_TILES) break;
-
-                VkDescriptorImageInfo ovImgInfo = ovSlots.tiles[t]->descriptorInfo();
-                VkWriteDescriptorSet ovWrite{};
-                ovWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                ovWrite.dstSet = overlayDescSets_[frameIdx][descSlot];
-                ovWrite.dstBinding = 0;
-                ovWrite.descriptorCount = 1;
-                ovWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                ovWrite.pImageInfo = &ovImgInfo;
-                vkUpdateDescriptorSets(device, 1, &ovWrite, 0, nullptr);
-
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        overlayPipelineLayout_, 0, 1,
-                                        &overlayDescSets_[frameIdx][descSlot], 0, nullptr);
 
                 int tileCol = t % ov.tileCols;
                 int tileRow = t / ov.tileCols;
@@ -514,7 +504,8 @@ void CompositeRenderer::compositePass(VkCommandBuffer cmd,
                 float px = static_cast<float>(ov.offsetX + tileCol * TILE_PX);
                 float py = static_cast<float>(ov.offsetY + tileRow * TILE_PX);
 
-                OverlayPush ovPush{};
+                CompositeDraw draw{CompositeDraw::Kind::Overlay, ovSlots.tiles[t]};
+                OverlayPush& ovPush = draw.push;
                 ovPush.gridOffset = glm::vec2(px / static_cast<float>(TILE_PX),
                                               py / static_cast<float>(TILE_PX));
                 ovPush.gridCols = static_cast<float>(GRID_COLS);
@@ -524,12 +515,7 @@ void CompositeRenderer::compositePass(VkCommandBuffer cmd,
                 ovPush.uvScale = glm::vec2(static_cast<float>(pieceW) / fileExtent(pieceW),
                                            static_cast<float>(pieceH) / fileExtent(pieceH));
                 ovPush.tintColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-                vkCmdPushConstants(cmd, overlayPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                                   0, sizeof(WorldMapTilePush), &ovPush);
-                vkCmdPushConstants(cmd, overlayPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   offsetof(OverlayPush, tintColor), sizeof(glm::vec4),
-                                   &ovPush.tintColor);
-                vkCmdDraw(cmd, 6, 1, 0, 0);
+                draws.push_back(draw);
 
                 descSlot++;
             }
@@ -537,35 +523,208 @@ void CompositeRenderer::compositePass(VkCommandBuffer cmd,
     }
 
     // --- Draw fog of war overlay over unexplored areas ---
-    if (hasServerMask && zone.areaID != 0 && overlayPipeline_ && fogDescSet_) {
+    if (hasServerMask && zone.areaID != 0) {
         bool hasAnyExplored = false;
         for (int oi = 0; oi < static_cast<int>(zone.overlays.size()); oi++) {
             if (exploredOverlays.count(oi) > 0) { hasAnyExplored = true; break; }
         }
         if (!hasAnyExplored && !zone.overlays.empty()) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, overlayPipeline_);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    overlayPipelineLayout_, 0, 1,
-                                    &fogDescSet_, 0, nullptr);
-
-            OverlayPush fogPush{};
-            fogPush.gridOffset = glm::vec2(0.0f, 0.0f);
-            fogPush.gridCols = 1.0f;
-            fogPush.gridRows = 1.0f;
-            fogPush.tintColor = glm::vec4(0.15f, 0.15f, 0.2f, 0.55f);
-            vkCmdPushConstants(cmd, overlayPipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                               0, sizeof(WorldMapTilePush), &fogPush);
-            vkCmdPushConstants(cmd, overlayPipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT,
-                               offsetof(OverlayPush, tintColor), sizeof(glm::vec4),
-                               &fogPush.tintColor);
-            vkCmdDraw(cmd, 6, 1, 0, 0);
+            CompositeDraw draw{CompositeDraw::Kind::Fog, nullptr};
+            draw.push.gridOffset = glm::vec2(0.0f, 0.0f);
+            draw.push.gridCols = 1.0f;
+            draw.push.gridRows = 1.0f;
+            draw.push.tintColor = glm::vec4(0.15f, 0.15f, 0.2f, 0.55f);
+            draws.push_back(draw);
         }
+    }
+    return true;
+}
+
+void CompositeRenderer::compositePass(VkCommandBuffer cmd,
+                                       const std::vector<Zone>& zones,
+                                       const std::unordered_set<int>& exploredOverlays,
+                                       bool hasServerMask) {
+    if (!compositeTarget) return;
+    int zoneIdx = -1;
+    std::vector<CompositeDraw> draws;
+    if (!planComposite(zones, exploredOverlays, hasServerMask, zoneIdx, draws)) return;
+
+    uint32_t frameIdx = vkCtx->getCurrentFrame();
+    VkDevice device = vkCtx->getDevice();
+
+    // Begin off-screen render pass
+    VkClearColorValue clearColor = {{ 0.05f, 0.08f, 0.12f, 1.0f }};
+    compositeTarget->beginPass(cmd, clearColor);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB, &offset);
+
+    auto writeSet = [&](VkDescriptorSet set, const VkTexture& texture) {
+        VkDescriptorImageInfo imgInfo = texture.descriptorInfo();
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    };
+
+    VkPipeline bound = VK_NULL_HANDLE;
+    uint32_t tileSlot = 0, overlaySlot = 0;
+    for (const CompositeDraw& draw : draws) {
+        const bool tile = draw.kind == CompositeDraw::Kind::Tile;
+        VkPipeline pipeline = tile ? tilePipeline : overlayPipeline_;
+        if (!pipeline) continue;
+        if (pipeline != bound) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            bound = pipeline;
+        }
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (draw.kind == CompositeDraw::Kind::Fog) {
+            set = fogDescSet_;
+        } else if (tile) {
+            if (tileSlot >= 12) continue;
+            set = tileDescSets[frameIdx][tileSlot++];
+            writeSet(set, *draw.texture);
+        } else {
+            set = overlayDescSets_[frameIdx][overlaySlot++];
+            writeSet(set, *draw.texture);
+        }
+        if (!set) continue;
+        VkPipelineLayout layout = tile ? tilePipelineLayout : overlayPipelineLayout_;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set,
+                                0, nullptr);
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(WorldMapTilePush), &draw.push);
+        if (!tile) {
+            vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               offsetof(OverlayPush, tintColor), sizeof(glm::vec4),
+                               &draw.push.tintColor);
+        }
+        vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 
     compositeTarget->endPass(cmd);
     compositedIdx_ = zoneIdx;
     everComposited_ = true;
 }
+
+#ifdef WOWEE_METAL
+bool CompositeRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* am) {
+    if (initialized) return true;
+    if (!ctx) return false;
+    assetManager = am;
+
+    const MetalBindings vert("world_map_vert");
+    const MetalBindings tileFrag("world_map_frag");
+    const MetalBindings fogFrag("world_map_fog_frag");
+    mtlVertPush_ = vert.pushConstants();
+    mtlTileTex_ = tileFrag.texture(0, 0);
+    mtlTileSampler_ = tileFrag.sampler(0, 0);
+    mtlFogFragPush_ = fogFrag.pushConstants();
+    mtlFogTex_ = fogFrag.texture(0, 0);
+    mtlFogSampler_ = fogFrag.sampler(0, 0);
+    if (!vert.valid() || !tileFrag.valid() || !fogFrag.valid()) return false;
+
+    // Two vec2s per vertex, position then texture coordinate, as on Vulkan.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(2 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(4 * sizeof(float));
+
+    MetalPipelineDesc desc;
+    desc.vertexDescriptor = vd;
+    desc.vertexFunction = "world_map_vert";
+    desc.fragmentFunction = "world_map_frag";
+    desc.colorFormat = MTL::PixelFormatRGBA8Unorm;
+    desc.label = "world map tiles";
+    mtlTilePipeline_ = buildMetalPipeline(*ctx, desc);
+    desc.fragmentFunction = "world_map_fog_frag";
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "world map overlays";
+    mtlOverlayPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlTilePipeline_ || !mtlOverlayPipeline_) return false;
+
+    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, FBO_W, FBO_H, false);
+    texDesc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+    texDesc->setStorageMode(MTL::StorageModePrivate);
+    mtlComposite_ = ctx->getDevice()->newTexture(texDesc);
+
+    const float quadVerts[] = {
+        0.0f, 0.0f,  0.0f, 0.0f,
+        1.0f, 0.0f,  1.0f, 0.0f,
+        1.0f, 1.0f,  1.0f, 1.0f,
+        0.0f, 0.0f,  0.0f, 0.0f,
+        1.0f, 1.0f,  1.0f, 1.0f,
+        0.0f, 1.0f,  0.0f, 1.0f,
+    };
+    mtlQuad_ = ctx->newBuffer(quadVerts, sizeof(quadVerts));
+    if (!mtlComposite_ || !mtlQuad_) return false;
+
+    metal_ = ctx;
+    initialized = true;
+    LOG_INFO("CompositeRenderer initialized (Metal, ", FBO_W, "x", FBO_H, " composite)");
+    return true;
+}
+
+void CompositeRenderer::compositeMetal(MTL::CommandBuffer* commandBuffer,
+                                       const std::vector<Zone>& zones,
+                                       const std::unordered_set<int>& exploredOverlays,
+                                       bool hasServerMask) {
+    if (!metal_ || !mtlComposite_ || !commandBuffer) return;
+    int zoneIdx = -1;
+    std::vector<CompositeDraw> draws;
+    if (!planComposite(zones, exploredOverlays, hasServerMask, zoneIdx, draws)) return;
+
+    auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    auto* color = pass->colorAttachments()->object(0);
+    color->setTexture(mtlComposite_);
+    color->setLoadAction(MTL::LoadActionClear);
+    color->setClearColor(MTL::ClearColor::Make(0.05, 0.08, 0.12, 1.0));
+    color->setStoreAction(MTL::StoreActionStore);
+    MTL::RenderCommandEncoder* encoder = commandBuffer->renderCommandEncoder(pass);
+    encoder->setLabel(NS::String::string("world map composite", NS::UTF8StringEncoding));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(mtlQuad_, 0, kMetalVertexBufferIndex);
+
+    MTL::RenderPipelineState* bound = nullptr;
+    for (const CompositeDraw& draw : draws) {
+        const bool tile = draw.kind == CompositeDraw::Kind::Tile;
+        MTL::RenderPipelineState* pipeline = tile ? mtlTilePipeline_ : mtlOverlayPipeline_;
+        if (pipeline != bound) {
+            encoder->setRenderPipelineState(pipeline);
+            bound = pipeline;
+        }
+        MTL::Texture* texture = draw.texture ? draw.texture->metalTexture()
+                                             : metal_->whiteTexture();
+        MTL::SamplerState* sampler = draw.texture
+            ? draw.texture->metalSampler()
+            : metal_->sampler(MetalContext::Filter::Nearest, MetalContext::Address::ClampToEdge);
+        if (!texture || !sampler) continue;
+        encoder->setVertexBytes(&draw.push, sizeof(WorldMapTilePush), mtlVertPush_);
+        if (tile) {
+            encoder->setFragmentTexture(texture, mtlTileTex_);
+            encoder->setFragmentSamplerState(sampler, mtlTileSampler_);
+        } else {
+            encoder->setFragmentBytes(&draw.push, sizeof(OverlayPush), mtlFogFragPush_);
+            encoder->setFragmentTexture(texture, mtlFogTex_);
+            encoder->setFragmentSamplerState(sampler, mtlFogSampler_);
+        }
+        encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+    }
+    encoder->endEncoding();
+    compositedIdx_ = zoneIdx;
+    everComposited_ = true;
+}
+#endif
 
 } // namespace world_map
 } // namespace rendering

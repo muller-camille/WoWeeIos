@@ -10,6 +10,7 @@
 namespace wowee {
 namespace rendering {
 class VkContext;
+class MetalContext;
 }
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -21,6 +22,12 @@ public:
 
     void setMetadata(const ZoneMetadata* metadata) { metadata_ = metadata; }
     void initialize(VkContext* ctx, pipeline::AssetManager* am);
+#ifdef WOWEE_METAL
+    void initializeMetal(MetalContext* ctx, pipeline::AssetManager* am) {
+        metal_ = ctx;
+        assetManager_ = am;
+    }
+#endif
     void clearTextures();
     void render(const LayerContext& ctx) override;
     [[nodiscard]] int hoveredZone() const { return hoveredZone_; }
@@ -36,6 +43,7 @@ private:
 
     const ZoneMetadata* metadata_ = nullptr;
     VkContext* vkCtx_ = nullptr;
+    MetalContext* metal_ = nullptr;  // only ever set on the Metal build
     pipeline::AssetManager* assetManager_ = nullptr;
 
     struct HighlightEntry {

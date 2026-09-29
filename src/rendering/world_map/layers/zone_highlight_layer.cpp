@@ -68,7 +68,7 @@ void ZoneHighlightLayer::clearTextures() {
 
 void ZoneHighlightLayer::ensureHighlight(const std::string& key,
                                           const std::string& customPath) {
-    if (!vkCtx_ || !assetManager_) return;
+    if ((!vkCtx_ && !metal_) || !assetManager_) return;
     if (key.empty()) return;
     if (highlights_.count(key) || missingHighlights_.count(key)) return;
 
@@ -108,7 +108,14 @@ void ZoneHighlightLayer::ensureHighlight(const std::string& key,
         }
     }
 
+#ifdef WOWEE_METAL
+    // On Metal the handle is the texture itself, and a frame still drawing
+    // it holds its own reference, so clearing needs no deferring.
+    auto loaded = metal_ ? makeImGuiTexture(*metal_, blpImage)
+                         : makeImGuiTexture(*vkCtx_, blpImage);
+#else
     auto loaded = makeImGuiTexture(*vkCtx_, blpImage);
+#endif
     if (!loaded) {
         missingHighlights_.insert(key);
         return;
