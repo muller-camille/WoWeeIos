@@ -53,7 +53,8 @@ bool MetalContext::initialize(SDL_Window* window) {
     layer_->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
     // Read back only when a screenshot was asked for: a framebuffer-only
     // drawable is cheaper to render to and present.
-    readableDrawables_ = std::getenv("WOWEE_SCREENSHOT") != nullptr;
+    readableDrawables_ = std::getenv("WOWEE_SCREENSHOT") != nullptr ||
+                         std::getenv("WOWEE_WORLD_SCREENSHOT") != nullptr;
     layer_->setFramebufferOnly(!readableDrawables_);
     refreshDrawableSize();
 

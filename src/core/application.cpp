@@ -5103,7 +5103,38 @@ void Application::render() {
         runRenderStage("mapWindow", [&] { updateMapWindow(); });
     }
 
+#ifdef WOWEE_METAL
+    // WOWEE_WORLD_SCREENSHOT=<file.png>: a picture of the world, taken
+    // WOWEE_WORLD_SCREENSHOT_DELAY seconds (20 by default, for the doodads to
+    // stream in) after entering it, then the client quits - how the Mac sees
+    // what the device draws. A relative path lands under the config root.
+    bool worldShotTaken = false;
+    if (const char* shot = std::getenv("WOWEE_WORLD_SCREENSHOT"); shot && *shot) {
+        static std::chrono::steady_clock::time_point inWorldSince{};
+        static bool captured = false;
+        if (state != AppState::IN_GAME) {
+            inWorldSince = {};
+        } else if (!captured) {
+            const auto now = std::chrono::steady_clock::now();
+            if (inWorldSince.time_since_epoch().count() == 0) inWorldSince = now;
+            const char* delayEnv = std::getenv("WOWEE_WORLD_SCREENSHOT_DELAY");
+            const double delay = (delayEnv && *delayEnv) ? std::atof(delayEnv) : 20.0;
+            if (std::chrono::duration<double>(now - inWorldSince).count() >= delay) {
+                std::filesystem::path path(shot);
+                if (path.is_relative()) path = std::filesystem::path(getConfigRoot()) / path;
+                if (auto* metal = window ? window->getMetalContext() : nullptr) {
+                    metal->captureNextFrame(path.string());
+                    captured = true;
+                    worldShotTaken = true;
+                }
+            }
+        }
+    }
+#endif
     runRenderStage("endFrame", [&] { renderer->endFrame(); });
+#ifdef WOWEE_METAL
+    if (worldShotTaken) running = false;
+#endif
 
     // A picture of the client, written once and then done with.
     //

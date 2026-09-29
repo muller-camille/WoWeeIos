@@ -1,4 +1,5 @@
 #include "ui/character_screen.hpp"
+#include <cstdlib>
 #include "game/equipment_hash.hpp"
 #include "ui/ui_colors.hpp"
 #include "rendering/character_preview.hpp"
@@ -190,6 +191,15 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
         gameHandler.selectCharacter(character.guid);
         if (onCharacterSelected) onCharacterSelected(character.guid);
     };
+    // WOWEE_AUTO_ENTER: the first character, into the world, once.
+    {
+        static bool autoEntered = false;
+        if (!autoEntered && !characterSelected && !characters.empty() &&
+            std::getenv("WOWEE_AUTO_ENTER")) {
+            autoEntered = true;
+            enterWorld(characters.front());
+        }
+    }
 
     {
         const PaperUI::ListResult picked = ui_.list(

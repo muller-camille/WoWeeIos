@@ -1,4 +1,5 @@
 #include "ui/realm_screen.hpp"
+#include <cstdlib>
 #include "ui/ui_colors.hpp"
 
 #include <algorithm>
@@ -75,6 +76,16 @@ void RealmScreen::render(auth::AuthHandler& authHandler) {
             if (onRealmSelected) {
                 onRealmSelected(selectedRealmName, selectedRealmAddress);
             }
+        } else if (std::getenv("WOWEE_AUTO_ENTER")) {
+            // WOWEE_AUTO_ENTER: the realm with characters, or else the first,
+            // connected to without asking.
+            const size_t pick = bestRealm >= 0 ? static_cast<size_t>(bestRealm) : 0;
+            selectedRealmIndex = static_cast<int>(pick);
+            realmSelected = true;
+            selectedRealmName = realms[pick].name;
+            selectedRealmAddress = realms[pick].address;
+            setStatus("Auto-selecting realm: " + realms[pick].name);
+            if (onRealmSelected) onRealmSelected(selectedRealmName, selectedRealmAddress);
         } else if (bestRealm >= 0) {
             // Pre-highlight realm with characters (don't auto-connect, let user confirm)
             selectedRealmIndex = bestRealm;

@@ -838,6 +838,13 @@ void AuthScreen::renderCard(auth::AuthHandler& authHandler, float screenW, float
             std::snprintf(label, sizeof(label), "Log In");
         }
         if (ui_.button("login", a, b, label, PaperUI::ButtonKind::Primary, enabled)) submit = true;
+        // WOWEE_AUTO_ENTER, for testing on a device from the Mac: log in once
+        // with what was saved, then the realm and character screens carry on.
+        static bool autoLoginSent = false;
+        if (!autoLoginSent && enabled && !codeInMain && std::getenv("WOWEE_AUTO_ENTER")) {
+            autoLoginSent = true;
+            submit = true;
+        }
     }
 
     // ---- the disclosure --------------------------------------------------

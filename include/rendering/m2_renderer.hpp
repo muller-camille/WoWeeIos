@@ -234,7 +234,14 @@ struct M2ModelGPU {
     std::vector<uint16_t> textureTransformLookup;
     std::vector<int> idleVariationIndices;  // Sequence indices for idle variations (animId 0)
 
-    [[nodiscard]] bool isValid() const { return vertexBuffer != VK_NULL_HANDLE && indexCount > 0; }
+    [[nodiscard]] bool isValid() const {
+#ifdef WOWEE_METAL
+        // The Metal build's buffers, which the Vulkan handle says nothing
+        // about: asked only for that, every doodad was culled as invalid.
+        if (mtlVertexBuffer) return indexCount > 0;
+#endif
+        return vertexBuffer != VK_NULL_HANDLE && indexCount > 0;
+    }
 };
 
 /**
