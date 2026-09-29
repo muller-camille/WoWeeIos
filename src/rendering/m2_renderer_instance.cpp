@@ -832,7 +832,12 @@ VkTexture* M2Renderer::loadTexture(const std::string& path, uint32_t texFlags) {
     auto tex = std::make_unique<VkTexture>();
 #ifdef WOWEE_METAL
     if (metal_) {
-        tex->uploadBLPMetal(*metal_, blp);
+        if (!tex->uploadBLPMetal(*metal_, blp) && loggedTextureLoadFails_.insert(key).second) {
+            LOG_WARNING("M2 (Metal): could not upload ", path, " (", blp.width, "x", blp.height,
+                        ", ", pipeline::BLPLoader::getCompressionName(blp.compression),
+                        blp.isBlockCompressed() ? ", blocks kept" : ", decoded",
+                        metal_->supportsBC() ? ", BC sampled" : ", BC decoded", ")");
+        }
         // Clamped or repeating as the flags ask; Metal's samplers are shared,
         // one per combination, so the two axes wrap alike here.
         tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
