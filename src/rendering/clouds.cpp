@@ -6,6 +6,11 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
@@ -113,6 +118,12 @@ void Clouds::recreatePipelines() {
 }
 
 void Clouds::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
+    metal_ = nullptr;
+#endif
     destroyBuffers();
 
     if (vkCtx_) destroyPipeline(vkCtx_->getDevice(), pipeline_, pipelineLayout_);
@@ -128,7 +139,25 @@ void Clouds::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const SkyP
     if (!enabled_ || pipeline_ == VK_NULL_HANDLE) {
         return;
     }
+    const CloudPush push = makePush(params);
 
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+        0, 1, &perFrameSet, 0, nullptr);
+
+    vkCmdPushConstants(cmd, pipelineLayout_,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+        0, sizeof(push), &push);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer_, &offset);
+    vkCmdBindIndexBuffer(cmd, indexBuffer_, 0, VK_INDEX_TYPE_UINT32);
+
+    vkCmdDrawIndexed(cmd, static_cast<uint32_t>(indexCount_), 1, 0, 0, 0);
+}
+
+Clouds::CloudPush Clouds::makePush(const SkyParams& params) const {
     // Derive cloud base color from DBC horizon band, slightly brightened
     glm::vec3 cloudBaseColor = params.skyBand1Color * 1.1f;
     cloudBaseColor = glm::clamp(cloudBaseColor, glm::vec3(0.0f), glm::vec3(1.0f));
@@ -150,21 +179,7 @@ void Clouds::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const SkyP
     push.cloudColor    = glm::vec4(cloudBaseColor, 1.0f);
     push.sunDirDensity = glm::vec4(sunDir, density_);
     push.windAndLight  = glm::vec4(windOffset_, sunIntensity, ambient, 0.0f);
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-        0, 1, &perFrameSet, 0, nullptr);
-
-    vkCmdPushConstants(cmd, pipelineLayout_,
-        VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(push), &push);
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer_, &offset);
-    vkCmdBindIndexBuffer(cmd, indexBuffer_, 0, VK_INDEX_TYPE_UINT32);
-
-    vkCmdDrawIndexed(cmd, static_cast<uint32_t>(indexCount_), 1, 0, 0, 0);
+    return push;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +275,71 @@ void Clouds::destroyBuffers() {
     destroy(allocator, vertexBuffer_, vertexAlloc_);
     destroy(allocator, indexBuffer_, indexAlloc_);
 }
+
+#ifdef WOWEE_METAL
+bool Clouds::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                             uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("clouds_vert");
+    const MetalBindings frag("clouds_frag");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlFragPerFrame_ = frag.buffer(0, 0);
+    mtlFragPush_ = frag.pushConstants();
+    mtlFragFog_ = frag.texture(0, 2);
+    mtlFragFogSampler_ = frag.sampler(0, 2);
+    if (!vert.valid() || !frag.valid()) return false;
+
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(glm::vec3));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "clouds_vert";
+    desc.fragmentFunction = "clouds_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "clouds";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlPipeline_) return false;
+
+    generateMesh();
+    mtlVertices_ = ctx->newBuffer(vertices_.data(), vertices_.size() * sizeof(glm::vec3));
+    mtlIndices_ = ctx->newBuffer(indices_.data(), indices_.size() * sizeof(uint32_t));
+    vertices_.clear();
+    vertices_.shrink_to_fit();
+    indices_.clear();
+    indices_.shrink_to_fit();
+    if (!mtlVertices_ || !mtlIndices_) return false;
+    metal_ = ctx;
+    return true;
+}
+
+void Clouds::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                         size_t offset, const SkyParams& params) {
+    if (!enabled_ || !mtlPipeline_ || !encoder) return;
+    const CloudPush push = makePush(params);
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setFragmentBuffer(perFrame, offset, mtlFragPerFrame_);
+    encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
+    // No fog volume on Metal yet: the neutral one lets everything through.
+    encoder->setFragmentTexture(metal_->neutralVolumeTexture(), mtlFragFog_);
+    encoder->setFragmentSamplerState(metal_->sampler(MetalContext::Filter::Linear,
+                                                     MetalContext::Address::ClampToEdge),
+                                     mtlFragFogSampler_);
+    encoder->setVertexBuffer(mtlVertices_, 0, kMetalVertexBufferIndex);
+    encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle,
+                                   NS::UInteger(indexCount_), MTL::IndexTypeUInt32,
+                                   mtlIndices_, NS::UInteger(0));
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

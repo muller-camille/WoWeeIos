@@ -5,6 +5,11 @@
 #include "rendering/vk_pipeline.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
@@ -121,6 +126,11 @@ bool LensFlare::initialize(VkContext* ctx, VkDescriptorSetLayout /*perFrameLayou
 }
 
 void LensFlare::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    metal_ = nullptr;
+#endif
     if (vkCtx) {
         destroyParticleResources(vkCtx->getDevice(), vkCtx->getAllocator(),
                                  pipeline, pipelineLayout, vertexBuffer, vertexAlloc);
@@ -232,6 +242,31 @@ void LensFlare::render(VkCommandBuffer cmd, const Camera& camera, const glm::vec
     if (!enabled || pipeline == VK_NULL_HANDLE) {
         return;
     }
+    computePushes(camera, sunPosition, timeOfDay, fogDensity, cloudDensity, weatherIntensity,
+                  sunOcclusion);
+    if (flarePushes_.empty()) return;
+
+    // Bind pipeline
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Bind vertex buffer
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
+
+    for (const FlarePushConstants& push : flarePushes_) {
+        vkCmdPushConstants(cmd, pipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(push), &push);
+
+        // Draw quad
+        vkCmdDraw(cmd, VERTICES_PER_QUAD, 1, 0, 0);
+    }
+}
+
+void LensFlare::computePushes(const Camera& camera, const glm::vec3& sunPosition,
+                              float timeOfDay, float fogDensity, float cloudDensity,
+                              float weatherIntensity, float sunOcclusion) {
+    flarePushes_.clear();
 
     // Nothing reaching the lens, nothing to scatter in it. Everything below
     // asks where the sun is on screen and how thick the air is; none of it
@@ -286,13 +321,6 @@ void LensFlare::render(VkCommandBuffer cmd, const Camera& camera, const glm::vec
 
     float aspectRatio = camera.getAspectRatio();
 
-    // Bind pipeline
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-    // Bind vertex buffer
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
-
     // Warm tint at sunrise/sunset - shift flare color toward orange/amber when sun is low
     float warmTint = 1.0f - glm::smoothstep(0.05f, 0.35f, sunHeight);
 
@@ -317,19 +345,78 @@ void LensFlare::render(VkCommandBuffer cmd, const Camera& camera, const glm::vec
         push.size = element.size;
         push.aspectRatio = aspectRatio;
         push.colorBrightness = glm::vec4(tintedColor, brightness);
-
-        vkCmdPushConstants(cmd, pipelineLayout,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(push), &push);
-
-        // Draw quad
-        vkCmdDraw(cmd, VERTICES_PER_QUAD, 1, 0, 0);
+        flarePushes_.push_back(push);
     }
 }
 
 void LensFlare::setIntensity(float intensity) {
     this->intensityMultiplier = glm::clamp(intensity, 0.0f, 2.0f);
 }
+
+#ifdef WOWEE_METAL
+bool LensFlare::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("lens_flare_vert");
+    const MetalBindings frag("lens_flare_frag");
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPush_ = frag.pushConstants();
+    if (!vert.valid() || !frag.valid()) return false;
+
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(2 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(4 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "lens_flare_vert";
+    desc.fragmentFunction = "lens_flare_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Additive;
+    desc.label = "lens flare";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    generateFlareElements();
+    const float quadVertices[] = {
+        -0.5f, -0.5f, 0.0f, 0.0f,
+         0.5f, -0.5f, 1.0f, 0.0f,
+         0.5f,  0.5f, 1.0f, 1.0f,
+        -0.5f, -0.5f, 0.0f, 0.0f,
+         0.5f,  0.5f, 1.0f, 1.0f,
+        -0.5f,  0.5f, 0.0f, 1.0f
+    };
+    mtlVertices_ = ctx->newBuffer(quadVertices, sizeof(quadVertices));
+    if (!mtlPipeline_ || !mtlVertices_) return false;
+    metal_ = ctx;
+    return true;
+}
+
+void LensFlare::renderMetal(MTL::RenderCommandEncoder* encoder, const Camera& camera,
+                            const glm::vec3& sunPosition, float timeOfDay, float fogDensity,
+                            float cloudDensity, float weatherIntensity, float sunOcclusion) {
+    if (!enabled || !mtlPipeline_ || !encoder) return;
+    computePushes(camera, sunPosition, timeOfDay, fogDensity, cloudDensity, weatherIntensity,
+                  sunOcclusion);
+    if (flarePushes_.empty()) return;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(false, false));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(mtlVertices_, 0, kMetalVertexBufferIndex);
+    for (const FlarePushConstants& push : flarePushes_) {
+        encoder->setVertexBytes(&push, sizeof(push), mtlVertPush_);
+        encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
+        encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0),
+                                NS::UInteger(VERTICES_PER_QUAD));
+    }
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

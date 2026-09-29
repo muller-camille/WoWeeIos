@@ -5,6 +5,11 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
@@ -104,6 +109,12 @@ void Celestial::recreatePipelines() {
 }
 
 void Celestial::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
+    metal_ = nullptr;
+#endif
     destroyQuad();
 
     if (vkCtx_) destroyPipeline(vkCtx_->getDevice(), pipeline_, pipelineLayout_);
@@ -138,24 +149,39 @@ void Celestial::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer_, &offset);
     vkCmdBindIndexBuffer(cmd, indexBuffer_, 0, VK_INDEX_TYPE_UINT32);
 
-    // Draw sun, then moon(s) - each call pushes different constants
-    renderSun(cmd, perFrameSet, timeOfDay, sunDir, sunColor);
-    renderMoon(cmd, perFrameSet, timeOfDay, nightFactor);
-    if (dualMoonMode_) {
-        renderBlueChild(cmd, perFrameSet, timeOfDay, nightFactor);
+    // Draw sun, then moon(s) - each with its own constants
+    CelestialPush pushes[3];
+    const int count = bodyPushes(pushes, timeOfDay, sunDir, sunColor, -1.0f, nightFactor);
+    for (int i = 0; i < count; ++i) {
+        vkCmdPushConstants(cmd, pipelineLayout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(pushes[i]), &pushes[i]);
+        vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
     }
+}
+
+int Celestial::bodyPushes(CelestialPush (&pushes)[3], float timeOfDay, const glm::vec3* sunDir,
+                          const glm::vec3* sunColor, float gameTime, float nightFactor) {
+    // Update moon phases from server game time if provided
+    if (gameTime >= 0.0f) {
+        updatePhasesFromGameTime(gameTime);
+    }
+    int count = 0;
+    if (sunPush(pushes[count], timeOfDay, sunDir, sunColor)) ++count;
+    if (moonPush(pushes[count], timeOfDay, nightFactor)) ++count;
+    if (dualMoonMode_ && blueChildPush(pushes[count], timeOfDay, nightFactor)) ++count;
+    return count;
 }
 
 // ---------------------------------------------------------------------------
 // Private per-body render helpers
 // ---------------------------------------------------------------------------
 
-void Celestial::renderSun(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
-                           float timeOfDay,
-                           const glm::vec3* sunDir, const glm::vec3* sunColor) {
+bool Celestial::sunPush(CelestialPush& push, float timeOfDay,
+                        const glm::vec3* sunDir, const glm::vec3* sunColor) const {
     // Sun visible 5:00–19:00
     if (timeOfDay < 5.0f || timeOfDay >= 19.0f) {
-        return;
+        return false;
     }
 
     // Resolve sun direction - prefer opposite of incoming light ray, clamp below horizon
@@ -177,31 +203,26 @@ void Celestial::renderSun(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
     color = glm::mix(color, warmSun, 0.52f);
     float intensity = getSunIntensity(timeOfDay) * 0.92f;
 
-    CelestialPush push{};
+    push = CelestialPush{};
     push.model          = model;
     push.celestialColor = glm::vec4(color, 1.0f);
     push.intensity      = intensity;
     push.moonPhase      = 0.5f; // unused for sun
     push.animTime       = sunHazeTimer_;
 
-    vkCmdPushConstants(cmd, pipelineLayout_,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(push), &push);
-
-    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+    return true;
 }
 
-void Celestial::renderMoon(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
-                            float timeOfDay, float nightFactor) {
+bool Celestial::moonPush(CelestialPush& push, float timeOfDay, float nightFactor) const {
     // Moon (White Lady) visible 19:00–5:00
     if (timeOfDay >= 5.0f && timeOfDay < 19.0f) {
-        return;
+        return false;
     }
     // Scale by actual sky darkness - the DBC sky can stay daylight-bright
     // well past 19:00, and a full-brightness moon on a blue sky reads as a
     // second sun.
     if (nightFactor < 0.01f) {
-        return;
+        return false;
     }
 
     glm::vec3 moonPos = getMoonPosition(timeOfDay);
@@ -219,28 +240,24 @@ void Celestial::renderMoon(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
         intensity *= 1.0f - (timeOfDay - 3.0f) / 2.0f; // Fade out
     }
 
-    CelestialPush push{};
+    push = CelestialPush{};
     push.model          = model;
     push.celestialColor = glm::vec4(color, 0.0f);  // w=0 marks moon for the shader
     push.intensity      = intensity;
     push.moonPhase      = whiteLadyPhase_;
     push.animTime       = sunHazeTimer_;
 
-    vkCmdPushConstants(cmd, pipelineLayout_,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(push), &push);
-
-    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+    return true;
 }
 
-void Celestial::renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet /*perFrameSet*/,
-                                 float timeOfDay, float nightFactor) {
+bool Celestial::blueChildPush(CelestialPush& push, float timeOfDay,
+                              float nightFactor) const {
     // Blue Child visible 19:00–5:00
     if (timeOfDay >= 5.0f && timeOfDay < 19.0f) {
-        return;
+        return false;
     }
     if (nightFactor < 0.01f) {
-        return;
+        return false;
     }
 
     // Offset slightly from White Lady
@@ -262,18 +279,14 @@ void Celestial::renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet /*perFrameS
     }
     intensity *= 0.7f; // Blue Child is dimmer
 
-    CelestialPush push{};
+    push = CelestialPush{};
     push.model          = model;
     push.celestialColor = glm::vec4(color, 0.0f);  // w=0 marks moon for the shader
     push.intensity      = intensity;
     push.moonPhase      = blueChildPhase_;
     push.animTime       = sunHazeTimer_;
 
-    vkCmdPushConstants(cmd, pipelineLayout_,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(push), &push);
-
-    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +428,73 @@ void Celestial::destroyQuad() {
     destroy(allocator, vertexBuffer_, vertexAlloc_);
     destroy(allocator, indexBuffer_, indexAlloc_);
 }
+
+#ifdef WOWEE_METAL
+bool Celestial::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("celestial_vert");
+    const MetalBindings frag("celestial_frag");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPush_ = frag.pushConstants();
+    if (!vert.valid() || !frag.valid()) return false;
+
+    // Position then texture coordinate, as createQuad lays them out.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(3 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(5 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "celestial_vert";
+    desc.fragmentFunction = "celestial_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Additive;
+    desc.label = "celestial";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    const float vertices[] = {
+        -0.5f,  0.5f, 0.0f,    0.0f, 1.0f,
+         0.5f,  0.5f, 0.0f,    1.0f, 1.0f,
+         0.5f, -0.5f, 0.0f,    1.0f, 0.0f,
+        -0.5f, -0.5f, 0.0f,    0.0f, 0.0f,
+    };
+    const uint32_t indices[] = { 0, 1, 2,  0, 2, 3 };
+    mtlVertices_ = ctx->newBuffer(vertices, sizeof(vertices));
+    mtlIndices_ = ctx->newBuffer(indices, sizeof(indices));
+    if (!mtlPipeline_ || !mtlVertices_ || !mtlIndices_) return false;
+    metal_ = ctx;
+    return true;
+}
+
+void Celestial::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset, float timeOfDay, const glm::vec3* sunDir,
+                            const glm::vec3* sunColor, float gameTime, float nightFactor) {
+    if (!renderingEnabled_ || !mtlPipeline_ || !encoder) return;
+    CelestialPush pushes[3];
+    const int count = bodyPushes(pushes, timeOfDay, sunDir, sunColor, gameTime, nightFactor);
+    if (count == 0) return;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBuffer(mtlVertices_, 0, kMetalVertexBufferIndex);
+    for (int i = 0; i < count; ++i) {
+        encoder->setVertexBytes(&pushes[i], sizeof(pushes[i]), mtlVertPush_);
+        encoder->setFragmentBytes(&pushes[i], sizeof(pushes[i]), mtlFragPush_);
+        encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(6),
+                                       MTL::IndexTypeUInt32, mtlIndices_, NS::UInteger(0));
+    }
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

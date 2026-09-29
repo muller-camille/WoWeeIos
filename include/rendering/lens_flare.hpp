@@ -5,11 +5,20 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 
 /**
  * @brief Renders lens flare effect when looking at the sun
@@ -92,6 +101,12 @@ private:
     };
 
     void generateFlareElements();
+    /// The flare's quads this frame, into flarePushes_: none when the sun is
+    /// down, off screen or hidden. The same for both backends.
+    void computePushes(const Camera& camera, const glm::vec3& sunPosition, float timeOfDay,
+                       float fogDensity, float cloudDensity, float weatherIntensity,
+                       float sunOcclusion);
+    std::vector<FlarePushConstants> flarePushes_;
     [[nodiscard]] float calculateSunVisibility(const Camera& camera, const glm::vec3& sunPosition) const;
     [[nodiscard]] glm::vec2 worldToScreen(const Camera& camera, const glm::vec3& worldPos) const;
 
@@ -112,6 +127,23 @@ private:
 
     // Quad vertices for rendering flare sprites
     static constexpr int VERTICES_PER_QUAD = 6;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md). Drawn with no
+    /// depth, over the sky, so it goes into a pass whose depth is unused.
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, const Camera& camera,
+                     const glm::vec3& sunPosition, float timeOfDay, float fogDensity,
+                     float cloudDensity, float weatherIntensity, float sunOcclusion);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlVertices_ = nullptr;
+    int mtlVertPush_ = -1, mtlFragPush_ = -1;
+#endif
 };
 
 } // namespace rendering

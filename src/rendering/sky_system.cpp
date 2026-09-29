@@ -8,6 +8,7 @@
 #include "rendering/camera.hpp"
 #include "rendering/vk_context.hpp"
 #include "core/logger.hpp"
+#include <type_traits>
 #ifdef WOWEE_METAL
 #include "rendering/metal/metal_context.hpp"
 #endif
@@ -103,15 +104,15 @@ void SkySystem::update(float deltaTime) {
     if (clouds_)    clouds_->update(deltaTime);
 }
 
-void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
-                        const Camera& camera, const SkyParams& params) {
+template <typename Draw>
+void SkySystem::renderImpl(Draw& draw, const Camera& camera, const SkyParams& params) {
     if (!initialized_) {
         return;
     }
 
     // --- Skybox (authoritative sky gradient, DBC-driven colors) ---
     if (skybox_) {
-        skybox_->render(cmd, perFrameSet, params);
+        draw.skybox(*skybox_, params);
     }
 
     // Original client sky M2s supply their own celestial bodies, clouds, and
@@ -141,7 +142,7 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         if (renderProceduralStars) {
             const float cloudDensity = params.cloudDensity;
             const float fogDensity   = params.fogDensity;
-            starField_->render(cmd, perFrameSet, params.timeOfDay, cloudDensity, fogDensity);
+            draw.stars(*starField_, params.timeOfDay, cloudDensity, fogDensity);
         }
     }
 
@@ -152,9 +153,8 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
         // and full-brightness moons on a daylight sky read as extra suns.
         float skyLum = glm::dot(params.skyTopColor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
         float nightFactor = 1.0f - glm::smoothstep(0.08f, 0.25f, skyLum);
-        celestial_->render(cmd, perFrameSet, params.timeOfDay,
-                           &params.directionalDir, &params.sunColor, params.gameTime,
-                           nightFactor);
+        draw.celestial(*celestial_, params.timeOfDay, &params.directionalDir,
+                       &params.sunColor, params.gameTime, nightFactor);
     }
 
     // --- Clouds (DBC-driven colors + sun lighting) ---
@@ -167,16 +167,39 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
             effectiveDensity = glm::min(1.0f, effectiveDensity + weatherBoost);
         }
         clouds_->setDensity(effectiveDensity);
-        clouds_->render(cmd, perFrameSet, params);
+        draw.clouds(*clouds_, params);
     }
 
     // --- Lens flare (attenuated by atmosphere) ---
     if (lensFlare_) {
         glm::vec3 sunPos = getSunPosition(params);
-        lensFlare_->render(cmd, camera, sunPos, params.timeOfDay,
-                           params.fogDensity, params.cloudDensity,
-                           params.weatherIntensity, params.sunOcclusion);
+        draw.lensFlare(*lensFlare_, camera, sunPos, params.timeOfDay,
+                       params.fogDensity, params.cloudDensity,
+                       params.weatherIntensity, params.sunOcclusion);
     }
+}
+
+void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
+                        const Camera& camera, const SkyParams& params) {
+    struct VulkanDraw {
+        VkCommandBuffer cmd;
+        VkDescriptorSet perFrameSet;
+        void skybox(Skybox& s, const SkyParams& p) { s.render(cmd, perFrameSet, p); }
+        void stars(StarField& s, float time, float clouds, float fog) {
+            s.render(cmd, perFrameSet, time, clouds, fog);
+        }
+        void celestial(Celestial& c, float time, const glm::vec3* dir, const glm::vec3* color,
+                       float gameTime, float night) {
+            c.render(cmd, perFrameSet, time, dir, color, gameTime, night);
+        }
+        void clouds(Clouds& c, const SkyParams& p) { c.render(cmd, perFrameSet, p); }
+        void lensFlare(LensFlare& l, const Camera& cam, const glm::vec3& sun, float time,
+                       float fog, float clouds, float weather, float occlusion) {
+            l.render(cmd, cam, sun, time, fog, clouds, weather, occlusion);
+        }
+    };
+    VulkanDraw draw{cmd, perFrameSet};
+    renderImpl(draw, camera, params);
 }
 
 #ifdef WOWEE_METAL
@@ -190,15 +213,50 @@ bool SkySystem::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_
         skybox_.reset();
         return false;
     }
+    // The rest is dressing: each one that will not build is left out.
+    const auto make = [&](auto& part, const char* name) {
+        using Part = typename std::remove_reference_t<decltype(part)>::element_type;
+        part = std::make_unique<Part>();
+        if (!part->initializeMetal(ctx, colorFormat, depthFormat, sampleCount)) {
+            LOG_WARNING("Sky (Metal): no ", name);
+            part.reset();
+        }
+    };
+    make(celestial_, "sun or moons");
+    make(starField_, "procedural stars");
+    if (starField_) starField_->setEnabled(false);  // Off by default; skybox is authoritative
+    make(clouds_, "clouds");
+    make(lensFlare_, "lens flare");
     initialized_ = true;
     return true;
 }
 
 void SkySystem::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
-                            size_t offset, const Camera& camera, const SkyParams& params) {
-    (void)camera;  // for the lens flare, when it is ported
-    if (!initialized_) return;
-    if (skybox_) skybox_->renderMetal(encoder, perFrame, offset, params);
+                            size_t offset, const Camera& camera, const SkyParams& params,
+                            uint32_t viewportHeight) {
+    struct MetalDraw {
+        MTL::RenderCommandEncoder* encoder;
+        MTL::Buffer* perFrame;
+        size_t offset;
+        float viewportHeight;
+        void skybox(Skybox& s, const SkyParams& p) { s.renderMetal(encoder, perFrame, offset, p); }
+        void stars(StarField& s, float time, float clouds, float fog) {
+            s.renderMetal(encoder, perFrame, offset, time, clouds, fog, viewportHeight);
+        }
+        void celestial(Celestial& c, float time, const glm::vec3* dir, const glm::vec3* color,
+                       float gameTime, float night) {
+            c.renderMetal(encoder, perFrame, offset, time, dir, color, gameTime, night);
+        }
+        void clouds(Clouds& c, const SkyParams& p) {
+            c.renderMetal(encoder, perFrame, offset, p);
+        }
+        void lensFlare(LensFlare& l, const Camera& cam, const glm::vec3& sun, float time,
+                       float fog, float clouds, float weather, float occlusion) {
+            l.renderMetal(encoder, cam, sun, time, fog, clouds, weather, occlusion);
+        }
+    };
+    MetalDraw draw{encoder, perFrame, offset, static_cast<float>(viewportHeight)};
+    renderImpl(draw, camera, params);
 }
 #endif
 

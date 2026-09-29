@@ -5105,7 +5105,7 @@ void Renderer::renderFrameMetal() {
                 lightingManager ? &lightingManager->getLightingParams() : nullptr,
                 useOriginalSkybox);
             skyParams.sunOcclusion = sunOcclusion_;
-            skySystem->renderMetal(encoder, mtlFrameData_, offset, *camera, skyParams);
+            skySystem->renderMetal(encoder, mtlFrameData_, offset, *camera, skyParams, h);
             if (drawSkyModels) {
                 skyboxModelRenderer_->renderMetal(encoder, mtlFrameData_, offset, *camera);
             }

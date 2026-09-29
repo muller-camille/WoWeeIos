@@ -5,10 +5,19 @@
 #include <vk_mem_alloc.h>
 #include <vector>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 struct SkyParams;
 
 /**
@@ -66,6 +75,8 @@ private:
         glm::vec4 windAndLight;   // x = windOffset, y = sunIntensity, z = ambient, w = unused
     };
     static_assert(sizeof(CloudPush) == 48, "CloudPush size mismatch");
+    /// This frame's constants, the same for both backends.
+    [[nodiscard]] CloudPush makePush(const SkyParams& params) const;
 
     void generateMesh();
     void createBuffers();
@@ -95,6 +106,23 @@ private:
     static constexpr int   SEGMENTS = 32;
     static constexpr int   RINGS    = 8;
     static constexpr float RADIUS   = 900.0f;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const SkyParams& params);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlVertices_ = nullptr;
+    MTL::Buffer* mtlIndices_ = nullptr;
+    int mtlVertPerFrame_ = -1, mtlFragPerFrame_ = -1, mtlFragPush_ = -1;
+    int mtlFragFog_ = -1, mtlFragFogSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

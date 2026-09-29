@@ -4,10 +4,19 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /**
  * Celestial body renderer (Vulkan)
@@ -105,13 +114,15 @@ private:
     void createQuad();
     void destroyQuad();
 
-    void renderSun(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
-                   float timeOfDay,
-                   const glm::vec3* sunDir, const glm::vec3* sunColor);
-    void renderMoon(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, float timeOfDay,
-                    float nightFactor);
-    void renderBlueChild(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, float timeOfDay,
-                         float nightFactor);
+    /// Each body's push constants, false when it is not up: what both
+    /// backends draw the shared quad with.
+    bool sunPush(CelestialPush& push, float timeOfDay,
+                 const glm::vec3* sunDir, const glm::vec3* sunColor) const;
+    bool moonPush(CelestialPush& push, float timeOfDay, float nightFactor) const;
+    bool blueChildPush(CelestialPush& push, float timeOfDay, float nightFactor) const;
+    /// The bodies to draw this frame, in order; the count.
+    int bodyPushes(CelestialPush (&pushes)[3], float timeOfDay, const glm::vec3* sunDir,
+                   const glm::vec3* sunColor, float gameTime, float nightFactor);
 
     [[nodiscard]] float calculateCelestialAngle(float timeOfDay, float riseTime, float setTime) const;
     [[nodiscard]] float computePhaseFromGameTime(float gameTime, float cycleDays) const;
@@ -140,6 +151,23 @@ private:
     static constexpr float WHITE_LADY_CYCLE_DAYS = 30.0f;
     static constexpr float BLUE_CHILD_CYCLE_DAYS = 27.0f;
     static constexpr float MOON_CYCLE_DURATION   = 240.0f; // Fallback: 4 minutes
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     float timeOfDay, const glm::vec3* sunDir, const glm::vec3* sunColor,
+                     float gameTime, float nightFactor);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlVertices_ = nullptr;
+    MTL::Buffer* mtlIndices_ = nullptr;
+    int mtlVertPerFrame_ = -1, mtlVertPush_ = -1, mtlFragPush_ = -1;
+#endif
 };
 
 } // namespace rendering

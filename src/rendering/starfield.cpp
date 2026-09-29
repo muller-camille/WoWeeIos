@@ -5,6 +5,11 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/glm.hpp>
 #include <cmath>
 #include <random>
@@ -132,6 +137,11 @@ void StarField::recreatePipelines() {
 }
 
 void StarField::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    metal_ = nullptr;
+#endif
     destroyStarBuffers();
 
     if (vkCtx) destroyPipeline(vkCtx->getDevice(), pipeline, pipelineLayout);
@@ -148,11 +158,8 @@ void StarField::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
     }
 
     // Compute intensity from time of day then attenuate for clouds/fog
-    float intensity = getStarIntensity(timeOfDay);
-    intensity *= (1.0f - glm::clamp(cloudDensity * 0.7f, 0.0f, 1.0f));
-    intensity *= (1.0f - glm::clamp(fogDensity * 0.3f, 0.0f, 1.0f));
-
-    if (intensity <= 0.01f) {
+    const float intensity = visibleIntensity(timeOfDay, cloudDensity, fogDensity);
+    if (intensity <= 0.0f) {
         return;
     }
 
@@ -239,7 +246,7 @@ void StarField::generateStars() {
     LOG_DEBUG("Generated ", stars.size(), " stars");
 }
 
-void StarField::createStarBuffers() {
+std::vector<float> StarField::starVertexData() const {
     // Interleaved: pos.x, pos.y, pos.z, brightness, twinklePhase, colorTemp
     std::vector<float> vertexData;
     vertexData.reserve(stars.size() * kStarVertexFloats);
@@ -252,6 +259,19 @@ void StarField::createStarBuffers() {
         vertexData.push_back(star.twinklePhase);
         vertexData.push_back(star.colorTemp);
     }
+    return vertexData;
+}
+
+float StarField::visibleIntensity(float timeOfDay, float cloudDensity, float fogDensity) const {
+    // Compute intensity from time of day then attenuate for clouds/fog
+    float intensity = getStarIntensity(timeOfDay);
+    intensity *= (1.0f - glm::clamp(cloudDensity * 0.7f, 0.0f, 1.0f));
+    intensity *= (1.0f - glm::clamp(fogDensity * 0.3f, 0.0f, 1.0f));
+    return intensity <= 0.01f ? 0.0f : intensity;
+}
+
+void StarField::createStarBuffers() {
+    const std::vector<float> vertexData = starVertexData();
 
     VkDeviceSize bufferSize = vertexData.size() * sizeof(float);
 
@@ -287,6 +307,66 @@ float StarField::getStarIntensity(float timeOfDay) const {
     // Daytime: no stars
     return 0.0f;
 }
+
+#ifdef WOWEE_METAL
+bool StarField::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("starfield_vert");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertPush_ = vert.pushConstants();
+    if (!vert.valid()) return false;
+
+    // Position, brightness, twinkle phase, colour temperature.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    const MTL::VertexFormat formats[] = {MTL::VertexFormatFloat3, MTL::VertexFormatFloat,
+                                         MTL::VertexFormatFloat, MTL::VertexFormatFloat};
+    const uint32_t offsets[] = {0, 3, 4, 5};
+    for (uint32_t i = 0; i < 4; ++i) {
+        vd->attributes()->object(i)->setFormat(formats[i]);
+        vd->attributes()->object(i)->setOffset(offsets[i] * sizeof(float));
+        vd->attributes()->object(i)->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(kStarVertexFloats * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "starfield_vert";
+    desc.fragmentFunction = "starfield_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Additive;
+    desc.label = "starfield";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlPipeline_) return false;
+
+    generateStars();
+    const std::vector<float> vertexData = starVertexData();
+    mtlVertices_ = ctx->newBuffer(vertexData.data(), vertexData.size() * sizeof(float));
+    if (!mtlVertices_) return false;
+    metal_ = ctx;
+    return true;
+}
+
+void StarField::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset, float timeOfDay, float cloudDensity,
+                            float fogDensity, float viewportHeight) {
+    if (!renderingEnabled || !mtlPipeline_ || !encoder || stars.empty()) return;
+    const float intensity = visibleIntensity(timeOfDay, cloudDensity, fogDensity);
+    if (intensity <= 0.0f) return;
+    struct { float time, intensity, viewportHeight; } push{twinkleTime, intensity,
+                                                          viewportHeight};
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBytes(&push, sizeof(push), mtlVertPush_);
+    encoder->setVertexBuffer(mtlVertices_, 0, kMetalVertexBufferIndex);
+    encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0),
+                            NS::UInteger(stars.size()));
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

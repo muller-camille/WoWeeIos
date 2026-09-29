@@ -5,10 +5,19 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /**
  * Star field renderer
@@ -58,6 +67,12 @@ private:
     void destroyStarBuffers();
 
     [[nodiscard]] float getStarIntensity(float timeOfDay) const;
+    /// How bright the stars are drawn, after the clouds and the fog: 0 when
+    /// they are not drawn at all.
+    [[nodiscard]] float visibleIntensity(float timeOfDay, float cloudDensity,
+                                         float fogDensity) const;
+    /// The vertex buffer's contents, kStarVertexFloats a star.
+    [[nodiscard]] std::vector<float> starVertexData() const;
 
     struct Star {
         glm::vec3 position;
@@ -79,6 +94,22 @@ private:
 
     float twinkleTime = 0.0f;
     bool renderingEnabled = true;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     float timeOfDay, float cloudDensity, float fogDensity,
+                     float viewportHeight);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlVertices_ = nullptr;
+    int mtlVertPerFrame_ = -1, mtlVertPush_ = -1;
+#endif
 };
 
 } // namespace rendering

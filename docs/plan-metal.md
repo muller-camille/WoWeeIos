@@ -33,7 +33,10 @@ the world's, from a draw list both backends share.
 
 From M3, done and seen on the iPad (2026-09-29): the M2 effects - smoke, particles, ribbons and
 glow sprites, whose vertices both backends write through the same functions - and the spell
-visuals, which are M2 instances and only needed their system created.
+visuals, which are M2 instances and only needed their system created. The sky's sun and moons, procedural stars,
+clouds and lens flare are ported too, through one SkySystem::renderImpl both backends draw with;
+in zones whose sky is a model, as Teldrassil's, the model supplies them and these stay unused, as
+on Vulkan.
 
 Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
 textures where the GPU has them, and checking the character list's preview and the equipment on

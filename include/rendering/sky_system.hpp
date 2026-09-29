@@ -97,13 +97,12 @@ public:
                 const Camera& camera, const SkyParams& params);
 
 #ifdef WOWEE_METAL
-    /// The Metal build's sky: the gradient alone for now. The sun and moons,
-    /// the clouds, the stars and the lens flare stay null until ported, and
-    /// update() and the rest already allow for that.
+    /// The Metal build's sky, all of it. A part that will not build is left
+    /// null, which update() and the rest already allow for.
     bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
                          uint32_t sampleCount);
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
-                     const Camera& camera, const SkyParams& params);
+                     const Camera& camera, const SkyParams& params, uint32_t viewportHeight);
 #endif
 
     /**
@@ -141,6 +140,11 @@ public:
     [[nodiscard]] LensFlare* getLensFlare() const { return lensFlare_.get(); }
 
 private:
+    /// What render() draws and in what order, for either backend: Draw
+    /// records each part.
+    template <typename Draw>
+    void renderImpl(Draw& draw, const Camera& camera, const SkyParams& params);
+
     std::unique_ptr<Skybox>    skybox_;      // Authoritative sky
     std::unique_ptr<Celestial> celestial_;   // Sun + 2 moons
     std::unique_ptr<StarField> starField_;   // Fallback procedural stars
