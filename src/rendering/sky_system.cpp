@@ -8,6 +8,9 @@
 #include "rendering/camera.hpp"
 #include "rendering/vk_context.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_context.hpp"
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -175,6 +178,29 @@ void SkySystem::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                            params.weatherIntensity, params.sunOcclusion);
     }
 }
+
+#ifdef WOWEE_METAL
+bool SkySystem::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (initialized_) return true;
+    LOG_INFO("Initializing sky system (Metal)");
+    skybox_ = std::make_unique<Skybox>();
+    if (!skybox_->initializeMetal(ctx, colorFormat, depthFormat, sampleCount)) {
+        LOG_ERROR("Failed to initialize skybox (Metal)");
+        skybox_.reset();
+        return false;
+    }
+    initialized_ = true;
+    return true;
+}
+
+void SkySystem::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset, const Camera& camera, const SkyParams& params) {
+    (void)camera;  // for the lens flare, when it is ported
+    if (!initialized_) return;
+    if (skybox_) skybox_->renderMetal(encoder, perFrame, offset, params);
+}
+#endif
 
 glm::vec3 SkySystem::getSunPosition(const SkyParams& params) const {
     // Below the horizon it stays below - see sun_direction.hpp for what the

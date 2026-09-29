@@ -2891,6 +2891,7 @@ void Renderer::renderWorld(game::World* world, game::GameHandler* gameHandler) {
     // Asked for here, drawn in endFrame (renderFrameMetal), under the interface.
     if (metal_) {
         mtlWorldRequested_ = true;
+        mtlGameHandler_ = gameHandler;
         worldDrawnThisFrame_ = true;
         ghostMode_ = (gameHandler && gameHandler->isPlayerGhost());
         return;
@@ -3695,6 +3696,17 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
                                               MTL::PixelFormatDepth32Float, 1)) {
             LOG_ERROR("TerrainRenderer (Metal) initialization failed");
             terrainRenderer.reset();
+        }
+    }
+    if (metal_ && !skyboxModelRenderer_) {
+        // The zones' sky models, where they have them: the M2 renderer again,
+        // camera-centred and unlit.
+        skyboxModelRenderer_ = std::make_unique<M2Renderer>();
+        skyboxModelRenderer_->setSkyMode(true);
+        if (!skyboxModelRenderer_->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
+                                                   MTL::PixelFormatDepth32Float, 1)) {
+            LOG_WARNING("Sky M2 renderer (Metal) initialization failed");
+            skyboxModelRenderer_.reset();
         }
     }
     if (metal_ && !m2Renderer) {
@@ -4938,6 +4950,14 @@ bool Renderer::initializeMetal() {
     // No shadow map to sample until shadows are ported (M4).
     shadowsEnabled = false;
 
+    // The sky's gradient; the sun, moons, clouds and stars come later.
+    skySystem = std::make_unique<SkySystem>();
+    if (!skySystem->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                    MTL::PixelFormatDepth32Float, 1)) {
+        LOG_WARNING("Sky system (Metal) initialization failed - the fog colour stands in");
+        skySystem.reset();
+    }
+
     lightingManager = std::make_unique<LightingManager>();
     auto* assetManager = core::Application::getInstance().getAssetManager();
     zoneManager = std::make_unique<game::ZoneManager>();
@@ -4997,6 +5017,35 @@ void Renderer::renderFrameMetal() {
         pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
 
         MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
+
+        // The sky first, behind everything, as renderWorld has it: the
+        // gradient, then the zone's sky models where it has any.
+        if (skySystem) {
+            auto* skybox = skySystem->getSkybox();
+            const float timeOfDay = lightingManager
+                ? lightingManager->getVisualTimeOfDayHours()
+                : (skybox ? skybox->getTimeOfDay() : 12.0f);
+            const bool drawSkyModels = skyboxModelRenderer_ && !skyLayers_.empty();
+            float skyModelCoverage = 0.0f;
+            if (lightingManager) {
+                for (const auto& layer : lightingManager->getSkyboxLayers()) {
+                    skyModelCoverage += layer.weight;
+                }
+            }
+            const bool useOriginalSkybox = drawSkyModels && skyModelCoverage >= 0.5f;
+            SkyParams skyParams = skyParamsFromLighting(
+                timeOfDay,
+                mtlGameHandler_ ? mtlGameHandler_->getGameTime() : -1.0f,
+                mtlGameHandler_ ? mtlGameHandler_->getWeatherIntensity() : 0.0f,
+                lightingManager ? &lightingManager->getLightingParams() : nullptr,
+                useOriginalSkybox);
+            skyParams.sunOcclusion = sunOcclusion_;
+            skySystem->renderMetal(encoder, mtlFrameData_, offset, *camera, skyParams);
+            if (drawSkyModels) {
+                skyboxModelRenderer_->renderMetal(encoder, mtlFrameData_, offset, *camera);
+            }
+        }
+
         if (terrainRenderer) {
             terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }

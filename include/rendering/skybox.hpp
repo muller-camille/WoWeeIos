@@ -5,10 +5,15 @@
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 struct SkyParams;
 
 /**
@@ -38,6 +43,14 @@ public:
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const SkyParams& params);
 
+#ifdef WOWEE_METAL
+    /// The same gradient on Metal (docs/plan-metal.md, M3).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const SkyParams& params);
+#endif
+
     /**
      * Enable/disable skybox rendering
      */
@@ -64,6 +77,13 @@ public:
 
 private:
     VkContext* vkCtx = nullptr;
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    // The vertex shader makes its triangle from the vertex index and takes
+    // nothing; the fragment shader has the frame, the colours and the fog volume.
+    int mtlFragPerFrame_ = -1, mtlFragPush_ = -1, mtlFragFog_ = -1, mtlFragFogSampler_ = -1;
+#endif
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;

@@ -4,11 +4,16 @@
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 class Skybox;
 class Celestial;
 class StarField;
@@ -90,6 +95,16 @@ public:
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet,
                 const Camera& camera, const SkyParams& params);
+
+#ifdef WOWEE_METAL
+    /// The Metal build's sky: the gradient alone for now. The sun and moons,
+    /// the clouds, the stars and the lens flare stay null until ported, and
+    /// update() and the rest already allow for that.
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera, const SkyParams& params);
+#endif
 
     /**
      * Enable/disable procedural stars (DEBUG/FALLBACK)

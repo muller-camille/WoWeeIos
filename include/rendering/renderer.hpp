@@ -488,6 +488,7 @@ private:
     uint32_t mtlDepthHeight_ = 0;
     MTL::Buffer* mtlFrameData_ = nullptr;   // MetalContext::kRingSize GPUPerFrameData
     bool mtlWorldRequested_ = false;        // renderWorld was called this frame
+    game::GameHandler* mtlGameHandler_ = nullptr;  // renderWorld's, for the sky
 #endif
 
     // Vulkan frame state
