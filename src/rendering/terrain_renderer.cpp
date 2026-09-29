@@ -4,6 +4,11 @@
 #include "rendering/terrain_renderer.hpp"
 #include "rendering/rt_scene.hpp"
 #include "rendering/vk_context.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include "rendering/vk_texture.hpp"
 #include "rendering/vk_buffer.hpp"
 #include "rendering/vk_pipeline.hpp"
@@ -313,6 +318,12 @@ void TerrainRenderer::recreatePipelines() {
 
 void TerrainRenderer::shutdown() {
     LOG_INFO("Shutting down terrain renderer");
+#ifdef WOWEE_METAL
+    if (metal_) {
+        shutdownMetal();
+        return;
+    }
+#endif
 
     if (!vkCtx) return;
     VkDevice device = vkCtx->getDevice();
@@ -370,7 +381,7 @@ bool TerrainRenderer::loadTerrain(const pipeline::TerrainMesh& mesh,
     LOG_DEBUG("Loading terrain mesh: ", mesh.validChunkCount, " chunks");
 
     evictProtectFrom_ = textureCacheCounter_ + 1;
-    vkCtx->beginUploadBatch();
+    if (vkCtx) vkCtx->beginUploadBatch();
 
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 16; x++) {
@@ -390,6 +401,15 @@ bool TerrainRenderer::loadTerrain(const pipeline::TerrainMesh& mesh,
 
             gpuChunk.tileX = tileX;
             gpuChunk.tileY = tileY;
+#ifdef WOWEE_METAL
+            // No params buffer or descriptor set on Metal: both are handed
+            // to the draw instead.
+            if (metal_) {
+                registerRtChunk(gpuChunk, chunk);
+                chunks.push_back(std::move(gpuChunk));
+                continue;
+            }
+#endif
 
             // Create per-chunk params UBO
             // A failed allocation here is pressure rather than corruption, but
@@ -415,7 +435,7 @@ bool TerrainRenderer::loadTerrain(const pipeline::TerrainMesh& mesh,
         }
     }
 
-    vkCtx->endUploadBatch();
+    if (vkCtx) vkCtx->endUploadBatch();
 
     LOG_DEBUG("Loaded ", chunks.size(), " terrain chunks to GPU");
     return !chunks.empty();
@@ -431,7 +451,7 @@ bool TerrainRenderer::loadTerrainIncremental(const pipeline::TerrainMesh& mesh,
     // built is not in `chunks` yet, so the in-use scan cannot see its textures.
     evictProtectFrom_ = textureCacheCounter_ + 1;
 
-    vkCtx->beginUploadBatch();
+    if (vkCtx) vkCtx->beginUploadBatch();
 
     int uploaded = 0;
     while (chunkIndex < 256 && uploaded < maxChunksPerCall) {
@@ -451,6 +471,16 @@ bool TerrainRenderer::loadTerrainIncremental(const pipeline::TerrainMesh& mesh,
 
         gpuChunk.tileX = tileX;
         gpuChunk.tileY = tileY;
+#ifdef WOWEE_METAL
+        // No params buffer or descriptor set on Metal: both are handed to
+        // the draw instead.
+        if (metal_) {
+            registerRtChunk(gpuChunk, chunk);
+            chunks.push_back(std::move(gpuChunk));
+            uploaded++;
+            continue;
+        }
+#endif
 
         if (!createChunkParamsUBO(gpuChunk)) {
             LOG_WARNING("Terrain[", tileX, ",", tileY, "] chunk UBO allocation failed"
@@ -488,7 +518,7 @@ bool TerrainRenderer::loadTerrainIncremental(const pipeline::TerrainMesh& mesh,
         uploaded++;
     }
 
-    vkCtx->endUploadBatch();
+    if (vkCtx) vkCtx->endUploadBatch();
 
     return chunkIndex >= 256;
 }
@@ -578,6 +608,16 @@ TerrainChunkGPU TerrainRenderer::uploadChunk(const pipeline::ChunkMesh& chunk) {
     gpuChunk.vertexCount = static_cast<uint32_t>(chunk.vertices.size());
 
     VkDeviceSize vbSize = chunk.vertices.size() * sizeof(pipeline::TerrainVertex);
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // A buffer of the chunk's own: small, drawn one chunk at a time, and
+        // shared memory needs no staging copy. No mega buffers on Metal.
+        gpuChunk.mtlVertexBuffer = metal_->newBuffer(chunk.vertices.data(), vbSize);
+        gpuChunk.mtlIndexBuffer = metal_->newBuffer(
+            chunk.indices.data(), chunk.indices.size() * sizeof(pipeline::TerrainIndex));
+        return gpuChunk;
+    }
+#endif
     AllocatedBuffer vb = uploadBuffer(*vkCtx, chunk.vertices.data(), vbSize,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     gpuChunk.vertexBuffer = vb.buffer;
@@ -613,7 +653,7 @@ TerrainChunkGPU TerrainRenderer::uploadChunk(const pipeline::ChunkMesh& chunk) {
 
 bool TerrainRenderer::evictTexturesFor(size_t needBytes) {
     if (textureCacheBytes_ + needBytes <= textureCacheBudgetBytes_) return true;
-    if (!vkCtx) return false;
+    if (!hasDevice()) return false;
 
     // What the live chunks are holding. These are raw pointers into the cache
     // and each chunk's material descriptor set names the image directly, so
@@ -649,8 +689,14 @@ bool TerrainRenderer::evictTexturesFor(size_t needBytes) {
     }
 
     if (!retired.empty()) {
-        VkDevice device = vkCtx->getDevice();
-        VmaAllocator allocator = vkCtx->getAllocator();
+        VkDevice device = vkCtx ? vkCtx->getDevice() : VK_NULL_HANDLE;
+        VmaAllocator allocator = vkCtx ? vkCtx->getAllocator() : VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+        // On Metal a command buffer in flight retains what it samples.
+        if (metal_) {
+            for (VkTexture* tex : retired) delete tex;
+        } else
+#endif
         vkCtx->deferAfterAllFrameFences([device, allocator, retired]() {
             for (VkTexture* tex : retired) {
                 tex->destroy(device, allocator);
@@ -720,12 +766,24 @@ VkTexture* TerrainRenderer::loadTexture(const std::string& path) {
     }
 
     auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!tex->uploadBLPMetal(*metal_, blp)) {
+            LOG_WARNING("Failed to upload texture to GPU: ", path);
+            return whiteTexture.get();
+        }
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             MetalContext::Address::Repeat));
+    } else
+#endif
     if (!tex->uploadBLP(*vkCtx, blp)) {
         LOG_WARNING("Failed to upload texture to GPU: ", path);
         return whiteTexture.get();
     }
-    tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                        VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    if (vkCtx) {
+        tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                            VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    }
 
     VkTexture* raw = tex.get();
     TextureCacheEntry e;
@@ -748,7 +806,7 @@ void TerrainRenderer::uploadPreloadedTextures(
     };
     // Batch all texture uploads into a single command buffer submission
     evictProtectFrom_ = textureCacheCounter_ + 1;
-    vkCtx->beginUploadBatch();
+    if (vkCtx) vkCtx->beginUploadBatch();
 
     for (const auto& [path, blp] : textures) {
         std::string key = normalizeKey(path);
@@ -761,8 +819,15 @@ void TerrainRenderer::uploadPreloadedTextures(
         if (!evictTexturesFor(blp.approxUploadBytes())) continue;
 
         auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+        if (metal_) {
+            if (!tex->uploadBLPMetal(*metal_, blp)) continue;
+            tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                 MetalContext::Address::Repeat));
+        } else
+#endif
         if (!tex->uploadBLP(*vkCtx, blp)) continue;
-        tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+        else tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                             VK_SAMPLER_ADDRESS_MODE_REPEAT);
 
         TextureCacheEntry e;
@@ -773,7 +838,7 @@ void TerrainRenderer::uploadPreloadedTextures(
         textureCache[key] = std::move(e);
     }
 
-    vkCtx->endUploadBatch();
+    if (vkCtx) vkCtx->endUploadBatch();
 }
 
 VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alphaData) {
@@ -788,10 +853,16 @@ VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alpha
     }
 
     auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!tex->uploadMetalR8(*metal_, src, 64, 64)) return opaqueAlphaTexture.get();
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             MetalContext::Address::ClampToEdge));
+    } else
+#endif
     if (!tex->upload(*vkCtx, src, 64, 64, VK_FORMAT_R8_UNORM, false)) {
         return opaqueAlphaTexture.get();
-    }
-    tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+    } else tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     VkTexture* raw = tex.get();
@@ -1152,7 +1223,7 @@ void TerrainRenderer::removeTile(int tileX, int tileY) {
 }
 
 void TerrainRenderer::clear() {
-    if (!vkCtx) return;
+    if (!hasDevice()) return;
 
     for (auto& chunk : chunks) {
         destroyChunkGPU(chunk);
@@ -1193,6 +1264,17 @@ void TerrainRenderer::registerRtChunk(TerrainChunkGPU& gpuChunk, const pipeline:
 }
 
 void TerrainRenderer::destroyChunkGPU(TerrainChunkGPU& chunk) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Command buffers in flight retain the buffers they draw from.
+        if (chunk.mtlVertexBuffer) { chunk.mtlVertexBuffer->release(); chunk.mtlVertexBuffer = nullptr; }
+        if (chunk.mtlIndexBuffer) { chunk.mtlIndexBuffer->release(); chunk.mtlIndexBuffer = nullptr; }
+        chunk.baseTexture = nullptr;
+        for (VkTexture*& t : chunk.layerTextures) t = nullptr;
+        for (VkTexture*& t : chunk.alphaTextures) t = nullptr;
+        return;
+    }
+#endif
     if (!vkCtx) return;
 
     if (rtScene_ && chunk.rtMesh != RtScene::kInvalid) {
@@ -1294,6 +1376,192 @@ void TerrainRenderer::calculateBoundingSphere(TerrainChunkGPU& gpuChunk,
 
     gpuChunk.boundingSphereRadius = std::sqrt(maxDistSq);
 }
+
+bool TerrainRenderer::hasDevice() const {
+#ifdef WOWEE_METAL
+    if (metal_) return true;
+#endif
+    return vkCtx != nullptr;
+}
+
+void TerrainRenderer::releaseTexture(VkTexture& texture) {
+    if (vkCtx) texture.destroy(vkCtx->getDevice(), vkCtx->getAllocator());
+    else texture.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);
+}
+
+#ifdef WOWEE_METAL
+bool TerrainRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* assets,
+                                      uint32_t colorFormat, uint32_t depthFormat,
+                                      uint32_t sampleCount) {
+    if (!ctx) return false;
+    metal_ = ctx;
+    assetManager = assets;
+    LOG_INFO("Initializing terrain renderer (Metal)");
+
+    const MetalBindings vert("terrain_vert");
+    const MetalBindings frag("terrain_frag");
+    mtlSlots_.vertPerFrame = vert.buffer(0, 0);
+    mtlSlots_.vertPush = vert.pushConstants();
+    mtlSlots_.fragPerFrame = frag.buffer(0, 0);
+    mtlSlots_.fragParams = frag.buffer(1, 7);
+    for (uint32_t i = 0; i < 7; ++i) {
+        mtlSlots_.fragTex[i] = frag.texture(1, i);
+        mtlSlots_.fragSampler[i] = frag.sampler(1, i);
+    }
+    mtlSlots_.fragShadow = frag.texture(0, 1);
+    mtlSlots_.fragShadowSampler = frag.sampler(0, 1);
+    mtlSlots_.fragFog = frag.texture(0, 2);
+    mtlSlots_.fragFogSampler = frag.sampler(0, 2);
+    mtlSlots_.fragRtA = frag.texture(0, 3);
+    mtlSlots_.fragRtASampler = frag.sampler(0, 3);
+    mtlSlots_.fragRtB = frag.texture(0, 4);
+    mtlSlots_.fragRtBSampler = frag.sampler(0, 4);
+    if (!vert.valid() || !frag.valid()) {
+        LOG_ERROR("Terrain (Metal): the shader manifest does not match the terrain shaders");
+        metal_ = nullptr;
+        return false;
+    }
+
+    // TerrainVertex, from the table the Vulkan pipelines are built from too.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    for (const auto& a : kTerrainVertexAttributes) {
+        auto* attr = vd->attributes()->object(a.location);
+        attr->setFormat(a.componentCount == 3 ? MTL::VertexFormatFloat3
+                                              : MTL::VertexFormatFloat2);
+        attr->setOffset(a.offset);
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(pipeline::TerrainVertex));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "terrain_vert";
+    desc.fragmentFunction = "terrain_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.label = "terrain";
+    mtlPipeline_ = buildMetalPipeline(*metal_, desc);
+    vd->release();
+    if (!mtlPipeline_) {
+        metal_ = nullptr;
+        return false;
+    }
+
+    // The fallbacks initialize() makes: white, and a mask that lets a layer
+    // through everywhere.
+    const uint8_t whitePixel[4] = {255, 255, 255, 255};
+    whiteTexture = std::make_unique<VkTexture>();
+    whiteTexture->uploadMetal(*metal_, whitePixel, 1, 1, false);
+    whiteTexture->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                  MetalContext::Address::Repeat));
+    const uint8_t opaque = 255;
+    opaqueAlphaTexture = std::make_unique<VkTexture>();
+    opaqueAlphaTexture->uploadMetalR8(*metal_, &opaque, 1, 1);
+    opaqueAlphaTexture->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                        MetalContext::Address::ClampToEdge));
+
+    textureCacheBudgetBytes_ =
+        envSizeMBOrDefault("WOWEE_TERRAIN_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
+    LOG_INFO("Terrain texture cache budget: ", textureCacheBudgetBytes_ / (1024 * 1024), " MB");
+    return true;
+}
+
+void TerrainRenderer::shutdownMetal() {
+    clear();
+    textureCache.clear();
+    textureCacheBytes_ = 0;
+    textureCacheCounter_ = 0;
+    failedTextureCache_.clear();
+    loggedTextureLoadFails_.clear();
+    whiteTexture.reset();
+    opaqueAlphaTexture.reset();
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    metal_ = nullptr;
+}
+
+void TerrainRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                  size_t offset, const Camera& camera) {
+    if (!metal_ || !mtlPipeline_ || !encoder || chunks.empty()) return;
+    const MetalSlots& s = mtlSlots_;
+    MetalContext& m = *metal_;
+
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(m.depthState(true, true, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, s.vertPerFrame);
+    encoder->setFragmentBuffer(perFrame, offset, s.fragPerFrame);
+    GPUPushConstants push{};
+    push.model = glm::mat4(1.0f);
+    encoder->setVertexBytes(&push, sizeof(push), s.vertPush);
+    // Stand-ins for the shadow map, the fog volume and the ray traced light.
+    MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
+                                               MetalContext::Address::ClampToEdge);
+    encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+    encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
+    encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+    encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
+    encoder->setFragmentTexture(m.whiteTexture(), s.fragRtA);
+    encoder->setFragmentSamplerState(clampLinear, s.fragRtASampler);
+    encoder->setFragmentTexture(m.whiteTexture(), s.fragRtB);
+    encoder->setFragmentSamplerState(clampLinear, s.fragRtBSampler);
+
+    // The culling render() does, the same tests in the same order.
+    Frustum frustum;
+    if (frustumCullingEnabled) {
+        frustum.extractFromMatrix(camera.getProjectionMatrix() * camera.getViewMatrix());
+    }
+    const glm::vec3 camPos = camera.getPosition();
+    const float maxTerrainDistSq = maxViewDistance_ * maxViewDistance_;
+    renderedChunks = 0;
+    culledChunks = 0;
+    furthestDrawnSq_ = 0.0f;
+
+    VkTexture* white = whiteTexture.get();
+    VkTexture* opaque = opaqueAlphaTexture.get();
+    const auto pick = [](VkTexture* wanted, VkTexture* fallback) {
+        return (wanted && wanted->isValid()) ? wanted : fallback;
+    };
+    const auto bindTexture = [&](int slot, VkTexture* tex) {
+        encoder->setFragmentTexture(tex->metalTexture(), s.fragTex[slot]);
+        encoder->setFragmentSamplerState(tex->metalSampler(), s.fragSampler[slot]);
+    };
+
+    for (const auto& chunk : chunks) {
+        if (!chunk.isValid()) continue;
+        const float dx = chunk.boundingSphereCenter.x - camPos.x;
+        const float dy = chunk.boundingSphereCenter.y - camPos.y;
+        const float distSq = dx * dx + dy * dy;
+        if (distSq > maxTerrainDistSq) {
+            culledChunks++;
+            continue;
+        }
+        if (frustumCullingEnabled && !isChunkVisible(chunk, frustum)) {
+            culledChunks++;
+            continue;
+        }
+
+        // The chunk's material, as writeMaterialDescriptors and
+        // createChunkParamsUBO give it to Vulkan.
+        bindTexture(0, pick(chunk.baseTexture, white));
+        for (int i = 0; i < 3; ++i) {
+            bindTexture(1 + i, pick(chunk.layerTextures[i], white));
+            bindTexture(4 + i, pick(chunk.alphaTextures[i], opaque));
+        }
+        TerrainParamsUBO params{};
+        params.layerCount = chunk.layerCount;
+        params.hasLayer1 = chunk.layerCount >= 1 ? 1 : 0;
+        params.hasLayer2 = chunk.layerCount >= 2 ? 1 : 0;
+        params.hasLayer3 = chunk.layerCount >= 3 ? 1 : 0;
+        encoder->setFragmentBytes(&params, sizeof(params), s.fragParams);
+
+        encoder->setVertexBuffer(chunk.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+        encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, chunk.indexCount,
+                                       MTL::IndexTypeUInt32, chunk.mtlIndexBuffer, 0);
+        renderedChunks++;
+        if (distSq > furthestDrawnSq_) furthestDrawnSq_ = distSq;
+    }
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

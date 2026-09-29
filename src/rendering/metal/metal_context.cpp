@@ -252,10 +252,11 @@ void MetalContext::resumePresentation() {
 }
 
 MTL::Texture* MetalContext::uploadTexture(const uint8_t* rgba, uint32_t width, uint32_t height,
-                                          bool mipmaps) {
+                                          bool mipmaps, uint32_t format, uint32_t bytesPerPixel) {
+    static_assert(MTL::PixelFormatRGBA8Unorm == 70, "the header's default format");
     if (!device_ || !rgba || width == 0 || height == 0) return nullptr;
     auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-        MTL::PixelFormatRGBA8Unorm, width, height, mipmaps);
+        static_cast<MTL::PixelFormat>(format), width, height, mipmaps);
     desc->setUsage(MTL::TextureUsageShaderRead);
     desc->setStorageMode(MTL::StorageModePrivate);
     MTL::Texture* texture = device_->newTexture(desc);
@@ -266,7 +267,7 @@ MTL::Texture* MetalContext::uploadTexture(const uint8_t* rgba, uint32_t width, u
 
     // Through a shared staging buffer and a blit, on the queue every draw is
     // on: whatever samples it is committed after this, so it sees it filled.
-    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    const size_t rowBytes = static_cast<size_t>(width) * bytesPerPixel;
     MTL::Buffer* staging = newBuffer(rgba, rowBytes * height);
     if (!staging) {
         texture->release();

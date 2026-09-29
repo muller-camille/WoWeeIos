@@ -3687,6 +3687,16 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
     // Only what has been ported (docs/plan-metal.md): the characters. The
     // terrain, water, maps, doodads and buildings come with M3; the terrain
     // manager below still runs without a terrain renderer, for its heights.
+    if (metal_ && !terrainRenderer) {
+        // The ground. The terrain manager below uploads its tiles here, and
+        // keeps streaming them for their heights as it did without it.
+        terrainRenderer = std::make_unique<TerrainRenderer>();
+        if (!terrainRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
+                                              MTL::PixelFormatDepth32Float, 1)) {
+            LOG_ERROR("TerrainRenderer (Metal) initialization failed");
+            terrainRenderer.reset();
+        }
+    }
     if (metal_ && !m2Renderer) {
         // The doodads, and with them the collision the camera and the
         // character stand on beside the terrain's.
@@ -4987,6 +4997,9 @@ void Renderer::renderFrameMetal() {
         pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
 
         MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
+        if (terrainRenderer) {
+            terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
         if (m2Renderer) {
             m2Renderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }

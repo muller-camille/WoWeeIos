@@ -139,6 +139,8 @@ public:
     /// A BLP as uploadBLP takes it: its blocks as they are where the GPU
     /// samples BC, decoded to RGBA8 with mipmaps generated where it does not.
     bool uploadBLPMetal(MetalContext& ctx, const pipeline::BLPImage& image);
+    /// One byte a texel, no mipmaps: the terrain's alpha masks.
+    bool uploadMetalR8(MetalContext& ctx, const uint8_t* pixels, uint32_t width, uint32_t height);
     void setMetalSampler(MTL::SamplerState* sampler) { mtlSampler_ = sampler; }
     [[nodiscard]] MTL::Texture* metalTexture() const { return mtlTexture_; }
     [[nodiscard]] MTL::SamplerState* metalSampler() const { return mtlSampler_; }

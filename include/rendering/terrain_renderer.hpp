@@ -17,6 +17,10 @@
 #include <string>
 #include <algorithm>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 
 // Forward declarations
@@ -27,6 +31,9 @@ namespace rendering {
 class VkContext;
 class VkTexture;
 class Frustum;
+#ifdef WOWEE_METAL
+class MetalContext;
+#endif
 class RtScene;
 
 /**
@@ -38,6 +45,11 @@ struct TerrainChunkGPU {
     ::VkBuffer indexBuffer = VK_NULL_HANDLE;
     VmaAllocation indexAlloc = VK_NULL_HANDLE;
     uint32_t indexCount = 0;
+#ifdef WOWEE_METAL
+    // The chunk's own, on Metal: shared, written once.
+    MTL::Buffer* mtlVertexBuffer = nullptr;
+    MTL::Buffer* mtlIndexBuffer = nullptr;
+#endif
 
     // Material descriptor set (set 1: 7 samplers + params UBO)
     VkDescriptorSet materialSet = VK_NULL_HANDLE;
@@ -73,7 +85,12 @@ struct TerrainChunkGPU {
     uint32_t rtMesh = ~0u;
     uint32_t rtInstance = ~0u;
 
-    [[nodiscard]] bool isValid() const { return vertexBuffer != VK_NULL_HANDLE && indexBuffer != VK_NULL_HANDLE; }
+    [[nodiscard]] bool isValid() const {
+#ifdef WOWEE_METAL
+        if (mtlVertexBuffer) return mtlIndexBuffer != nullptr;
+#endif
+        return vertexBuffer != VK_NULL_HANDLE && indexBuffer != VK_NULL_HANDLE;
+    }
 };
 
 /**
@@ -118,6 +135,18 @@ public:
      * @param camera Camera for frustum culling
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera);
+
+#ifdef WOWEE_METAL
+    /// The same renderer on Metal (docs/plan-metal.md, M3): chunks load into
+    /// buffers of their own and each is drawn with its textures and layer
+    /// count passed alongside, where Vulkan keeps a descriptor set and a
+    /// params buffer per chunk. No shadows or wireframe yet.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* assetManager,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera);
+#endif
 
     /**
      * Initialize terrain shadow pipeline (must be called after initialize()).
@@ -196,6 +225,24 @@ private:
     bool createChunkParamsUBO(TerrainChunkGPU& gpuChunk);
 
     VkContext* vkCtx = nullptr;
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    /// Where terrain_vert and terrain_frag take each binding, from the manifest.
+    struct MetalSlots {
+        int vertPerFrame = -1, vertPush = -1;
+        int fragPerFrame = -1, fragParams = -1;
+        int fragTex[7] = {-1, -1, -1, -1, -1, -1, -1};
+        int fragSampler[7] = {-1, -1, -1, -1, -1, -1, -1};
+        int fragShadow = -1, fragShadowSampler = -1, fragFog = -1, fragFogSampler = -1;
+        int fragRtA = -1, fragRtASampler = -1, fragRtB = -1, fragRtBSampler = -1;
+    } mtlSlots_;
+    void shutdownMetal();
+#endif
+    /// Is there a device to upload to, of either kind.
+    [[nodiscard]] bool hasDevice() const;
+    /// A texture of the cache or a chunk's, destroyed on whichever backend owns it.
+    void releaseTexture(VkTexture& texture);
     RtScene* rtScene_ = nullptr;
     void registerRtChunk(TerrainChunkGPU& gpuChunk, const pipeline::ChunkMesh& chunk);
     pipeline::AssetManager* assetManager = nullptr;

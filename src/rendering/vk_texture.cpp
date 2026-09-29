@@ -70,6 +70,17 @@ bool VkTexture::uploadBLPMetal(MetalContext& ctx, const pipeline::BLPImage& imag
     return uploadMetal(ctx, rgba.data(), width, height, true);
 }
 
+bool VkTexture::uploadMetalR8(MetalContext& ctx, const uint8_t* pixels, uint32_t width,
+                              uint32_t height) {
+    releaseMetal();
+    mtlTexture_ = ctx.uploadTexture(pixels, width, height, false, MTL::PixelFormatR8Unorm, 1);
+    if (!mtlTexture_) return false;
+    image_.extent = {width, height};
+    image_.format = VK_FORMAT_R8_UNORM;
+    mipLevels_ = 1;
+    return true;
+}
+
 void VkTexture::releaseMetal() {
     // The command buffers that sample it retain it, so a frame still in flight
     // keeps it alive past this.

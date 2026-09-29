@@ -78,8 +78,11 @@ public:
     /// mipmaps, its chain generated there too, so it is ready for any command
     /// buffer committed after this returns. Retained; give it back with
     /// releaseTexture.
+    /// format and bytesPerPixel say what the pixels are when they are not
+    /// RGBA8: the terrain's alpha masks are one byte a texel (R8Unorm).
     [[nodiscard]] MTL::Texture* uploadTexture(const uint8_t* rgba, uint32_t width, uint32_t height,
-                                              bool mipmaps = false);
+                                              bool mipmaps = false, uint32_t format = 70,
+                                              uint32_t bytesPerPixel = 4);
     void releaseTexture(MTL::Texture*& texture);
 
     /// A block-compressed texture from its levels, largest first, as a BLP
