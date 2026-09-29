@@ -5,7 +5,8 @@
 </p>
 
 <p align="center">
-  A native C++ World of Warcraft client with a custom Vulkan renderer.
+  A native C++ World of Warcraft client with a custom Vulkan renderer,
+  and a native Metal one for iPhone and iPad.
 </p>
 
 <p align="center">
@@ -60,8 +61,9 @@ AzerothCore/ChromieCraft, TrinityCore, MaNGOS, and Turtle WoW 1.18.
   spell and NPC voice audio
 - Optional Warden module execution through Unicorn Engine x86 emulation
 - Linux, macOS and Windows on x86-64 and ARM64, and **Android on arm64** with
-  on-screen controls. An **iOS** port shares Android's controls and is not yet
-  tested on a device; see [iOS](#ios)
+  on-screen controls. **iPhone and iPad** share Android's controls and play
+  through a Metal renderer of their own, being brought to parity with the
+  Vulkan one; see [iOS](#ios)
 
 This is an active work in progress, not a drop-in replacement for the official
 client. See [Known limitations](#known-limitations) before reporting a bug.
@@ -352,9 +354,22 @@ warnings.
 ## iOS
 
 The iOS client is the same tree again, for iPhone and iPad on **iOS 16 or
-newer**: SDL3's UIKit backend, MoltenVK linked into the app, and the Android
-touch controls. It has not yet been compiled or run on a device, so treat it as
-a starting point rather than a release.
+newer** with a Metal 3 GPU (A13 or later: iPhone 11 onward, iPad Air 4 onward,
+every M-series iPad): SDL3's UIKit backend and the Android touch controls. It
+plays on the test device, an iPad Air (4th generation).
+
+It draws through **Metal**, natively. The renderer is being rewritten there
+from Vulkan, and this fork will keep iPhone and iPad as its only platforms once
+it reaches parity. The GLSL shaders stay the source: they are compiled to
+SPIR-V as on every platform, translated to Metal Shading Language by
+`tools/metal/convert_shaders.py`, and built into the app's `default.metallib`
+by Xcode. The world is drawn below the screen's size and brought up by
+MetalFX's spatial scaler, or by FSR 1 where the device has no MetalFX.
+
+Where the port stands - milestones, what the iPad has shown, what is left and
+how to test it - is in [docs/plan-metal.md](docs/plan-metal.md). Until it
+reaches parity, `-DWOWEE_METAL=OFF` builds the earlier renderer, Vulkan through
+MoltenVK, which draws everything the desktop client does.
 
 ```bash
 tools/build-ios-deps.sh                        # OpenSSL and MoltenVK, once
@@ -363,6 +378,9 @@ cmake -S . -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
   -DWOWEE_IOS_TEAM_ID=<your team> -DWOWEE_IOS_BUNDLE_ID=com.<you>.wowee
 open build-ios/wowee.xcodeproj                 # pick your device, Run
 ```
+
+MoltenVK is needed by both renderers until the Vulkan code leaves the tree.
+The iOS Simulator is not supported.
 
 Game data is extracted and cut down on a desktop exactly as for Android, then
 copied into WoWee's **Data** folder with the Finder's Files tab or the Files
@@ -496,14 +514,20 @@ download small.
 - [Authentication](docs/authentication.md) and [SRP Implementation](docs/srp-implementation.md)
 - [Packet Framing](docs/packet-framing.md) and [Realm List](docs/realm-list.md)
 - [Sky System](docs/SKY_SYSTEM.md)
+- [iOS](docs/ios.md) and the [Metal renderer plan](docs/plan-metal.md)
 - [Warden Quick Reference](docs/WARDEN_QUICK_REFERENCE.md) and [Implementation](docs/WARDEN_IMPLEMENTATION.md)
 
 ## Development and CI
 
-WoWee uses C++20, CMake 3.15+, SDL3 and Vulkan 1.3. GitHub Actions builds
-Linux x86-64/ARM64, Windows x86-64/ARM64, macOS ARM64/x86-64 and Android arm64
-releases. Security checks include CodeQL, Semgrep, AddressSanitizer, and
-UndefinedBehaviorSanitizer.
+WoWee uses C++20, CMake 3.15+, SDL3 and Vulkan 1.3, and Metal through
+metal-cpp on iOS. GitHub Actions builds Linux x86-64/ARM64, Windows
+x86-64/ARM64, macOS ARM64/x86-64 and Android arm64 releases, and an unsigned
+iOS arm64 `.ipa`. Security checks include CodeQL, Semgrep, AddressSanitizer,
+and UndefinedBehaviorSanitizer.
+
+A shader change is made in the GLSL. On this fork its Metal translation is
+regenerated with `tools/metal/convert_shaders.py` and committed beside the
+SPIR-V; `--check` says when it is stale.
 
 The codebase is split into focused rendering, networking, gameplay, asset, UI,
 audio, and editor modules. Start with the [architecture guide](docs/architecture.md)
