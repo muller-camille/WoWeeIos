@@ -6,6 +6,7 @@
 
 namespace MTL {
 class Buffer;
+class ComputePipelineState;
 class RenderCommandEncoder;
 class RenderPipelineState;
 class VertexDescriptor;
@@ -72,6 +73,11 @@ struct MetalPipelineDesc {
 /// is missing or Metal refuses the combination. The caller releases it.
 [[nodiscard]] MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx,
                                                            const MetalPipelineDesc& desc);
+
+/// A compute pipeline from default.metallib's kernel of that name. Null, and
+/// logged, when it is missing or Metal refuses it. The caller releases it.
+[[nodiscard]] MTL::ComputePipelineState* buildMetalComputePipeline(MetalContext& ctx,
+                                                                   const char* kernel);
 
 /// Packed floats in one buffer at kMetalVertexBufferIndex: a vec3 position at
 /// location 0, then one float at each location from 1 - the particle

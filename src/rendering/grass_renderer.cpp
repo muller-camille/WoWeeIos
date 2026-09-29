@@ -12,6 +12,11 @@
 #include "rendering/vk_shader.hpp"
 #include "pipeline/grass_profile.hpp"
 #include "rendering/vk_utils.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -162,7 +167,12 @@ bool GrassRenderer::createSourceBuffer() {
 }
 
 bool GrassRenderer::setPopulation(const pipeline::GrassBladeSample* blades, size_t count) {
-    if (!vkCtx_ || sourceBuffer_ == VK_NULL_HANDLE) return false;
+#ifdef WOWEE_METAL
+    const bool metal = metal_ && mtlSource_;
+#else
+    const bool metal = false;
+#endif
+    if (!metal && (!vkCtx_ || sourceBuffer_ == VK_NULL_HANDLE)) return false;
 
     const bool complete = count <= kMaxBlades;
     count = std::min<size_t>(count, kMaxBlades);
@@ -189,6 +199,11 @@ bool GrassRenderer::setPopulation(const pipeline::GrassBladeSample* blades, size
     // until the frame that copies from it is done - see its header for the
     // patchy field that came of destroying it any earlier.
     const VkDeviceSize bytes = sizeof(GrassBladeGPU) * count;
+#ifdef WOWEE_METAL
+    if (metal) {
+        if (!metal_->uploadToBuffer(mtlSource_, packed.data(), bytes)) return false;
+    } else
+#endif
     if (!uploadIntoBuffer(*vkCtx_, packed.data(), bytes, sourceBuffer_)) return false;
 
     bladeCount_ = static_cast<uint32_t>(count);
@@ -429,6 +444,32 @@ bool GrassRenderer::buildDrawPipeline() {
     return pipeline_ != VK_NULL_HANDLE;
 }
 
+GrassCullUniformsGPU GrassRenderer::cullUniforms(const Camera& camera,
+                                                 const glm::vec3& rangeCenter) const {
+    GrassCullUniformsGPU uniforms{};
+    // The same extractor the M2 cull uploads from, rather than a second
+    // derivation. Deriving the planes by hand here got the near plane wrong
+    // - the textbook form assumes OpenGL's [-1,1] depth and Vulkan clips to
+    // [0,1] - which culled the whole field while looking like a draw that
+    // never ran.
+    const glm::mat4 viewProj = camera.getProjectionMatrix() * camera.getViewMatrix();
+    Frustum frustum;
+    frustum.extractFromMatrix(viewProj);
+    for (int i = 0; i < 6; ++i) {
+        const auto& plane = frustum.getPlane(static_cast<Frustum::Side>(i));
+        uniforms.frustumPlanes[i] = glm::vec4(plane.normal, plane.distance);
+    }
+    // Frustum from the camera; range from the player the window is built
+    // around. Two different centres on purpose - see the shader comment.
+    uniforms.cameraPos = glm::vec4(rangeCenter, cullDistance_ * cullDistance_);
+    // Read once, the way every rendering diagnostic flag is.
+    static const bool noFrustum = envFlagEnabled("WOWEE_GRASS_NOCULL");
+    static const bool noDistance = envFlagEnabled("WOWEE_GRASS_NODIST");
+    uniforms.debugFlags = (noFrustum ? 1u : 0u) | (noDistance ? 2u : 0u);
+    uniforms.bladeCount = bladeCount_;
+    return uniforms;
+}
+
 void GrassRenderer::dispatchCull(VkCommandBuffer cmd, uint32_t frameIndex, const Camera& camera,
                                  const glm::vec3& rangeCenter) {
     if (!isReady() || frameIndex >= kFrames || bladeCount_ == 0) return;
@@ -482,27 +523,7 @@ void GrassRenderer::dispatchCull(VkCommandBuffer cmd, uint32_t frameIndex, const
 
     // Cull parameters for this frame.
     if (cullUniformMapped_[frameIndex]) {
-        GrassCullUniformsGPU uniforms{};
-        // The same extractor the M2 cull uploads from, rather than a second
-        // derivation. Deriving the planes by hand here got the near plane wrong
-        // - the textbook form assumes OpenGL's [-1,1] depth and Vulkan clips to
-        // [0,1] - which culled the whole field while looking like a draw that
-        // never ran.
-        const glm::mat4 viewProj = camera.getProjectionMatrix() * camera.getViewMatrix();
-        Frustum frustum;
-        frustum.extractFromMatrix(viewProj);
-        for (int i = 0; i < 6; ++i) {
-            const auto& plane = frustum.getPlane(static_cast<Frustum::Side>(i));
-            uniforms.frustumPlanes[i] = glm::vec4(plane.normal, plane.distance);
-        }
-        // Frustum from the camera; range from the player the window is built
-        // around. Two different centres on purpose - see the shader comment.
-        uniforms.cameraPos = glm::vec4(rangeCenter, cullDistance_ * cullDistance_);
-        // Read once, the way every rendering diagnostic flag is.
-        static const bool noFrustum = envFlagEnabled("WOWEE_GRASS_NOCULL");
-        static const bool noDistance = envFlagEnabled("WOWEE_GRASS_NODIST");
-        uniforms.debugFlags = (noFrustum ? 1u : 0u) | (noDistance ? 2u : 0u);
-        uniforms.bladeCount = bladeCount_;
+        const GrassCullUniformsGPU uniforms = cullUniforms(camera, rangeCenter);
         std::memcpy(cullUniformMapped_[frameIndex], &uniforms, sizeof(uniforms));
     }
 
@@ -553,7 +574,14 @@ void GrassRenderer::dispatchCull(VkCommandBuffer cmd, uint32_t frameIndex, const
 }
 
 bool GrassRenderer::setProfiles(const std::vector<pipeline::GrassProfile>& profiles) {
-    if (!vkCtx_ || profileBuffer_ == VK_NULL_HANDLE || profiles.empty()) return false;
+#ifdef WOWEE_METAL
+    const bool metal = metal_ && mtlProfiles_;
+#else
+    const bool metal = false;
+#endif
+    if (profiles.empty() || (!metal && (!vkCtx_ || profileBuffer_ == VK_NULL_HANDLE))) {
+        return false;
+    }
     const size_t count = std::min<size_t>(profiles.size(), kMaxProfiles);
 
     std::vector<GrassProfileGPU> packed(count);
@@ -569,6 +597,9 @@ bool GrassRenderer::setProfiles(const std::vector<pipeline::GrassProfile>& profi
     }
 
     const VkDeviceSize bytes = sizeof(GrassProfileGPU) * count;
+#ifdef WOWEE_METAL
+    if (metal) return metal_->uploadToBuffer(mtlProfiles_, packed.data(), bytes);
+#endif
     return uploadIntoBuffer(*vkCtx_, packed.data(), bytes, profileBuffer_);
 }
 
@@ -591,8 +622,8 @@ void GrassRenderer::reportCullResult() {
     // records nothing and a cull that keeps nothing are the same silence from
     // outside, and telling them apart by reasoning has already cost several
     // runs. Reads the slot the previous frame wrote, so no waiting is needed
-    // beyond the submit this makes.
-    if (cullReported_ || bladeCount_ == 0) return;
+    // beyond the submit this makes. Vulkan's alone: it reads back through VMA.
+    if (!vkCtx_ || cullReported_ || bladeCount_ == 0) return;
     // Not on the first frame the population exists. Until then every dispatch
     // early-returned on a zero blade count, so this slot's counter still holds
     // the value it was created with - which is zero, and indistinguishable
@@ -647,6 +678,20 @@ void GrassRenderer::render(VkCommandBuffer cmd, uint32_t frameIndex,
 }
 
 void GrassRenderer::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlCull_) { mtlCull_->release(); mtlCull_ = nullptr; }
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    for (MTL::Buffer** buffer : {&mtlSource_, &mtlProfiles_, &mtlIndices_}) {
+        if (*buffer) { (*buffer)->release(); *buffer = nullptr; }
+    }
+    for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
+        for (MTL::Buffer** buffer : {&mtlUniforms_[i], &mtlVisible_[i], &mtlIndirect_[i]}) {
+            if (*buffer) { (*buffer)->release(); *buffer = nullptr; }
+        }
+    }
+    if (metal_) bladeCount_ = 0;
+    metal_ = nullptr;
+#endif
     if (!vkCtx_) return;
     VkDevice device = vkCtx_->getDevice();
     VmaAllocator allocator = vkCtx_->getAllocator();
@@ -675,6 +720,155 @@ void GrassRenderer::shutdown() {
     bladeCount_ = 0;
     vkCtx_ = nullptr;
 }
+
+#ifdef WOWEE_METAL
+bool GrassRenderer::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                    uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings cull("grass_cull_comp");
+    const MetalBindings vert("grass_vert");
+    const MetalBindings frag("grass_frag");
+    mtlCullUniforms_ = cull.buffer(0, 0);
+    mtlCullSource_ = cull.buffer(0, 1);
+    mtlCullVisible_ = cull.buffer(0, 2);
+    mtlCullIndirect_ = cull.buffer(0, 3);
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertSource_ = vert.buffer(1, 0);
+    mtlVertVisible_ = vert.buffer(1, 1);
+    mtlVertProfiles_ = vert.buffer(1, 2);
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPerFrame_ = frag.buffer(0, 0);
+    mtlFragFog_ = frag.texture(0, 2);
+    mtlFragFogSampler_ = frag.sampler(0, 2);
+    if (!cull.valid() || !vert.valid() || !frag.valid()) return false;
+    metal_ = ctx;
+
+    mtlCull_ = buildMetalComputePipeline(*ctx, "grass_cull_comp");
+
+    // No vertex buffer: the vertex stage builds each blade from its index
+    // and the instance's entry in the visible list. Opaque and depth-written,
+    // as on Vulkan.
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "grass_vert";
+    desc.fragmentFunction = "grass_frag";
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.label = "grass";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    if (!mtlCull_ || !mtlPipeline_) {
+        shutdown();
+        return false;
+    }
+
+    // The source, all of it, and the profile table with the meadow's colours
+    // in every slot until the biomes' arrive, as createSourceBuffer has them.
+    mtlSource_ = ctx->newPrivateBuffer(sizeof(GrassBladeGPU) * kMaxBlades);
+    mtlProfiles_ = ctx->newPrivateBuffer(sizeof(GrassProfileGPU) * kMaxProfiles);
+    const auto indexData = bladeIndices();
+    mtlIndices_ = ctx->newBuffer(indexData.data(), sizeof(uint16_t) * indexData.size());
+    if (!mtlSource_ || !mtlProfiles_ || !mtlIndices_) {
+        shutdown();
+        return false;
+    }
+    std::vector<GrassProfileGPU> defaults(kMaxProfiles);
+    const pipeline::GrassProfile meadow;
+    for (auto& g : defaults) {
+        g.rootColor = glm::vec4(meadow.rootColor, 0.0f);
+        g.tipColor = glm::vec4(meadow.tipColor, 0.0f);
+        g.params = glm::vec4(meadow.colorVariation, meadow.stiffness,
+                             meadow.bloomChance, meadow.seedChance);
+        g.bloomColorA = glm::vec4(meadow.bloomColorA, 0.0f);
+        g.bloomColorB = glm::vec4(meadow.bloomColorB, 0.0f);
+        g.headColorA = glm::vec4(meadow.headColorA, 0.0f);
+        g.headColorB = glm::vec4(meadow.headColorB, 0.0f);
+    }
+    ctx->uploadToBuffer(mtlProfiles_, defaults.data(), sizeof(GrassProfileGPU) * kMaxProfiles);
+
+    // Metal's indexed indirect arguments are Vulkan's, field for field, so
+    // the cull writes the one layout for both.
+    static_assert(sizeof(MTL::DrawIndexedPrimitivesIndirectArguments) ==
+                      sizeof(VkDrawIndexedIndirectCommand),
+                  "the cull writes one layout for both backends");
+    MTL::DrawIndexedPrimitivesIndirectArguments command{};
+    command.indexCount = kBladeIndexCount;
+    for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
+        mtlUniforms_[i] = ctx->newBuffer(nullptr, sizeof(GrassCullUniformsGPU));
+        mtlVisible_[i] = ctx->newPrivateBuffer(sizeof(uint32_t) * kMaxBlades);
+        mtlIndirect_[i] = ctx->newPrivateBuffer(sizeof(command));
+        if (!mtlUniforms_[i] || !mtlVisible_[i] || !mtlIndirect_[i] ||
+            !ctx->uploadToBuffer(mtlIndirect_[i], &command, sizeof(command))) {
+            shutdown();
+            return false;
+        }
+    }
+    bladeCount_ = 0;
+    LOG_INFO("GrassRenderer initialized (Metal, capacity ", kMaxBlades,
+             " blades) - population arrives once terrain has loaded");
+    return true;
+}
+
+void GrassRenderer::dispatchCullMetal(MTL::CommandBuffer* commandBuffer, const Camera& camera,
+                                      const glm::vec3& rangeCenter) {
+    if (!metal_ || !mtlCull_ || !commandBuffer || bladeCount_ == 0) return;
+    const uint64_t frame = metal_->frameNumber();
+    const uint32_t slot = static_cast<uint32_t>(frame % MetalContext::kRingSize);
+    const GrassCullUniformsGPU uniforms = cullUniforms(camera, rangeCenter);
+    std::memcpy(mtlUniforms_[slot]->contents(), &uniforms, sizeof(uniforms));
+
+    // The count back to zero, then the cull advancing it: the encoder
+    // boundaries order the two, and the draw after them, as the barriers do.
+    MTL::BlitCommandEncoder* blit = commandBuffer->blitCommandEncoder();
+    blit->fillBuffer(mtlIndirect_[slot],
+                     NS::Range::Make(offsetof(MTL::DrawIndexedPrimitivesIndirectArguments,
+                                              instanceCount),
+                                     sizeof(uint32_t)),
+                     0);
+    blit->endEncoding();
+    MTL::ComputeCommandEncoder* compute = commandBuffer->computeCommandEncoder();
+    compute->setLabel(NS::String::string("grass cull", NS::UTF8StringEncoding));
+    compute->setComputePipelineState(mtlCull_);
+    compute->setBuffer(mtlUniforms_[slot], 0, mtlCullUniforms_);
+    compute->setBuffer(mtlSource_, 0, mtlCullSource_);
+    compute->setBuffer(mtlVisible_[slot], 0, mtlCullVisible_);
+    compute->setBuffer(mtlIndirect_[slot], 0, mtlCullIndirect_);
+    compute->dispatchThreadgroups(MTL::Size::Make((bladeCount_ + 63) / 64, 1, 1),
+                                  MTL::Size::Make(64, 1, 1));
+    compute->endEncoding();
+    mtlCulledFrame_ = frame;
+}
+
+void GrassRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                size_t offset) {
+    // Only what this frame's cull listed: a slot not culled this frame holds
+    // an older frame's count, for blades that may since have been replaced.
+    if (!metal_ || !mtlPipeline_ || !encoder || bladeCount_ == 0 ||
+        mtlCulledFrame_ != metal_->frameNumber()) {
+        return;
+    }
+    const uint32_t slot = static_cast<uint32_t>(mtlCulledFrame_ % MetalContext::kRingSize);
+    if (!drawReported_) {
+        drawReported_ = true;
+        LOG_INFO("Grass draw recorded (Metal): ", bladeCount_, " blades in the source buffer");
+    }
+    const float fade[2] = {cullDistance_ * kFadeStartFraction, cullDistance_};
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBuffer(mtlSource_, 0, mtlVertSource_);
+    encoder->setVertexBuffer(mtlVisible_[slot], 0, mtlVertVisible_);
+    encoder->setVertexBuffer(mtlProfiles_, 0, mtlVertProfiles_);
+    encoder->setVertexBytes(fade, sizeof(fade), mtlVertPush_);
+    encoder->setFragmentBuffer(perFrame, offset, mtlFragPerFrame_);
+    encoder->setFragmentTexture(metal_->fogVolume(), mtlFragFog_);
+    encoder->setFragmentSamplerState(
+        metal_->sampler(MetalContext::Filter::Linear, MetalContext::Address::ClampToEdge),
+        mtlFragFogSampler_);
+    encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, MTL::IndexTypeUInt16, mtlIndices_,
+                                   0, mtlIndirect_[slot], 0);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

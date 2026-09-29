@@ -430,6 +430,32 @@ MTL::Buffer* MetalContext::newBuffer(const void* data, size_t bytes) {
     return buffer;
 }
 
+MTL::Buffer* MetalContext::newPrivateBuffer(size_t bytes) {
+    if (!device_ || bytes == 0) return nullptr;
+    MTL::Buffer* buffer = device_->newBuffer(bytes, MTL::ResourceStorageModePrivate);
+    if (!buffer) LOG_ERROR("Metal: could not make a ", bytes, "-byte private buffer");
+    return buffer;
+}
+
+bool MetalContext::uploadToBuffer(MTL::Buffer* target, const void* data, size_t bytes,
+                                  size_t offset) {
+    if (!queue_ || !target || !data || bytes == 0 || offset + bytes > target->length()) {
+        return false;
+    }
+    MTL::Buffer* staging = newBuffer(data, bytes);
+    if (!staging) return false;
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    MTL::CommandBuffer* cmd = queue_->commandBuffer();
+    MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
+    blit->copyFromBuffer(staging, 0, target, offset, bytes);
+    blit->endEncoding();
+    cmd->commit();
+    pool->release();
+    // The command buffer holds it until the copy is done.
+    staging->release();
+    return true;
+}
+
 MTL::SamplerState* MetalContext::sampler(Filter filter, Address address) {
     const uint16_t key = static_cast<uint16_t>((static_cast<uint16_t>(filter) << 8) |
                                                static_cast<uint16_t>(address));

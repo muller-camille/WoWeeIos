@@ -104,6 +104,15 @@ public:
 
     /// A shared buffer, filled from data when it is given. Retained.
     [[nodiscard]] MTL::Buffer* newBuffer(const void* data, size_t bytes);
+    /// A private buffer, for the GPU alone: fill it with uploadToBuffer.
+    /// Retained.
+    [[nodiscard]] MTL::Buffer* newPrivateBuffer(size_t bytes);
+    /// bytes of data into target at offset, through a shared staging buffer
+    /// and a blit on the queue, as uploadTexture fills a texture: a command
+    /// buffer committed after this sees it written, and those committed
+    /// before - frames still in flight - read what was there. False when
+    /// there is nothing to write or it does not fit.
+    bool uploadToBuffer(MTL::Buffer* target, const void* data, size_t bytes, size_t offset = 0);
 
     /// What a Vulkan sampler asked for, as far as the renderers ask for it.
     enum class Filter : uint8_t { Nearest, Linear };
@@ -131,6 +140,14 @@ public:
         return shadowMap_ ? shadowMap_ : neutralDepth_;
     }
     [[nodiscard]] MTL::Texture* neutralVolumeTexture() const { return neutralVolume_; }
+    /// The air the volumetric fog has integrated this frame, which the
+    /// renderer sets while it is on; otherwise, and for anything drawn
+    /// without it, the neutral volume - which the per-frame data's
+    /// volumetricParams.x also tells the shaders not to read.
+    void setFogVolume(MTL::Texture* volume) { fogVolume_ = volume; }
+    [[nodiscard]] MTL::Texture* fogVolume() const {
+        return fogVolume_ ? fogVolume_ : neutralVolume_;
+    }
 
     /// Counts beginFrame calls. With two frames in flight, anything the CPU
     /// writes per frame and the GPU reads is safe in a ring of three indexed
@@ -193,6 +210,7 @@ private:
     MTL::Texture* neutralDepth_ = nullptr;
     MTL::Texture* neutralVolume_ = nullptr;
     MTL::Texture* shadowMap_ = nullptr;  // the renderer's; not owned
+    MTL::Texture* fogVolume_ = nullptr;  // the renderer's; not owned
     std::atomic<double> lastGpuMs_{0.0};
     void endGpuSegment(const char* name);
     static constexpr int kMaxGpuSegments = 12;

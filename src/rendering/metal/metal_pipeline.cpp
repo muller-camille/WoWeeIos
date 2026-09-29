@@ -168,6 +168,30 @@ MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx, const MetalPipel
     return state;
 }
 
+MTL::ComputePipelineState* buildMetalComputePipeline(MetalContext& ctx, const char* kernel) {
+    MTL::Library* library = ctx.getLibrary();
+    if (!library) {
+        LOG_ERROR("Metal: no default.metallib to build ", kernel, " from");
+        return nullptr;
+    }
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    MTL::Function* fn = library->newFunction(NS::String::string(kernel, NS::UTF8StringEncoding));
+    MTL::ComputePipelineState* state = nullptr;
+    if (!fn) {
+        LOG_ERROR("Metal: default.metallib has no ", kernel);
+    } else {
+        NS::Error* error = nullptr;
+        state = ctx.getDevice()->newComputePipelineState(fn, &error);
+        if (!state) {
+            LOG_ERROR("Metal: kernel ", kernel, " refused: ",
+                      error ? error->localizedDescription()->utf8String() : "no reason given");
+        }
+        fn->release();
+    }
+    pool->release();
+    return state;
+}
+
 MTL::VertexDescriptor* newPackedFloatVertexDescriptor(uint32_t extraFloats) {
     auto* vd = MTL::VertexDescriptor::alloc()->init();
     vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);

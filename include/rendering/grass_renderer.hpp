@@ -11,11 +11,22 @@
 #include "rendering/grass_blade.hpp"
 #include "rendering/vk_context.hpp"
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class CommandBuffer;
+class ComputePipelineState;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 
 namespace rendering {
 
 class Camera;
+class MetalContext;
 
 /// GPU-driven grass.
 ///
@@ -78,7 +89,12 @@ public:
     /// Log how many blades the cull kept, once. Diagnostic only.
     void reportCullResult();
 
-    [[nodiscard]] bool isReady() const { return pipeline_ != VK_NULL_HANDLE; }
+    [[nodiscard]] bool isReady() const {
+#ifdef WOWEE_METAL
+        if (mtlPipeline_) return true;
+#endif
+        return pipeline_ != VK_NULL_HANDLE;
+    }
     [[nodiscard]] uint32_t bladeCount() const { return bladeCount_; }
 
     /// Capacity of the source buffer, in blades. Sized for the largest window
@@ -149,6 +165,44 @@ private:
     VkDescriptorSet drawSet_[kFrames]{};
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+
+    /// The cull's uniforms for this camera and range centre.
+    [[nodiscard]] GrassCullUniformsGPU cullUniforms(const Camera& camera,
+                                                    const glm::vec3& rangeCenter) const;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    /// The cull, on commandBuffer between passes: the count reset by a blit,
+    /// then the compute pass that counts and lists what survives, into this
+    /// frame's slot of the ring. Before renderMetal, as dispatchCull is.
+    void dispatchCullMetal(MTL::CommandBuffer* commandBuffer, const Camera& camera,
+                           const glm::vec3& rangeCenter);
+    /// The indexed indirect draw of what this frame's cull kept.
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::ComputePipelineState* mtlCull_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    // Private, filled through MetalContext::uploadToBuffer.
+    MTL::Buffer* mtlSource_ = nullptr;
+    MTL::Buffer* mtlProfiles_ = nullptr;
+    MTL::Buffer* mtlIndices_ = nullptr;
+    // A ring of MetalContext::kRingSize, as the Vulkan buffers are per frame
+    // in flight: the cull writes one while an earlier frame draws another.
+    MTL::Buffer* mtlUniforms_[3] = {};
+    MTL::Buffer* mtlVisible_[3] = {};
+    MTL::Buffer* mtlIndirect_[3] = {};
+    uint64_t mtlCulledFrame_ = ~0ull;  // the frame whose slot the cull filled
+    int mtlCullUniforms_ = -1, mtlCullSource_ = -1, mtlCullVisible_ = -1,
+        mtlCullIndirect_ = -1;
+    int mtlVertPerFrame_ = -1, mtlVertSource_ = -1, mtlVertVisible_ = -1,
+        mtlVertProfiles_ = -1, mtlVertPush_ = -1;
+    int mtlFragPerFrame_ = -1, mtlFragFog_ = -1, mtlFragFogSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

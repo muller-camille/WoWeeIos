@@ -2432,6 +2432,11 @@ void Renderer::setGrassEnabled(bool enabled) {
         // count of zero is what stops the cull dispatching too, and the buffer
         // it was holding is the point of turning it off.
         grassRenderer_->setPopulation(nullptr, 0);
+#ifdef WOWEE_METAL
+        // On Metal the buffers go too: renderFrameMetal makes them when grass
+        // is on, and they are 76 MB against iOS's memory ceiling.
+        if (metal_) grassRenderer_.reset();
+#endif
     }
     grassBuilder_ = pipeline::GrassPopulationBuilder{};
     grassWindowValid_ = false;
@@ -5518,11 +5523,36 @@ void Renderer::renderFrameMetal() {
             minimapView(mtlGameHandler_, minimapCenter, minimapOrientation, hasMinimapOrientation);
         if (drawMinimap) minimap->compositeMetal(metal_->commandBuffer(), minimapCenter);
 
+        // Grass, while the menu has it on: its population, then its cull in a
+        // compute pass of its own, before the world's opens - as Vulkan
+        // records it outside the render pass.
+        if (grassEnabled_ && !grassRenderer_) {
+            grassRenderer_ = std::make_unique<GrassRenderer>();
+            if (grassRenderer_->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                                MTL::PixelFormatDepth32Float, 1)) {
+                grassRenderer_->setCullDistance(grassDistance_);
+                if (!grassProfiles_.empty()) grassRenderer_->setProfiles(grassProfiles_);
+                grassWindowValid_ = false;
+            } else {
+                LOG_WARNING("Grass renderer (Metal) initialization failed - no grass");
+                grassRenderer_.reset();
+                grassEnabled_ = false;
+            }
+        }
+        const bool drawGrass = grassRenderer_ && !metalSkips("grass");
+        if (drawGrass) {
+            updateGrassPopulation();
+            grassRenderer_->dispatchCullMetal(metal_->commandBuffer(), *camera,
+                                              characterPosition);
+        }
+
         MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
 
         if (terrainRenderer && !metalSkips("terrain")) {
             terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }
+        // On the ground and under everything that stands on it.
+        if (drawGrass) grassRenderer_->renderMetal(encoder, mtlFrameData_, offset);
         if (wmoRenderer && !metalSkips("wmo")) {
             wmoRenderer->prepareRender();
             wmoRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, &characterPosition);
