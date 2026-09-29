@@ -48,6 +48,12 @@ In order. What each one needs is noted, because the device work needs the Mac.
      `MetalContext::fogVolume()`. The shafts march the finished picture itself, not a
      quarter-size copy (a Metal blit does not scale).
    `WOWEE_METAL_SKIP` takes `grass`, `fog` and `sunshafts` to tell their cost apart.
+   - *The first of M5,* written the same evening, also unseen: the shadow filter takes four
+     taps instead of nine on the terrain, buildings, doodads and characters (edges one texel
+     sharper - look at a tree's shadow on the ground); the world's depth and MSAA samples live in
+     tile memory on frames the water does not split (compare `WOWEE_MEMORY_REPORT` somewhere dry
+     with MSAA on); MetalFX writes straight onto the drawable where the drawable allows it (the
+     log says once which way it went; the other is the copy as before).
 2. **Black foliage (open bug).** The nearest tree's canopy draws solid black at night in
    Tirisfal (Tusa's spot) while distant canopies are fine. Ruled out: shadows (black with
    `WOWEE_METAL_SKIP=shadow`), the cutout (the leaf shapes are cut; only their colour is black),
@@ -70,9 +76,13 @@ In order. What each one needs is noted, because the device work needs the Mac.
 
 Not in M4, as decided or found: ray traced lighting is not ported (3.11). The Hi-Z pyramid is
 never created on either backend, and the M2 GPU cull stays Vulkan's - the Metal M2 path culls on
-the CPU; both are M5 material if the doodads' CPU time shows. The terrain's nine PCF taps are the
-other half of its fragment cost; the models share the same filter, so changing it is one change
-for every surface.
+the CPU. Porting the cull alone would not help: without Hi-Z it makes the same frustum and
+distance tests the CPU path does, and around them the CPU writes every instance's input and
+scatters the results back, two frames late - more CPU work, and doodads that appear two frames
+after they turn into view. It is worth having only with occlusion, which is Hi-Z, which was left
+off on Vulkan for its false culls. A menu MSAA change that applies without a relaunch was
+weighed too: every world renderer builds its pipelines inside its initializeMetal among its other
+resources, so it is about twenty classes to make rebuildable. Both wait for the device.
 
 A cloud session can do the shader half of a change: `apt install glslc spirv-cross` gives the
 tools, and on 2026-09-29 Ubuntu's spirv-cross reproduced every tracked MSL file exactly. Note
@@ -300,7 +310,7 @@ Each ends where the iPad shows the result. Later ones depend on earlier ones.
 | **M2. Models and characters** | Character creation and selection show the 3D preview | Texture upload (BLP; BC where the GPU has it, the RGBA8 fallback where not); `CharacterRenderer`; `M2Renderer` static and skinned; the pipeline and binding helpers every later renderer uses |
 | **M3. World** | A character can walk out of Goldshire and play | Terrain, WMO, water, sky (skybox, celestial, starfield, clouds, lens flare), weather, particles and ribbons, footprints, quest markers, selection circle, loading screen |
 | **M4. Parity** | Everything the MoltenVK build draws, the Metal build draws. The branch merges to `master` | Shadow maps, Hi-Z and GPU culling, post-processing and FXAA, minimap, world map, grass, volumetric fog, sun shafts |
-| **M5. Apple features** | Measured frame rate and memory beat the MoltenVK build's on the iPad Air | MetalFX spatial, then temporal with per-object motion vectors; memoryless depth and MSAA; argument buffers for material-heavy passes; Instruments passes |
+| **M5. Apple features** | Measured frame rate and memory beat the MoltenVK build's on the iPad Air | MetalFX spatial (done), then temporal with per-object motion vectors; memoryless depth and MSAA (done where the water does not split the pass); argument buffers for material-heavy passes; Instruments passes |
 | **M6. One platform** | Nothing Vulkan left in the tree | Remove Vulkan, MoltenVK, vk-bootstrap, VMA, the SPIR-V runtime path, the desktop and Android builds, their CI jobs and packaging, and the docs that describe them |
 
 Estimates, for one developer full time with the device at hand: M1 two to three weeks, M2 and M3
