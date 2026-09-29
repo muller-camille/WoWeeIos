@@ -98,3 +98,48 @@ TEST_CASE("a layer with no map of its own is left as the caller asked",
     REQUIRE(alpha.size() == ALPHA_MAP_SIZE);
     CHECK(at(alpha, 10, 10) == 255);
 }
+
+// The seam blur the terrain shader took four extra taps a layer for, done
+// once as the map is uploaded. What the shader read at a texel's centre is
+// what featherAlphaEdges leaves in that texel.
+TEST_CASE("feathering blurs the band along the edge and leaves the rest",
+          "[adt][alpha]") {
+    using wowee::pipeline::featherAlphaEdges;
+    // A step between two columns in the middle: 0 to the left, 255 to the
+    // right. It crosses the band along the top and bottom edges and runs
+    // through the untouched middle.
+    std::vector<uint8_t> alpha(ALPHA_MAP_SIZE);
+    for (size_t y = 0; y < ALPHA_MAP_DIM; ++y) {
+        for (size_t x = 0; x < ALPHA_MAP_DIM; ++x) {
+            alpha[y * ALPHA_MAP_DIM + x] = x < 32 ? 0 : 255;
+        }
+    }
+    const std::vector<uint8_t> out = featherAlphaEdges(alpha);
+    REQUIRE(out.size() == ALPHA_MAP_SIZE);
+
+    // Fully blurred at the outermost row: one 255 column in the 1-2-1 tent,
+    // a quarter of it - (1 * 255 * 4) / 16.
+    CHECK(at(out, 31, 0) == 64);
+    CHECK(at(out, 32, 0) == 191);
+    // Away from the step the tent averages like with like.
+    CHECK(at(out, 10, 0) == 0);
+    CHECK(at(out, 50, 0) == 255);
+    // Eight texels in and further, the map is as painted.
+    for (size_t y = 8; y < ALPHA_MAP_DIM - 8; ++y) {
+        INFO("row " << y);
+        CHECK(at(out, 31, y) == 0);
+        CHECK(at(out, 32, y) == 255);
+    }
+    // In between, part way: less than the outermost row, more than nothing.
+    CHECK(at(out, 31, 4) > 0);
+    CHECK(at(out, 31, 4) < 64);
+}
+
+TEST_CASE("feathering leaves an even map as it is", "[adt][alpha]") {
+    using wowee::pipeline::featherAlphaEdges;
+    const std::vector<uint8_t> alpha(ALPHA_MAP_SIZE, 170);
+    CHECK(featherAlphaEdges(alpha) == alpha);
+    // And something that is not a whole map, as it came.
+    const std::vector<uint8_t> shortMap(100, 7);
+    CHECK(featherAlphaEdges(shortMap) == shortMap);
+}

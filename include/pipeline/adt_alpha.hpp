@@ -64,5 +64,19 @@ size_t alphaTexelIndex(float u, float v);
 /// does not.
 float sampleAlpha(const std::vector<uint8_t>& alpha, float u, float v);
 
+/// The map as the terrain renderer uploads it: blurred near the chunk's edge,
+/// as painted further in.
+///
+/// Within eight texels of an edge each texel is mixed toward a 3x3 tent
+/// average of its neighbours (clamped at the edge), fully at the outermost
+/// texel and not at all by the eighth, to hide the seams between chunks. The
+/// terrain shader used to do this for every pixel, four extra taps per layer
+/// on the band that is 44% of every chunk, on the pass that covers most of
+/// the screen. Done once here, the shader takes one bilinear tap per layer
+/// and reads the same values at the texel centres.
+///
+/// `alpha` is ALPHA_MAP_SIZE texels; anything shorter comes back unchanged.
+std::vector<uint8_t> featherAlphaEdges(const std::vector<uint8_t>& alpha);
+
 } // namespace pipeline
 } // namespace wowee

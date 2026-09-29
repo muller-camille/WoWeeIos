@@ -88,39 +88,14 @@ vec3 localLightContribution(vec3 pos, vec3 normal, vec3 albedo) {
     return sum;
 }
 
-/// How much of the seam blur below is worth paying for at this distance.
-/// Set once in main() from the fragment's distance; see sampleAlpha.
-float gBlurDistFade = 1.0;
-
+// A layer's coverage at this point. The seam blur near a chunk's edge is in
+// the map already: TerrainRenderer uploads each one through
+// pipeline::featherAlphaEdges, which mixes the texels within eight of the
+// edge toward a 3x3 tent, as this did per pixel with four more taps a layer
+// on the band that is 44% of every chunk. One bilinear tap reads the same
+// values at the texel centres.
 float sampleAlpha(sampler2D tex, vec2 uv) {
-    // Smooth 9-tap box near chunk edges to hide alpha-map seams;
-    // blends gradually to avoid a visible ring at the transition.
-    // Wider feather (8 texels) makes per-chunk alpha differences
-    // bleed across the boundary so the chunk grid stops reading
-    // as a hard step.
-    vec2 edge = min(uv, 1.0 - uv);
-    float border = min(edge.x, edge.y);
-    float blurWeight = 1.0 - smoothstep(1.0 / 64.0, 8.0 / 64.0, border);
-    // The seam this hides is a chunk edge seen close up. Far enough away a
-    // whole chunk is a few pixels across and the blur is hiding something
-    // nobody can see - while still costing four taps per layer, on the band
-    // that is 44% of every chunk, on the pass that covers the screen. At a
-    // 2400-yard view distance that is most of the terrain drawn.
-    blurWeight *= gBlurDistFade;
-    float center = texture(tex, uv).r;
-    if (blurWeight < 0.001) return center;
-    // Four taps at half-texel offsets, not nine at whole ones. The sampler
-    // is linear, so each tap already averages a 2x2 block, and the four
-    // together cover the same 3x3 footprint as a tent rather than a box.
-    // The band this runs in is 44% of every chunk, on the pass that
-    // covers most of the screen, so the tap count is what this costs.
-    vec2 h = vec2(0.5 / 64.0);
-    float avg = texture(tex, uv + vec2(-h.x, -h.y)).r
-              + texture(tex, uv + vec2( h.x, -h.y)).r
-              + texture(tex, uv + vec2(-h.x,  h.y)).r
-              + texture(tex, uv + vec2( h.x,  h.y)).r;
-    avg *= 0.25;
-    return mix(center, avg, blurWeight);
+    return texture(tex, uv).r;
 }
 
 // The air between the camera and this point, out of the fog volume: rgb is
@@ -152,7 +127,6 @@ vec3 applyFog(vec3 color, vec3 worldPos, float dist) {
 
 void main() {
     float fragDist = length(viewPos.xyz - FragPos);
-    gBlurDistFade = 1.0 - smoothstep(140.0, 260.0, fragDist);
 
     vec4 baseColor = texture(uBaseTexture, TexCoord);
 

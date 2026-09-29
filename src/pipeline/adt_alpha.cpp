@@ -1,6 +1,8 @@
 #include "pipeline/adt_alpha.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 
 namespace wowee {
 namespace pipeline {
@@ -130,6 +132,51 @@ float sampleAlpha(const std::vector<uint8_t>& alpha, float u, float v) {
     const float top = a00 + (a10 - a00) * tx;
     const float bottom = a01 + (a11 - a01) * tx;
     return (top + (bottom - top) * ty) / 255.0f;
+}
+
+std::vector<uint8_t> featherAlphaEdges(const std::vector<uint8_t>& alpha) {
+    if (alpha.size() < ALPHA_MAP_SIZE) return alpha;
+    std::vector<uint8_t> out(alpha.begin(), alpha.begin() + ALPHA_MAP_SIZE);
+
+    constexpr int kDim = static_cast<int>(ALPHA_MAP_DIM);
+    const auto texel = [&](int x, int y) {
+        x = std::clamp(x, 0, kDim - 1);
+        y = std::clamp(y, 0, kDim - 1);
+        return static_cast<float>(alpha[static_cast<size_t>(y * kDim + x)]);
+    };
+    // GLSL's smoothstep, from one texel to eight: the band and the ramp the
+    // shader had.
+    const auto smoothstep = [](float edge0, float edge1, float x) {
+        const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    constexpr float kInner = 1.0f / static_cast<float>(ALPHA_MAP_DIM);
+    constexpr float kOuter = 8.0f / static_cast<float>(ALPHA_MAP_DIM);
+
+    for (int y = 0; y < kDim; ++y) {
+        for (int x = 0; x < kDim; ++x) {
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(kDim);
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(kDim);
+            const float border = std::min(std::min(u, 1.0f - u), std::min(v, 1.0f - v));
+            const float weight = 1.0f - smoothstep(kInner, kOuter, border);
+            if (weight < 0.001f) continue;
+            // Four bilinear taps half a texel off, as the shader took them,
+            // are this at a texel's centre: 1-2-1 each way.
+            float tent = 0.0f;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    tent += static_cast<float>((2 - std::abs(dx)) * (2 - std::abs(dy))) *
+                            texel(x + dx, y + dy);
+                }
+            }
+            tent /= 16.0f;
+            const float center = texel(x, y);
+            const float mixed = center + (tent - center) * weight;
+            out[static_cast<size_t>(y * kDim + x)] =
+                static_cast<uint8_t>(std::clamp(std::lround(mixed), 0L, 255L));
+        }
+    }
+    return out;
 }
 
 } // namespace pipeline

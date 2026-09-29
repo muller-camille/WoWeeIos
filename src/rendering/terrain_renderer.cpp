@@ -17,6 +17,7 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/frustum.hpp"
 #include "pipeline/asset_manager.hpp"
+#include "pipeline/adt_alpha.hpp"
 #include "pipeline/blp_loader.hpp"
 #include "core/logger.hpp"
 #include <glm/glm.hpp>
@@ -844,13 +845,14 @@ void TerrainRenderer::uploadPreloadedTextures(
 VkTexture* TerrainRenderer::createAlphaTexture(const std::vector<uint8_t>& alphaData) {
     if (alphaData.empty()) return opaqueAlphaTexture.get();
 
-    std::vector<uint8_t> expanded;
-    const uint8_t* src = alphaData.data();
-    if (alphaData.size() < 4096) {
-        expanded.assign(4096, 255);
-        std::copy(alphaData.begin(), alphaData.end(), expanded.begin());
-        src = expanded.data();
-    }
+    // Short maps are covered where they end. The seam blur near the chunk's
+    // edge goes in here, once, rather than in the shader for every pixel.
+    std::vector<uint8_t> expanded(alphaData.begin(),
+                                  alphaData.begin() + static_cast<std::ptrdiff_t>(std::min(
+                                      alphaData.size(), pipeline::ALPHA_MAP_SIZE)));
+    expanded.resize(pipeline::ALPHA_MAP_SIZE, 255);
+    const std::vector<uint8_t> feathered = pipeline::featherAlphaEdges(expanded);
+    const uint8_t* src = feathered.data();
 
     auto tex = std::make_unique<VkTexture>();
 #ifdef WOWEE_METAL
