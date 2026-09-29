@@ -77,6 +77,8 @@ bool MetalContext::initialize(SDL_Window* window) {
     {
         const uint8_t whitePixel[4] = {255, 255, 255, 255};
         white_ = uploadTexture(whitePixel, 1, 1);
+        const uint8_t blackPixel[4] = {0, 0, 0, 255};
+        black_ = uploadTexture(blackPixel, 1, 1);
 
         auto* volume = MTL::TextureDescriptor::alloc()->init();
         volume->setTextureType(MTL::TextureType3D);
@@ -139,6 +141,7 @@ void MetalContext::shutdown() {
     for (MTL::Texture*& texture : interfaceTextures_) releaseTexture(texture);
     interfaceTextures_.clear();
     releaseTexture(white_);
+    releaseTexture(black_);
     releaseTexture(neutralDepth_);
     releaseTexture(neutralVolume_);
     if (library_) { library_->release(); library_ = nullptr; }

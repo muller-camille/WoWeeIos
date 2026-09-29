@@ -2,6 +2,11 @@
 #include "rendering/water_surface_grid.hpp"
 #include "rendering/water_mask.hpp"
 #include "rendering/water_renderer.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include "rendering/water_mask.hpp"
 #include "rendering/vk_context.hpp"
 #include "rendering/vk_pipeline.hpp"
@@ -324,6 +329,13 @@ void WaterRenderer::setRefractionEnabled(bool enabled) {
 
 void WaterRenderer::shutdown() {
     clear();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+        metal_ = nullptr;
+        return;
+    }
+#endif
 
     if (!vkCtx) return;
     VkDevice device = vkCtx->getDevice();
@@ -606,6 +618,15 @@ void WaterRenderer::updateMaterialUBO(WaterSurface& surface) {
     mat.waterAlpha = alpha;
     mat.shimmerStrength = shimmerStrength;
     mat.alphaScale = alphaScale;
+#ifdef WOWEE_METAL
+    if (metal_) {
+        static_assert(sizeof(WaterMaterialUBO) == sizeof(surface.mtlMaterial),
+                      "WaterSurface::mtlMaterial holds a WaterMaterialUBO");
+        std::memcpy(surface.mtlMaterial, &mat, sizeof(mat));
+        surface.mtlHasMaterial = true;
+        return;
+    }
+#endif
 
     // Create UBO
     VkBufferCreateInfo bufCI{};
@@ -779,7 +800,7 @@ void WaterRenderer::loadFromTerrain(const pipeline::ADTTerrain& terrain, bool ap
                 surface.tileY = tileY;
 
                 createWaterMesh(surface);
-                if (surface.indexCount > 0 && vkCtx) {
+                if (surface.indexCount > 0 && hasDevice()) {
                     updateMaterialUBO(surface);
                 }
                 surfaces.push_back(std::move(surface));
@@ -908,7 +929,7 @@ void WaterRenderer::loadFromTerrain(const pipeline::ADTTerrain& terrain, bool ap
         }
 
         createWaterMesh(surface);
-        if (surface.indexCount > 0 && vkCtx) {
+        if (surface.indexCount > 0 && hasDevice()) {
             updateMaterialUBO(surface);
         }
         surfaces.push_back(std::move(surface));
@@ -1056,7 +1077,7 @@ void WaterRenderer::loadFromWMO([[maybe_unused]] const pipeline::WMOLiquid& liqu
              " bounds x=[", minWX, "..", maxWX, "] y=[", minWY, "..", maxWY, "]");
 
     if (surface.indexCount > 0) {
-        if (vkCtx) updateMaterialUBO(surface);
+        if (hasDevice()) updateMaterialUBO(surface);
         surfaces.push_back(std::move(surface));
     }
 }
@@ -1387,6 +1408,13 @@ void WaterRenderer::createWaterMesh(WaterSurface& surface) {
     if (indices.empty()) return;
     surface.indexCount = static_cast<int>(indices.size());
 
+#ifdef WOWEE_METAL
+    if (metal_) {
+        surface.mtlVertexBuffer = metal_->newBuffer(vertices.data(), vertices.size() * sizeof(float));
+        surface.mtlIndexBuffer = metal_->newBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+        return;
+    }
+#endif
     if (!vkCtx) return;
 
     // Upload vertex buffer
@@ -1405,6 +1433,15 @@ void WaterRenderer::createWaterMesh(WaterSurface& surface) {
 }
 
 void WaterRenderer::destroyWaterMesh(WaterSurface& surface) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Command buffers still in flight retain the buffers they draw from.
+        if (surface.mtlVertexBuffer) { surface.mtlVertexBuffer->release(); surface.mtlVertexBuffer = nullptr; }
+        if (surface.mtlIndexBuffer) { surface.mtlIndexBuffer->release(); surface.mtlIndexBuffer = nullptr; }
+        surface.mtlHasMaterial = false;
+        return;
+    }
+#endif
     if (!vkCtx) return;
     VkDevice device = vkCtx->getDevice();
     VmaAllocator allocator = vkCtx->getAllocator();
@@ -2177,5 +2214,130 @@ void WaterRenderer::destroyWater1xResources() {
     destroy(device, water1xPipeline);
     if (water1xRenderPass) { vkDestroyRenderPass(device, water1xRenderPass, nullptr); water1xRenderPass = VK_NULL_HANDLE; }
 }
+bool WaterRenderer::hasDevice() const {
+#ifdef WOWEE_METAL
+    if (metal_) return true;
+#endif
+    return vkCtx != nullptr;
+}
+
+#ifdef WOWEE_METAL
+bool WaterRenderer::initializeMetal(MetalContext* ctx, uint32_t colorFormat,
+                                    uint32_t depthFormat, uint32_t sampleCount) {
+    if (!ctx) return false;
+    LOG_INFO("Initializing water renderer (Metal)");
+    const MetalBindings vert("water_vert");
+    const MetalBindings frag("water_frag");
+    mtlSlots_.vertPerFrame = vert.buffer(0, 0);
+    mtlSlots_.vertPush = vert.pushConstants();
+    mtlSlots_.fragPerFrame = frag.buffer(0, 0);
+    mtlSlots_.fragPush = frag.pushConstants();
+    mtlSlots_.fragMaterial = frag.buffer(1, 0);
+    mtlSlots_.fragFrame = frag.buffer(2, 3);
+    mtlSlots_.fragFog = frag.texture(0, 2);
+    mtlSlots_.fragFogSampler = frag.sampler(0, 2);
+    mtlSlots_.fragSceneColor = frag.texture(2, 0);
+    mtlSlots_.fragSceneColorSampler = frag.sampler(2, 0);
+    mtlSlots_.fragSceneDepth = frag.texture(2, 1);
+    mtlSlots_.fragSceneDepthSampler = frag.sampler(2, 1);
+    mtlSlots_.fragReflection = frag.texture(2, 2);
+    mtlSlots_.fragReflectionSampler = frag.sampler(2, 2);
+    if (!vert.valid() || !frag.valid()) return false;
+
+    // Eight floats a vertex, of which the shader reads the position and the
+    // texture coordinate, as the Vulkan pipeline describes it.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(6 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(8 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "water_vert";
+    desc.fragmentFunction = "water_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "water";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlPipeline_) return false;
+    metal_ = ctx;
+    return true;
+}
+
+void WaterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                size_t offset, const Camera& camera, uint32_t drawableWidth,
+                                uint32_t drawableHeight) {
+    if (!metal_ || !mtlPipeline_ || !encoder || !renderingEnabled || surfaces.empty()) return;
+    const MetalSlots& s = mtlSlots_;
+    MetalContext& m = *metal_;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    // Tested against what is drawn, never written, as the Vulkan pipeline has it.
+    encoder->setDepthStencilState(m.depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, s.vertPerFrame);
+    encoder->setFragmentBuffer(perFrame, offset, s.fragPerFrame);
+    encoder->setFragmentBytes(&frameUBO_, sizeof(frameUBO_), s.fragFrame);
+    MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
+                                               MetalContext::Address::ClampToEdge);
+    encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+    encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
+    // No scene copy yet (sceneValid is 0 below, so the colour is not read),
+    // the depth reads as far, and the reflection as none.
+    encoder->setFragmentTexture(m.blackTexture(), s.fragSceneColor);
+    encoder->setFragmentSamplerState(clampLinear, s.fragSceneColorSampler);
+    encoder->setFragmentTexture(m.whiteTexture(), s.fragSceneDepth);
+    encoder->setFragmentSamplerState(clampLinear, s.fragSceneDepthSampler);
+    encoder->setFragmentTexture(m.blackTexture(), s.fragReflection);
+    encoder->setFragmentSamplerState(clampLinear, s.fragReflectionSampler);
+
+    Frustum frustum;
+    frustum.extractFromMatrix(camera.getViewProjectionMatrix());
+    for (const auto& surface : surfaces) {
+        if (!surface.mtlVertexBuffer || !surface.mtlIndexBuffer || surface.indexCount == 0) continue;
+        if (!surface.mtlHasMaterial) continue;
+        // The culling and the wave profile render() uses.
+        {
+            const glm::vec3 extentX = surface.stepX * static_cast<float>(surface.width);
+            const glm::vec3 extentY = surface.stepY * static_cast<float>(surface.height);
+            const glm::vec3 c0 = surface.origin;
+            const glm::vec3 c1 = surface.origin + extentX;
+            const glm::vec3 c2 = surface.origin + extentY;
+            const glm::vec3 c3 = surface.origin + extentX + extentY;
+            const glm::vec3 aabbMin(std::min({c0.x, c1.x, c2.x, c3.x}),
+                                    std::min({c0.y, c1.y, c2.y, c3.y}), surface.minHeight);
+            const glm::vec3 aabbMax(std::max({c0.x, c1.x, c2.x, c3.x}),
+                                    std::max({c0.y, c1.y, c2.y, c3.y}), surface.maxHeight);
+            if (!frustum.intersectsAABB(aabbMin, aabbMax)) continue;
+        }
+        const bool isWmoWater = (surface.wmoId != 0);
+        const bool canalProfile = isWmoWater || (surface.liquidType == 5);
+        const uint8_t basicType = (surface.liquidType == 0) ? 0 : ((surface.liquidType - 1) % 4);
+        WaterPushConstants push{};
+        push.model = glm::mat4(1.0f);
+        push.waveAmp = isWmoWater ? 0.0f : (basicType == 1 ? 0.35f : 0.08f);
+        push.waveFreq = canalProfile ? 0.35f : (basicType == 1 ? 0.20f : 0.30f);
+        push.waveSpeed = canalProfile ? 1.00f : (basicType == 1 ? 1.20f : 1.40f);
+        push.liquidBasicType = static_cast<float>(basicType);
+        push.screenSize = glm::vec2(static_cast<float>(drawableWidth),
+                                    static_cast<float>(drawableHeight));
+        push.depthRange = glm::vec2(camera.getNearPlane(), camera.getFarPlane());
+        push.sceneValid = 0.0f;
+        encoder->setVertexBytes(&push, sizeof(push), s.vertPush);
+        encoder->setFragmentBytes(&push, sizeof(push), s.fragPush);
+        encoder->setFragmentBytes(surface.mtlMaterial, sizeof(surface.mtlMaterial), s.fragMaterial);
+        encoder->setVertexBuffer(surface.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+        encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle,
+                                       static_cast<NS::UInteger>(surface.indexCount),
+                                       MTL::IndexTypeUInt32, surface.mtlIndexBuffer, 0);
+    }
+}
+#endif
+
 } // namespace rendering
 } // namespace wowee

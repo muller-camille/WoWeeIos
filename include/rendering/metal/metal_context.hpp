@@ -118,6 +118,9 @@ public:
     /// Stand-ins for a binding a pass does not use but the shader declares:
     /// 1x1 white, a 1x1 depth texture at 1.0, a 1x1x1 volume.
     [[nodiscard]] MTL::Texture* whiteTexture() const { return white_; }
+    /// 1x1 black, for a colour a shader weighs by its own brightness - the
+    /// water's reflection - where black means none.
+    [[nodiscard]] MTL::Texture* blackTexture() const { return black_; }
     [[nodiscard]] MTL::Texture* neutralDepthTexture() const { return neutralDepth_; }
     [[nodiscard]] MTL::Texture* neutralVolumeTexture() const { return neutralVolume_; }
 
@@ -166,6 +169,7 @@ private:
     MTL::SamplerState* shadowSampler_ = nullptr;
     MTL::DepthStencilState* depthStates_[8] = {};
     MTL::Texture* white_ = nullptr;
+    MTL::Texture* black_ = nullptr;
     MTL::Texture* neutralDepth_ = nullptr;
     MTL::Texture* neutralVolume_ = nullptr;
     std::vector<MTL::Texture*> interfaceTextures_;

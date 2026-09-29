@@ -9,6 +9,10 @@
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 namespace pipeline {
     struct ADTTerrain;
@@ -20,6 +24,7 @@ namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 
 /**
  * Water surface for a single map chunk
@@ -50,6 +55,14 @@ struct WaterSurface {
     ::VkBuffer indexBuffer = VK_NULL_HANDLE;
     VmaAllocation indexAlloc = VK_NULL_HANDLE;
     int indexCount = 0;
+#ifdef WOWEE_METAL
+    MTL::Buffer* mtlVertexBuffer = nullptr;
+    MTL::Buffer* mtlIndexBuffer = nullptr;
+    /// The material block as the UBO would hold it (WaterMaterialUBO, 32
+    /// bytes), handed to each draw.
+    float mtlMaterial[8] = {};
+    bool mtlHasMaterial = false;
+#endif
 
     // Per-surface material UBO
     ::VkBuffer materialUBO = VK_NULL_HANDLE;
@@ -105,6 +118,18 @@ public:
     }
 
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera, float time, bool use1x = false, uint32_t frameIndex = 0);
+
+#ifdef WOWEE_METAL
+    /// The water on Metal (docs/plan-metal.md, M3), without the refraction or
+    /// the reflection yet: the shader's own path for a surface that has no
+    /// scene behind it to read - a lit body of water with its shimmer - and a
+    /// black reflection, which it weighs as none. Drawn after everything
+    /// opaque, blended over it.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, uint32_t colorFormat,
+                                       uint32_t depthFormat, uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera, uint32_t drawableWidth, uint32_t drawableHeight);
+#endif
     void captureSceneHistory(VkCommandBuffer cmd,
                              VkImage srcColorImage,
                              VkImage srcDepthImage,
@@ -185,6 +210,18 @@ private:
     void destroyReflectionResources();
 
     VkContext* vkCtx = nullptr;
+    [[nodiscard]] bool hasDevice() const;
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    struct MetalSlots {
+        int vertPerFrame = -1, vertPush = -1, fragPerFrame = -1, fragPush = -1;
+        int fragMaterial = -1, fragFrame = -1, fragFog = -1, fragFogSampler = -1;
+        int fragSceneColor = -1, fragSceneColorSampler = -1;
+        int fragSceneDepth = -1, fragSceneDepthSampler = -1;
+        int fragReflection = -1, fragReflectionSampler = -1;
+    } mtlSlots_;
+#endif
 
     // Pipeline
     VkPipeline waterPipeline = VK_NULL_HANDLE;

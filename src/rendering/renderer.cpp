@@ -3709,6 +3709,16 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             skyboxModelRenderer_.reset();
         }
     }
+    if (metal_ && !waterRenderer) {
+        // Lakes, rivers and the sea; the terrain manager fills it tile by
+        // tile, and the camera asks it where the character swims.
+        waterRenderer = std::make_unique<WaterRenderer>();
+        if (!waterRenderer->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                            MTL::PixelFormatDepth32Float, 1)) {
+            LOG_ERROR("WaterRenderer (Metal) initialization failed");
+            waterRenderer.reset();
+        }
+    }
     if (metal_ && !wmoRenderer) {
         // The buildings, and with them the floors, walls and portals the
         // camera and the character collide with.
@@ -5068,6 +5078,10 @@ void Renderer::renderFrameMetal() {
         }
         if (characterRenderer) {
             characterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
+        // Last: blended over everything opaque, as the Vulkan frame has it.
+        if (waterRenderer) {
+            waterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, w, h);
         }
         encoder->endEncoding();
 
