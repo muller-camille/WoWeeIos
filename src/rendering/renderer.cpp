@@ -1029,6 +1029,8 @@ void Renderer::shutdown() {
     if (mtlWorldColor_) { mtlWorldColor_->release(); mtlWorldColor_ = nullptr; }
     if (mtlAaColor_) { mtlAaColor_->release(); mtlAaColor_ = nullptr; }
     if (mtlMsaaColor_) { mtlMsaaColor_->release(); mtlMsaaColor_ = nullptr; }
+    if (mtlMsaaColorTile_) { mtlMsaaColorTile_->release(); mtlMsaaColorTile_ = nullptr; }
+    if (mtlDepthTile_) { mtlDepthTile_->release(); mtlDepthTile_ = nullptr; }
     if (mtlReflMsaaColor_) { mtlReflMsaaColor_->release(); mtlReflMsaaColor_ = nullptr; }
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
@@ -5282,17 +5284,9 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
     mtlScaler_ = desc->newSpatialScaler(device);
     desc->release();
     if (!mtlScaler_) return false;
-
-    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatBGRA8Unorm,
-                                                                outW, outH, false);
-    texDesc->setUsage(mtlScaler_->outputTextureUsage());
-    texDesc->setStorageMode(MTL::StorageModePrivate);
-    mtlUpscaled_ = device->newTexture(texDesc);
-    if (!mtlUpscaled_) {
-        mtlScaler_->release();
-        mtlScaler_ = nullptr;
-        return false;
-    }
+    // Its output is the drawable itself where the drawable's usage allows
+    // what the scaler writes with; mtlUpscaled_ and a copy only where not,
+    // made then (see renderFrameMetal).
     mtlScalerOutW_ = outW;
     mtlScalerOutH_ = outH;
     mtlScalerInW_ = inW;
@@ -5573,36 +5567,45 @@ void Renderer::renderFrameMetal() {
         const bool fxaa = mtlPostProcess_ && (worldFxaaEnabled_ || intoxication > 0.001f);
         // Drawn to a texture of its own, rather than the drawable, for either.
         const bool offscreen = scaled || fxaa;
-        const bool splitForWater = waterRenderer && waterRenderer->hasSurfaces() &&
-                                   !metalSkips("refraction");
+        const bool wantSplit = waterRenderer && waterRenderer->hasSurfaces() &&
+                               !metalSkips("refraction");
         // Multisampled, the world is drawn into mtlMsaaColor_ and resolved at
         // the end of its pass - into mtlSceneColor_ and mtlSceneDepth_ where
-        // the water splits it, in place of the copies. Stored rather than in
-        // tile memory, since the pass is taken up again after the split.
+        // the water splits it, in place of the copies.
+        //
+        // The world's depth and samples live in tile memory alone
+        // (mtlDepthTile_, mtlMsaaColorTile_) on a frame the water does not
+        // split, which nothing reads after the pass. Only a split frame
+        // stores them, to take the pass up again, and the textures that hold
+        // them (mtlDepth_, mtlMsaaColor_) are made the first time one comes.
         const bool msaa = mtlSamples_ > 1;
-        if (!mtlDepth_ || mtlDepthWidth_ != w || mtlDepthHeight_ != h ||
+        const auto make = [&](MTL::PixelFormat format, MTL::TextureUsage usage,
+                              uint32_t samples = 1,
+                              MTL::StorageMode storage = MTL::StorageModePrivate) {
+            auto* desc = MTL::TextureDescriptor::texture2DDescriptor(format, w, h, false);
+            if (samples > 1) {
+                desc->setTextureType(MTL::TextureType2DMultisample);
+                desc->setSampleCount(samples);
+            }
+            desc->setUsage(usage);
+            desc->setStorageMode(storage);
+            return metal_->getDevice()->newTexture(desc);
+        };
+        if (!mtlDepthTile_ || mtlDepthWidth_ != w || mtlDepthHeight_ != h ||
             offscreen != (mtlWorldColor_ != nullptr) ||
-            (scaled && fxaa) != (mtlAaColor_ != nullptr) || msaa != (mtlMsaaColor_ != nullptr)) {
-            const auto make = [&](MTL::PixelFormat format, MTL::TextureUsage usage,
-                                  uint32_t samples = 1) {
-                auto* desc = MTL::TextureDescriptor::texture2DDescriptor(format, w, h, false);
-                if (samples > 1) {
-                    desc->setTextureType(MTL::TextureType2DMultisample);
-                    desc->setSampleCount(samples);
-                }
-                desc->setUsage(usage);
-                desc->setStorageMode(MTL::StorageModePrivate);
-                return metal_->getDevice()->newTexture(desc);
-            };
+            (scaled && fxaa) != (mtlAaColor_ != nullptr) ||
+            msaa != (mtlMsaaColorTile_ != nullptr)) {
             for (MTL::Texture** t : {&mtlDepth_, &mtlSceneColor_, &mtlSceneDepth_, &mtlWorldColor_,
-                                     &mtlAaColor_, &mtlMsaaColor_}) {
+                                     &mtlAaColor_, &mtlMsaaColor_, &mtlDepthTile_,
+                                     &mtlMsaaColorTile_}) {
                 if (*t) { (*t)->release(); *t = nullptr; }
             }
-            mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget,
-                             mtlSamples_);
+            mtlDepthTile_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget,
+                                 mtlSamples_, MTL::StorageModeMemoryless);
             if (msaa) {
-                mtlMsaaColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageRenderTarget,
-                                     mtlSamples_);
+                mtlMsaaColorTile_ = make(MTL::PixelFormatBGRA8Unorm,
+                                         MTL::TextureUsageRenderTarget, mtlSamples_,
+                                         MTL::StorageModeMemoryless);
             }
             if (offscreen) {
                 mtlWorldColor_ = make(MTL::PixelFormatBGRA8Unorm,
@@ -5621,6 +5624,20 @@ void Renderer::renderFrameMetal() {
             mtlDepthWidth_ = w;
             mtlDepthHeight_ = h;
         }
+        if (wantSplit && !mtlDepth_) {
+            mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget,
+                             mtlSamples_);
+            if (msaa) {
+                mtlMsaaColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageRenderTarget,
+                                     mtlSamples_);
+            }
+        }
+        // A split frame without the stored textures it needs draws the water
+        // unsplit, as it did before there was a refraction.
+        const bool splitForWater = wantSplit && mtlDepth_ && (!msaa || mtlMsaaColor_) &&
+                                   mtlSceneColor_ && mtlSceneDepth_;
+        MTL::Texture* worldDepth = splitForWater ? mtlDepth_ : mtlDepthTile_;
+        MTL::Texture* worldSamples = splitForWater ? mtlMsaaColor_ : mtlMsaaColorTile_;
 
         MTL::RenderPassDescriptor* pass = metal_->renderPass();
         auto* color = pass->colorAttachments()->object(0);
@@ -5631,9 +5648,9 @@ void Renderer::renderFrameMetal() {
         // What the world's pass leaves its picture in; multisampled, what it
         // resolves into at the end.
         MTL::Texture* worldTarget = color->texture();
-        const bool msaaPass = msaa && mtlMsaaColor_;
+        const bool msaaPass = msaa && worldSamples;
         if (msaaPass) {
-            color->setTexture(mtlMsaaColor_);
+            color->setTexture(worldSamples);
             color->setResolveTexture(splitForWater ? mtlSceneColor_ : worldTarget);
             color->setStoreAction(splitForWater ? MTL::StoreActionStoreAndMultisampleResolve
                                                 : MTL::StoreActionMultisampleResolve);
@@ -5642,7 +5659,7 @@ void Renderer::renderFrameMetal() {
         // distance fades to anyway.
         const glm::vec4& fog = currentFrameData.fogColor;
         color->setClearColor(MTL::ClearColor::Make(fog.r, fog.g, fog.b, 1.0));
-        pass->depthAttachment()->setTexture(mtlDepth_);
+        pass->depthAttachment()->setTexture(worldDepth);
         pass->depthAttachment()->setLoadAction(MTL::LoadActionClear);
         pass->depthAttachment()->setClearDepth(1.0);
         pass->depthAttachment()->setStoreAction(splitForWater ? MTL::StoreActionStore
@@ -5759,7 +5776,7 @@ void Renderer::renderFrameMetal() {
         // and reading what is opaque, so the world so far is copied out first
         // and the pass taken up again where it stopped, as Vulkan's scene
         // continuation pass does.
-        if (splitForWater && mtlSceneColor_ && mtlSceneDepth_) {
+        if (splitForWater) {
             encoder->endEncoding();
             if (profile) metal_->splitCommandBuffer("opaque world");
             if (msaaPass) {
@@ -5845,14 +5862,45 @@ void Renderer::renderFrameMetal() {
                 world = smoothed;
             }
             if (scaled && mtlScaler_) {
-                mtlScaler_->setColorTexture(world);
-                mtlScaler_->setOutputTexture(mtlUpscaled_);
-                mtlScaler_->setInputContentWidth(w);
-                mtlScaler_->setInputContentHeight(h);
-                mtlScaler_->encodeToCommandBuffer(commandBuffer);
-                MTL::BlitCommandEncoder* blit = commandBuffer->blitCommandEncoder();
-                blit->copyFromTexture(mtlUpscaled_, drawableTexture);
-                blit->endEncoding();
+                // Straight onto the drawable when it can take what the scaler
+                // writes - its usage, and private storage, which MetalFX asks
+                // of an output: no full-screen copy, and no texture of the
+                // screen's size to hold it. Otherwise into mtlUpscaled_, then
+                // copied. The log says once which it is.
+                const MTL::TextureUsage needed = mtlScaler_->outputTextureUsage();
+                const bool direct = drawableTexture->width() == screenW &&
+                                    drawableTexture->height() == screenH &&
+                                    drawableTexture->storageMode() == MTL::StorageModePrivate &&
+                                    (drawableTexture->usage() & needed) == needed;
+                if (!direct && (!mtlUpscaled_ || mtlUpscaled_->width() != screenW ||
+                                mtlUpscaled_->height() != screenH)) {
+                    if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
+                    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
+                        MTL::PixelFormatBGRA8Unorm, screenW, screenH, false);
+                    texDesc->setUsage(needed);
+                    texDesc->setStorageMode(MTL::StorageModePrivate);
+                    mtlUpscaled_ = metal_->getDevice()->newTexture(texDesc);
+                }
+                MTL::Texture* output = direct ? drawableTexture : mtlUpscaled_;
+                if (output) {
+                    mtlScaler_->setColorTexture(world);
+                    mtlScaler_->setOutputTexture(output);
+                    mtlScaler_->setInputContentWidth(w);
+                    mtlScaler_->setInputContentHeight(h);
+                    mtlScaler_->encodeToCommandBuffer(commandBuffer);
+                    if (!direct) {
+                        MTL::BlitCommandEncoder* blit = commandBuffer->blitCommandEncoder();
+                        blit->copyFromTexture(mtlUpscaled_, drawableTexture);
+                        blit->endEncoding();
+                    }
+                }
+                static bool said = false;
+                if (!said) {
+                    said = true;
+                    LOG_WARNING("Metal: MetalFX writes ",
+                                direct ? "straight onto the drawable"
+                                       : "into a texture of its own, copied to the drawable");
+                }
             } else if (scaled && mtlFsrUpscale_) {
                 mtlPostProcess_->encodeUpscale(commandBuffer, world, w, h, drawableTexture,
                                                screenW, screenH, worldUpscaleSharpness_);

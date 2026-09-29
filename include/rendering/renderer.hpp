@@ -513,7 +513,7 @@ private:
     /// The world, then the interface, onto the drawable. Called by endFrame.
     void renderFrameMetal();
     MetalContext* metal_ = nullptr;
-    MTL::Texture* mtlDepth_ = nullptr;      // the world's size, stored
+    MTL::Texture* mtlDepth_ = nullptr;      // the world's size, stored, for split frames
     /// The world is drawn at mtlRenderScale_ of the screen into
     /// mtlWorldColor_, and MetalFX's spatial scaler brings it up to
     /// mtlUpscaled_, which is copied to the drawable under the interface -
@@ -537,6 +537,12 @@ private:
     /// and resolved; the reflection into mtlReflMsaaColor_, in tile memory.
     uint32_t mtlSamples_ = 1;
     MTL::Texture* mtlMsaaColor_ = nullptr;
+    /// The world's depth and samples on a frame the water does not split:
+    /// memoryless, since nothing reads them after the pass. mtlDepth_ and
+    /// mtlMsaaColor_ are the stored ones a split frame takes up again, made
+    /// the first time the water splits a frame.
+    MTL::Texture* mtlDepthTile_ = nullptr;
+    MTL::Texture* mtlMsaaColorTile_ = nullptr;
     MTL::Texture* mtlReflMsaaColor_ = nullptr;
     bool mtlRenderScaleFromEnv_ = false;  // WOWEE_RENDER_SCALE wins over the menu
     uint32_t mtlScalerOutW_ = 0, mtlScalerOutH_ = 0;
