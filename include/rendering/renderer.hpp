@@ -530,6 +530,14 @@ private:
     bool mtlFsrUpscale_ = false;
     int mtlMetalFxSupport_ = -1;  // unknown until asked, then 0 or 1
     std::unique_ptr<MetalPostProcess> mtlPostProcess_;
+    /// Samples per pixel in the world pass: the menu's multisampling as the
+    /// settings file held it at launch, as far as the device goes. Every
+    /// world pipeline is built for it, so a new choice takes effect at the
+    /// next launch. At more than one the world is drawn into mtlMsaaColor_
+    /// and resolved; the reflection into mtlReflMsaaColor_, in tile memory.
+    uint32_t mtlSamples_ = 1;
+    MTL::Texture* mtlMsaaColor_ = nullptr;
+    MTL::Texture* mtlReflMsaaColor_ = nullptr;
     bool mtlRenderScaleFromEnv_ = false;  // WOWEE_RENDER_SCALE wins over the menu
     uint32_t mtlScalerOutW_ = 0, mtlScalerOutH_ = 0;
     uint32_t mtlScalerInW_ = 0, mtlScalerInH_ = 0;  // the world's size when scaled

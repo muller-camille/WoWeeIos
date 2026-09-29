@@ -99,7 +99,13 @@ constexpr SettingDesc kSchema[] = {
     {"antialiasing", "Anti-aliasing (MSAA)", SettingKind::Enum, 0, 3, 1, "Graphics", "Anti-aliasing",
      "Smooths jagged edges by sampling each pixel several times.\n"
      "2x is cheap; 8x costs memory and fill rate at high resolutions.\n"
+#ifdef WOWEE_METAL
+     // The Metal renderer builds every world pipeline for one sample count.
+     "Works alongside FXAA and upscaling. Takes effect the next time\n"
+     "the game starts.",
+#else
      "Works alongside FXAA and FSR upscaling.",
+#endif
      "Off|2x|4x|8x", 1},
     // Two, not off, and not four.
     //

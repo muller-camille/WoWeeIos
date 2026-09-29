@@ -65,7 +65,9 @@
 #include <MetalFX/MetalFX.hpp>
 #include "rendering/metal/metal_context.hpp"
 #include "rendering/metal/metal_post_process.hpp"
+#include "ui/settings_panel.hpp"
 #include "ui/ui_manager.hpp"
+#include <fstream>
 #endif
 #include "core/logger.hpp"
 #include "game/world.hpp"
@@ -1026,6 +1028,8 @@ void Renderer::shutdown() {
     if (mtlSceneColor_) { mtlSceneColor_->release(); mtlSceneColor_ = nullptr; }
     if (mtlWorldColor_) { mtlWorldColor_->release(); mtlWorldColor_ = nullptr; }
     if (mtlAaColor_) { mtlAaColor_->release(); mtlAaColor_ = nullptr; }
+    if (mtlMsaaColor_) { mtlMsaaColor_->release(); mtlMsaaColor_ = nullptr; }
+    if (mtlReflMsaaColor_) { mtlReflMsaaColor_->release(); mtlReflMsaaColor_ = nullptr; }
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
     mtlFsrUpscale_ = false;
@@ -1076,6 +1080,20 @@ void Renderer::setWaterRefractionEnabled(bool /*enabled*/) {
     if (waterRenderer) waterRenderer->setRefractionEnabled(true);
 }
 void Renderer::setMsaaSamples(VkSampleCountFlagBits samples) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Every world pipeline on Metal is built for the sample count read at
+        // launch (initializeMetal), so the menu's choice, which it saves,
+        // takes effect then.
+        uint32_t want = static_cast<uint32_t>(samples);
+        while (want > 1 && !metal_->getDevice()->supportsTextureSampleCount(want)) want >>= 1;
+        if (want != mtlSamples_) {
+            LOG_WARNING("Metal: multisampling at ", want, "x takes effect at the next launch (",
+                        mtlSamples_, "x now)");
+        }
+        return;
+    }
+#endif
     if (!vkCtx) return;
 
     // Only a device that cannot resolve depth has to choose between the
@@ -3715,7 +3733,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // keeps streaming them for their heights as it did without it.
         terrainRenderer = std::make_unique<TerrainRenderer>();
         if (!terrainRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                              MTL::PixelFormatDepth32Float, 1)) {
+                                              MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_ERROR("TerrainRenderer (Metal) initialization failed");
             terrainRenderer.reset();
         }
@@ -3726,7 +3744,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         skyboxModelRenderer_ = std::make_unique<M2Renderer>();
         skyboxModelRenderer_->setSkyMode(true);
         if (!skyboxModelRenderer_->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                                   MTL::PixelFormatDepth32Float, 1)) {
+                                                   MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_WARNING("Sky M2 renderer (Metal) initialization failed");
             skyboxModelRenderer_.reset();
         }
@@ -3736,7 +3754,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // tile, and the camera asks it where the character swims.
         waterRenderer = std::make_unique<WaterRenderer>();
         if (!waterRenderer->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                            MTL::PixelFormatDepth32Float, 1)) {
+                                            MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_ERROR("WaterRenderer (Metal) initialization failed");
             waterRenderer.reset();
         }
@@ -3746,7 +3764,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // camera and the character collide with.
         wmoRenderer = std::make_unique<WMORenderer>();
         if (!wmoRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                          MTL::PixelFormatDepth32Float, 1)) {
+                                          MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_ERROR("WMORenderer (Metal) initialization failed");
             wmoRenderer.reset();
         }
@@ -3756,7 +3774,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // character stand on beside the terrain's.
         m2Renderer = std::make_unique<M2Renderer>();
         if (!m2Renderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                         MTL::PixelFormatDepth32Float, 1)) {
+                                         MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_ERROR("M2Renderer (Metal) initialization failed");
             m2Renderer.reset();
         } else {
@@ -3774,7 +3792,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
     if (metal_ && !characterRenderer) {
         characterRenderer = std::make_unique<CharacterRenderer>();
         if (!characterRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                                MTL::PixelFormatDepth32Float, 1,
+                                                MTL::PixelFormatDepth32Float, mtlSamples_,
                                                 /*offscreenPreview=*/false)) {
             LOG_ERROR("CharacterRenderer (Metal) initialization failed");
         }
@@ -3782,7 +3800,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
     if (metal_ && !minimap) {
         minimap = std::make_unique<Minimap>();
         if (!minimap->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                      MTL::PixelFormatDepth32Float, 1)) {
+                                      MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_ERROR("Minimap (Metal) initialization failed");
             minimap.reset();
         }
@@ -3791,7 +3809,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         // The ! and ? over the heads of quest givers.
         questMarkerRenderer = std::make_unique<QuestMarkerRenderer>();
         if (!questMarkerRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
-                                                  MTL::PixelFormatDepth32Float, 1)) {
+                                                  MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_WARNING("Quest marker renderer (Metal) initialization failed (non-fatal)");
             questMarkerRenderer.reset();
         }
@@ -3801,7 +3819,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
         footprintRenderer = std::make_unique<FootprintRenderer>();
         if (!footprintRenderer->initializeMetal(this, metal_, assetManager,
                                                 MTL::PixelFormatBGRA8Unorm,
-                                                MTL::PixelFormatDepth32Float, 1)) {
+                                                MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_WARNING("Footprint renderer (Metal) initialization failed (non-fatal)");
             footprintRenderer.reset();
         }
@@ -5063,6 +5081,30 @@ void Renderer::applyStoredShadowQuality() {
 
 #ifdef WOWEE_METAL
 
+namespace {
+/// The world pass's samples per pixel: the menu's anti-aliasing (0 off, then
+/// 2x, 4x, 8x) as the settings file holds it - the game loads that file after
+/// the renderer is up, and every world pipeline is built with this count -
+/// or WOWEE_METAL_MSAA, down to what the device can do.
+uint32_t metalSampleCount(MTL::Device* device) {
+    uint32_t samples = 1;
+    if (const char* env = std::getenv("WOWEE_METAL_MSAA"); env && *env) {
+        samples = static_cast<uint32_t>(std::max(1, std::atoi(env)));
+    } else {
+        std::ifstream in(ui::SettingsPanel::getSettingsPath());
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.rfind("antialiasing=", 0) != 0) continue;
+            const int choice = std::clamp(std::atoi(line.c_str() + 13), 0, 3);
+            samples = 1u << choice;
+        }
+    }
+    samples = std::min(samples, 8u);
+    while (samples > 1 && (!device || !device->supportsTextureSampleCount(samples))) samples >>= 1;
+    return samples;
+}
+}  // namespace
+
 bool Renderer::initializeMetal() {
     metal_ = window->getMetalContext();
     deferredWorldInitEnabled_ = core::envFlagEnabled("WOWEE_DEFER_WORLD_SYSTEMS", true);
@@ -5095,11 +5137,16 @@ bool Renderer::initializeMetal() {
         mtlRenderScaleFromEnv_ = true;
     }
 
+    // Multisampling, before any world pipeline is built for it: the menu's
+    // choice as the settings file last saved it, or WOWEE_METAL_MSAA=<n>.
+    mtlSamples_ = metalSampleCount(metal_->getDevice());
+    if (mtlSamples_ > 1) LOG_WARNING("Metal: the world is drawn with ", mtlSamples_, "x MSAA");
+
 
     // The sky: the gradient, the sun and moons, the clouds and the stars.
     skySystem = std::make_unique<SkySystem>();
     if (!skySystem->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                    MTL::PixelFormatDepth32Float, 1)) {
+                                    MTL::PixelFormatDepth32Float, mtlSamples_)) {
         LOG_WARNING("Sky system (Metal) initialization failed - the fog colour stands in");
         skySystem.reset();
     }
@@ -5107,7 +5154,7 @@ bool Renderer::initializeMetal() {
     // The selection circle and the full-screen tints (underwater, ghost).
     overlaySystem_ = std::make_unique<OverlaySystem>(nullptr);
     if (!overlaySystem_->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                         MTL::PixelFormatDepth32Float, 1)) {
+                                         MTL::PixelFormatDepth32Float, mtlSamples_)) {
         LOG_WARNING("Overlay system (Metal) initialization failed - no selection circle");
         overlaySystem_.reset();
     }
@@ -5136,7 +5183,7 @@ bool Renderer::initializeMetal() {
     // Rain, snow and storms; the zones' weather drives it from update().
     weather = std::make_unique<Weather>();
     if (!weather->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                  MTL::PixelFormatDepth32Float, 1)) {
+                                  MTL::PixelFormatDepth32Float, mtlSamples_)) {
         LOG_WARNING("Weather (Metal) initialization failed - no rain or snow");
         weather.reset();
     }
@@ -5145,7 +5192,7 @@ bool Renderer::initializeMetal() {
     // as on Vulkan; renderFrameMetal draws them over the water.
     const auto metalEffect = [this](auto& effect, const char* what) {
         if (!effect->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                     MTL::PixelFormatDepth32Float, 1)) {
+                                     MTL::PixelFormatDepth32Float, mtlSamples_)) {
             LOG_WARNING(what, " (Metal) initialization failed (non-fatal)");
             effect.reset();
         }
@@ -5321,21 +5368,38 @@ void Renderer::renderReflectionPassMetal(size_t reflOffset) {
         desc->setStorageMode(MTL::StorageModePrivate);
         reflColor = metal_->getDevice()->newTexture(desc);
     }
-    if (!mtlReflDepth_) {
-        auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
-            MTL::PixelFormatDepth32Float, kReflectionSize, kReflectionSize, false);
+    // The sky, terrain and buildings draw here with the world's pipelines, so
+    // at the world's sample count: multisampled in tile memory, resolved into
+    // the ring's texture.
+    const auto tileOnly = [&](MTL::PixelFormat format) {
+        auto* desc = MTL::TextureDescriptor::texture2DDescriptor(format, kReflectionSize,
+                                                                 kReflectionSize, false);
+        if (mtlSamples_ > 1) {
+            desc->setTextureType(MTL::TextureType2DMultisample);
+            desc->setSampleCount(mtlSamples_);
+        }
         desc->setUsage(MTL::TextureUsageRenderTarget);
         desc->setStorageMode(MTL::StorageModeMemoryless);
-        mtlReflDepth_ = metal_->getDevice()->newTexture(desc);
+        return metal_->getDevice()->newTexture(desc);
+    };
+    if (!mtlReflDepth_) mtlReflDepth_ = tileOnly(MTL::PixelFormatDepth32Float);
+    if (mtlSamples_ > 1 && !mtlReflMsaaColor_) {
+        mtlReflMsaaColor_ = tileOnly(MTL::PixelFormatBGRA8Unorm);
     }
-    if (!reflColor || !mtlReflDepth_) return;
+    if (!reflColor || !mtlReflDepth_ || (mtlSamples_ > 1 && !mtlReflMsaaColor_)) return;
 
     auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
     auto* color = pass->colorAttachments()->object(0);
-    color->setTexture(reflColor);
     color->setLoadAction(MTL::LoadActionClear);
     color->setClearColor(MTL::ClearColor::Make(0.0, 0.0, 0.0, 1.0));
-    color->setStoreAction(MTL::StoreActionStore);
+    if (mtlSamples_ > 1) {
+        color->setTexture(mtlReflMsaaColor_);
+        color->setResolveTexture(reflColor);
+        color->setStoreAction(MTL::StoreActionMultisampleResolve);
+    } else {
+        color->setTexture(reflColor);
+        color->setStoreAction(MTL::StoreActionStore);
+    }
     pass->depthAttachment()->setTexture(mtlReflDepth_);
     pass->depthAttachment()->setLoadAction(MTL::LoadActionClear);
     pass->depthAttachment()->setClearDepth(1.0);
@@ -5511,20 +5575,35 @@ void Renderer::renderFrameMetal() {
         const bool offscreen = scaled || fxaa;
         const bool splitForWater = waterRenderer && waterRenderer->hasSurfaces() &&
                                    !metalSkips("refraction");
+        // Multisampled, the world is drawn into mtlMsaaColor_ and resolved at
+        // the end of its pass - into mtlSceneColor_ and mtlSceneDepth_ where
+        // the water splits it, in place of the copies. Stored rather than in
+        // tile memory, since the pass is taken up again after the split.
+        const bool msaa = mtlSamples_ > 1;
         if (!mtlDepth_ || mtlDepthWidth_ != w || mtlDepthHeight_ != h ||
             offscreen != (mtlWorldColor_ != nullptr) ||
-            (scaled && fxaa) != (mtlAaColor_ != nullptr)) {
-            const auto make = [&](MTL::PixelFormat format, MTL::TextureUsage usage) {
+            (scaled && fxaa) != (mtlAaColor_ != nullptr) || msaa != (mtlMsaaColor_ != nullptr)) {
+            const auto make = [&](MTL::PixelFormat format, MTL::TextureUsage usage,
+                                  uint32_t samples = 1) {
                 auto* desc = MTL::TextureDescriptor::texture2DDescriptor(format, w, h, false);
+                if (samples > 1) {
+                    desc->setTextureType(MTL::TextureType2DMultisample);
+                    desc->setSampleCount(samples);
+                }
                 desc->setUsage(usage);
                 desc->setStorageMode(MTL::StorageModePrivate);
                 return metal_->getDevice()->newTexture(desc);
             };
             for (MTL::Texture** t : {&mtlDepth_, &mtlSceneColor_, &mtlSceneDepth_, &mtlWorldColor_,
-                                     &mtlAaColor_}) {
+                                     &mtlAaColor_, &mtlMsaaColor_}) {
                 if (*t) { (*t)->release(); *t = nullptr; }
             }
-            mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget);
+            mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget,
+                             mtlSamples_);
+            if (msaa) {
+                mtlMsaaColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageRenderTarget,
+                                     mtlSamples_);
+            }
             if (offscreen) {
                 mtlWorldColor_ = make(MTL::PixelFormatBGRA8Unorm,
                                       MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
@@ -5533,8 +5612,12 @@ void Renderer::renderFrameMetal() {
                 mtlAaColor_ = make(MTL::PixelFormatBGRA8Unorm,
                                    MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
             }
-            mtlSceneColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageShaderRead);
-            mtlSceneDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageShaderRead);
+            // Resolve targets as well as copies when multisampled.
+            const MTL::TextureUsage sceneUsage =
+                msaa ? MTL::TextureUsageShaderRead | MTL::TextureUsageRenderTarget
+                     : MTL::TextureUsageShaderRead;
+            mtlSceneColor_ = make(MTL::PixelFormatBGRA8Unorm, sceneUsage);
+            mtlSceneDepth_ = make(MTL::PixelFormatDepth32Float, sceneUsage);
             mtlDepthWidth_ = w;
             mtlDepthHeight_ = h;
         }
@@ -5545,6 +5628,16 @@ void Renderer::renderFrameMetal() {
         // itself goes to its own texture when it is drawn scaled or smoothed.
         MTL::Texture* drawableTexture = color->texture();
         if (offscreen && mtlWorldColor_) color->setTexture(mtlWorldColor_);
+        // What the world's pass leaves its picture in; multisampled, what it
+        // resolves into at the end.
+        MTL::Texture* worldTarget = color->texture();
+        const bool msaaPass = msaa && mtlMsaaColor_;
+        if (msaaPass) {
+            color->setTexture(mtlMsaaColor_);
+            color->setResolveTexture(splitForWater ? mtlSceneColor_ : worldTarget);
+            color->setStoreAction(splitForWater ? MTL::StoreActionStoreAndMultisampleResolve
+                                                : MTL::StoreActionMultisampleResolve);
+        }
         // No sky yet: the fog colour stands in for it, which is the colour the
         // distance fades to anyway.
         const glm::vec4& fog = currentFrameData.fogColor;
@@ -5554,6 +5647,10 @@ void Renderer::renderFrameMetal() {
         pass->depthAttachment()->setClearDepth(1.0);
         pass->depthAttachment()->setStoreAction(splitForWater ? MTL::StoreActionStore
                                                               : MTL::StoreActionDontCare);
+        if (msaaPass && splitForWater) {
+            pass->depthAttachment()->setResolveTexture(mtlSceneDepth_);
+            pass->depthAttachment()->setStoreAction(MTL::StoreActionStoreAndMultisampleResolve);
+        }
 
         // The minimap's tiles, composed in a pass of their own before the
         // world's opens.
@@ -5570,7 +5667,7 @@ void Renderer::renderFrameMetal() {
         if (grassEnabled_ && !grassRenderer_) {
             grassRenderer_ = std::make_unique<GrassRenderer>();
             if (grassRenderer_->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
-                                                MTL::PixelFormatDepth32Float, 1)) {
+                                                MTL::PixelFormatDepth32Float, mtlSamples_)) {
                 grassRenderer_->setCullDistance(grassDistance_);
                 if (!grassProfiles_.empty()) grassRenderer_->setProfiles(grassProfiles_);
                 grassWindowValid_ = false;
@@ -5665,10 +5762,18 @@ void Renderer::renderFrameMetal() {
         if (splitForWater && mtlSceneColor_ && mtlSceneDepth_) {
             encoder->endEncoding();
             if (profile) metal_->splitCommandBuffer("opaque world");
-            MTL::BlitCommandEncoder* blit = metal_->commandBuffer()->blitCommandEncoder();
-            blit->copyFromTexture(color->texture(), mtlSceneColor_);
-            blit->copyFromTexture(mtlDepth_, mtlSceneDepth_);
-            blit->endEncoding();
+            if (msaaPass) {
+                // Resolved into them as the pass ended; the rest resolves
+                // into the world's own target.
+                color->setResolveTexture(worldTarget);
+                color->setStoreAction(MTL::StoreActionMultisampleResolve);
+                pass->depthAttachment()->setResolveTexture(nullptr);
+            } else {
+                MTL::BlitCommandEncoder* blit = metal_->commandBuffer()->blitCommandEncoder();
+                blit->copyFromTexture(color->texture(), mtlSceneColor_);
+                blit->copyFromTexture(mtlDepth_, mtlSceneDepth_);
+                blit->endEncoding();
+            }
             color->setLoadAction(MTL::LoadActionLoad);
             pass->depthAttachment()->setLoadAction(MTL::LoadActionLoad);
             pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
@@ -5764,9 +5869,14 @@ void Renderer::renderFrameMetal() {
             sunShafts_->compositeMetal(metal_->commandBuffer(), drawableTexture);
         }
 
-        // The interface goes on top of what is there, with no depth.
+        // The interface goes on top of what is there, with no depth, onto the
+        // drawable itself.
+        color->setTexture(drawableTexture);
+        color->setResolveTexture(nullptr);
+        color->setStoreAction(MTL::StoreActionStore);
         color->setLoadAction(MTL::LoadActionLoad);
         pass->depthAttachment()->setTexture(nullptr);
+        pass->depthAttachment()->setResolveTexture(nullptr);
     }
 
     mark(World);
