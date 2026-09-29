@@ -257,6 +257,10 @@ private:
     void renderUnderwaterOverlay(VkCommandBuffer cmd);
     void renderPostSceneOverlays(VkCommandBuffer cmd, game::GameHandler* gameHandler);
     void renderMinimapOverlay(VkCommandBuffer cmd, game::GameHandler* gameHandler);
+    /// Where the minimap is centred and which way its arrow points, for
+    /// either renderer. False when there is no camera to centre it on.
+    bool minimapView(game::GameHandler* gameHandler, glm::vec3& center,
+                     float& orientation, bool& hasOrientation) const;
 
     /// Point the swim spray at whichever pass the water ends up drawing in, so
     /// it can be recorded after the water rather than under it. Must run before

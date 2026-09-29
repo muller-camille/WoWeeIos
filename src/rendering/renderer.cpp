@@ -3614,29 +3614,40 @@ void Renderer::renderPostSceneOverlays(VkCommandBuffer cmd,
 /// The minimap disc, over whatever has been drawn so far.
 void Renderer::renderMinimapOverlay(VkCommandBuffer cmd,
                                     game::GameHandler* gameHandler) {
-    if (minimap && minimap->isEnabled() && camera && window) {
-        glm::vec3 minimapCenter = camera->getPosition();
-        if (cameraController && cameraController->isThirdPerson())
-            minimapCenter = characterPosition;
-        float minimapPlayerOrientation = 0.0f;
-        bool hasMinimapPlayerOrientation = false;
-        if (cameraController) {
-            // Render-space character yaw faces north at 180 degrees; the
-            // minimap shader arrow faces north at 0. Match the mirrored
-            // minimap texture by flipping the visual arrow vertically.
-            minimapPlayerOrientation = glm::radians(characterYaw);
-            hasMinimapPlayerOrientation = true;
-        } else if (gameHandler) {
-            // movementInfo.orientation is canonical yaw: north is 0, east is +pi/2.
-            // Match the mirrored minimap texture by flipping the visual
-            // arrow vertically.
-            minimapPlayerOrientation = glm::pi<float>() - gameHandler->getMovementInfo().orientation;
-            hasMinimapPlayerOrientation = true;
-        }
+    glm::vec3 minimapCenter;
+    float minimapPlayerOrientation = 0.0f;
+    bool hasMinimapPlayerOrientation = false;
+    if (minimap && minimap->isEnabled() && window &&
+        minimapView(gameHandler, minimapCenter, minimapPlayerOrientation,
+                    hasMinimapPlayerOrientation)) {
         minimap->render(cmd, *camera, minimapCenter,
                         window->getWidth(), window->getHeight(),
                         minimapPlayerOrientation, hasMinimapPlayerOrientation);
     }
+}
+
+bool Renderer::minimapView(game::GameHandler* gameHandler, glm::vec3& center,
+                           float& orientation, bool& hasOrientation) const {
+    if (!camera) return false;
+    center = camera->getPosition();
+    if (cameraController && cameraController->isThirdPerson())
+        center = characterPosition;
+    orientation = 0.0f;
+    hasOrientation = false;
+    if (cameraController) {
+        // Render-space character yaw faces north at 180 degrees; the
+        // minimap shader arrow faces north at 0. Match the mirrored
+        // minimap texture by flipping the visual arrow vertically.
+        orientation = glm::radians(characterYaw);
+        hasOrientation = true;
+    } else if (gameHandler) {
+        // movementInfo.orientation is canonical yaw: north is 0, east is +pi/2.
+        // Match the mirrored minimap texture by flipping the visual
+        // arrow vertically.
+        orientation = glm::pi<float>() - gameHandler->getMovementInfo().orientation;
+        hasOrientation = true;
+    }
+    return true;
 }
 
 bool Renderer::waterDrawsInContinuePass() const {
@@ -3747,6 +3758,14 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
                                                 MTL::PixelFormatDepth32Float, 1,
                                                 /*offscreenPreview=*/false)) {
             LOG_ERROR("CharacterRenderer (Metal) initialization failed");
+        }
+    }
+    if (metal_ && !minimap) {
+        minimap = std::make_unique<Minimap>();
+        if (!minimap->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                      MTL::PixelFormatDepth32Float, 1)) {
+            LOG_ERROR("Minimap (Metal) initialization failed");
+            minimap.reset();
         }
     }
     if (!metal_) {
@@ -5036,6 +5055,15 @@ void Renderer::renderFrameMetal() {
         pass->depthAttachment()->setClearDepth(1.0);
         pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
 
+        // The minimap's tiles, composed in a pass of their own before the
+        // world's opens.
+        glm::vec3 minimapCenter;
+        float minimapOrientation = 0.0f;
+        bool hasMinimapOrientation = false;
+        const bool drawMinimap = minimap && minimap->isEnabled() && window &&
+            minimapView(mtlGameHandler_, minimapCenter, minimapOrientation, hasMinimapOrientation);
+        if (drawMinimap) minimap->compositeMetal(metal_->commandBuffer(), minimapCenter);
+
         MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
 
         // The sky first, behind everything, as renderWorld has it: the
@@ -5082,6 +5110,12 @@ void Renderer::renderFrameMetal() {
         // Last: blended over everything opaque, as the Vulkan frame has it.
         if (waterRenderer) {
             waterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, w, h);
+        }
+        // Over the world, under the interface that frames it.
+        if (drawMinimap) {
+            minimap->renderMetal(encoder, *camera, minimapCenter,
+                                 window->getWidth(), window->getHeight(),
+                                 minimapOrientation, hasMinimapOrientation);
         }
         encoder->endEncoding();
 

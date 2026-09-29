@@ -12,6 +12,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
+#include <iterator>
+#include <random>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -191,13 +193,54 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
         gameHandler.selectCharacter(character.guid);
         if (onCharacterSelected) onCharacterSelected(character.guid);
     };
-    // WOWEE_AUTO_ENTER: the first character, into the world, once.
+    // WOWEE_AUTO_ENTER: the last played character (or the first), into the
+    // world, once. With
+    // WOWEE_AUTO_CREATE as well, a new Night Elf druid with a random name is
+    // made first and that one enters instead - a start in Teldrassil, for
+    // testing on a device from the Mac.
     {
         static bool autoEntered = false;
-        if (!autoEntered && !characterSelected && !characters.empty() &&
-            std::getenv("WOWEE_AUTO_ENTER")) {
-            autoEntered = true;
-            enterWorld(characters.front());
+        static std::string autoCreatedName;
+        if (!autoEntered && !characterSelected && std::getenv("WOWEE_AUTO_ENTER")) {
+            if (std::getenv("WOWEE_AUTO_CREATE")) {
+                if (autoCreatedName.empty() && gameHandler.getState() ==
+                                                   game::WorldState::CHAR_LIST_RECEIVED) {
+                    // Letters only, as the server wants: a consonant-vowel run.
+                    static const char* kOnset[] = {"L", "Th", "S", "N", "M", "R", "F", "El",
+                                                   "Ar", "V", "Il", "Sh"};
+                    static const char* kVowel[] = {"a", "e", "i", "ae", "ia", "o", "y"};
+                    static const char* kCoda[] = {"n", "ra", "wen", "lis", "th", "ria", "dor",
+                                                  "sil", "nel"};
+                    std::mt19937 rng(static_cast<uint32_t>(std::random_device{}()));
+                    const auto pick = [&](const auto& list) {
+                        return std::string(list[rng() % std::size(list)]);
+                    };
+                    autoCreatedName = pick(kOnset) + pick(kVowel) + pick(kCoda) + pick(kVowel) +
+                                      pick(kCoda);
+                    if (autoCreatedName.size() > 12) autoCreatedName.resize(12);
+                    game::CharCreateData data;
+                    data.name = autoCreatedName;
+                    data.race = game::Race::NIGHT_ELF;
+                    data.characterClass = game::Class::DRUID;
+                    data.gender = game::Gender::FEMALE;
+                    LOG_WARNING("WOWEE_AUTO_CREATE: creating ", autoCreatedName);
+                    gameHandler.createCharacter(data);
+                }
+                for (const auto& character : characters) {
+                    if (!autoCreatedName.empty() && character.name == autoCreatedName) {
+                        autoEntered = true;
+                        enterWorld(character);
+                        break;
+                    }
+                }
+            } else if (!characters.empty()) {
+                // The one played last, where it is still there.
+                autoEntered = true;
+                const uint64_t lastGuid = loadLastCharacter();
+                const auto last = std::find_if(characters.begin(), characters.end(),
+                    [&](const game::Character& c) { return c.guid == lastGuid; });
+                enterWorld(last != characters.end() ? *last : characters.front());
+            }
         }
     }
 

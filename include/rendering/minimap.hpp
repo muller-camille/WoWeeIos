@@ -10,6 +10,16 @@
 #include <deque>
 #include <algorithm>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class CommandBuffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+class Texture;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering {
@@ -18,6 +28,8 @@ class Camera;
 class VkContext;
 class VkTexture;
 class VkRenderTarget;
+class MetalContext;
+struct MinimapDisplayPush;
 
 class Minimap {
 public:
@@ -57,6 +69,19 @@ public:
     void render(VkCommandBuffer cmd, const Camera& playerCamera,
                 const glm::vec3& centerWorldPos, int screenWidth, int screenHeight,
                 float playerOrientation = 0.0f, bool hasPlayerOrientation = false);
+
+#ifdef WOWEE_METAL
+    /// The same minimap on the Metal renderer (docs/plan-metal.md): the 3x3
+    /// tiles composed into a texture of its own, then the disc drawn from it
+    /// over the world, before the interface.
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount, int size = 200);
+    /// Its own pass, so before the world's encoder is opened.
+    void compositeMetal(MTL::CommandBuffer* commandBuffer, const glm::vec3& centerWorldPos);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, const Camera& playerCamera,
+                     const glm::vec3& centerWorldPos, int screenWidth, int screenHeight,
+                     float playerOrientation = 0.0f, bool hasPlayerOrientation = false);
+#endif
 
     void setEnabled(bool enabled) { this->enabled = enabled; }
     [[nodiscard]] bool isEnabled() const { return enabled; }
@@ -106,6 +131,13 @@ public:
 
 private:
     void parseTRS();
+    /// Where the disc goes and what it shows, the same on both renderers.
+    void fillDisplayPush(MinimapDisplayPush& push, const Camera& playerCamera,
+                         const glm::vec3& centerWorldPos, int screenWidth, int screenHeight,
+                         float playerOrientation, bool hasPlayerOrientation) const;
+    /// Whether the composite is out of date, and the centre tile it wants.
+    bool compositeNeedsRefresh(const glm::vec3& centerWorldPos, int& tileX, int& tileY) const;
+    void markComposited(const glm::vec3& centerWorldPos, int tileX, int tileY);
     void updateTileDescriptors(uint32_t frameIdx, int centerTileX, int centerTileY);
 
     VkContext* vkCtx = nullptr;
@@ -149,6 +181,17 @@ private:
     VkPipeline displayPipeline = VK_NULL_HANDLE;
     VkPipelineLayout displayPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSet displayDescSet = VK_NULL_HANDLE;
+
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::Texture* mtlComposite_ = nullptr;
+    MTL::Buffer* mtlQuad_ = nullptr;
+    MTL::RenderPipelineState* mtlTilePipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlDisplayPipeline_ = nullptr;
+    int mtlTileVertPush_ = -1, mtlTileTex_ = -1, mtlTileSampler_ = -1;
+    int mtlDisplayVertPush_ = -1, mtlDisplayFragPush_ = -1;
+    int mtlDisplayTex_ = -1, mtlDisplaySampler_ = -1;
+#endif
 
     int mapSize = 200;
     float viewRadius = 400.0f;

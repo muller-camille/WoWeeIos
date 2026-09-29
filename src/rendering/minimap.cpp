@@ -10,6 +10,11 @@
 #include "pipeline/blp_loader.hpp"
 #include "core/coordinates.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <glm/gtc/constants.hpp>
@@ -26,7 +31,8 @@ struct MinimapTilePush {
     glm::vec2 gridOffset;  // 8 bytes
 };
 
-// Push constant for display vertex + fragment shaders
+// Push constant for display vertex + fragment shaders. Declared in the header
+// too, for fillDisplayPush.
 struct MinimapDisplayPush {
     glm::vec4 rect;         // x, y, w, h in 0..1 screen space
     glm::vec2 playerUV;
@@ -244,6 +250,18 @@ bool Minimap::initialize(VkContext* ctx, VkDescriptorSetLayout /*perFrameLayout*
 }
 
 void Minimap::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        tileTextureCache.clear();
+        tileInsertionOrder.clear();
+        noDataTexture.reset();
+        if (mtlComposite_) { mtlComposite_->release(); mtlComposite_ = nullptr; }
+        if (mtlQuad_) { mtlQuad_->release(); mtlQuad_ = nullptr; }
+        if (mtlTilePipeline_) { mtlTilePipeline_->release(); mtlTilePipeline_ = nullptr; }
+        if (mtlDisplayPipeline_) { mtlDisplayPipeline_->release(); mtlDisplayPipeline_ = nullptr; }
+        metal_ = nullptr;
+    }
+#endif
     if (!vkCtx) return;
     VkDevice device = vkCtx->getDevice();
     VmaAllocator alloc = vkCtx->getAllocator();
@@ -371,10 +389,23 @@ VkTexture* Minimap::getOrLoadTileTexture(int tileX, int tileY) {
     }
 
     auto tex = std::make_unique<VkTexture>();
-    tex->upload(*vkCtx, blpImage.data.data(), blpImage.width, blpImage.height,
-                VK_FORMAT_R8G8B8A8_UNORM, false);
-    tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                       VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!tex->uploadMetal(*metal_, blpImage.data.data(), blpImage.width, blpImage.height,
+                              false)) {
+            tileTextureCache[hash] = nullptr;
+            return noDataTexture.get();
+        }
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             MetalContext::Address::ClampToEdge));
+    } else
+#endif
+    {
+        tex->upload(*vkCtx, blpImage.data.data(), blpImage.width, blpImage.height,
+                    VK_FORMAT_R8G8B8A8_UNORM, false);
+        tex->createSampler(vkCtx->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                           VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 1.0f);
+    }
 
     VkTexture* ptr = tex.get();
     tileTextureCache[hash] = std::move(tex);
@@ -435,23 +466,8 @@ void Minimap::compositePass(VkCommandBuffer cmd, const glm::vec3& centerWorldPos
 
     if (!trsParsed) parseTRS();
 
-    // Check if composite needs refresh
-    const auto now = std::chrono::steady_clock::now();
-    bool needsRefresh = !hasCachedFrame;
-    if (!needsRefresh) {
-        float mdx = centerWorldPos.x - lastUpdatePos.x;
-        float mdy = centerWorldPos.y - lastUpdatePos.y;
-        float movedSq = mdx * mdx + mdy * mdy;
-        float elapsed = std::chrono::duration<float>(now - lastUpdateTime).count();
-        needsRefresh = (movedSq >= updateDistance * updateDistance) || (elapsed >= updateIntervalSec);
-    }
-
-    // Also refresh if player crossed a tile boundary
-    auto [curTileX, curTileY] = core::coords::worldToTile(centerWorldPos.x, centerWorldPos.y);
-    if (curTileX != lastCenterTileX || curTileY != lastCenterTileY)
-        needsRefresh = true;
-
-    if (!needsRefresh) return;
+    int curTileX = 0, curTileY = 0;
+    if (!compositeNeedsRefresh(centerWorldPos, curTileX, curTileY)) return;
 
     uint32_t frameIdx = vkCtx->getCurrentFrame();
 
@@ -487,11 +503,32 @@ void Minimap::compositePass(VkCommandBuffer cmd, const glm::vec3& centerWorldPos
     }
 
     compositeTarget->endPass(cmd);
+    markComposited(centerWorldPos, curTileX, curTileY);
+}
 
-    // Update tracking
-    lastCenterTileX = curTileX;
-    lastCenterTileY = curTileY;
-    lastUpdateTime = now;
+bool Minimap::compositeNeedsRefresh(const glm::vec3& centerWorldPos,
+                                    int& tileX, int& tileY) const {
+    bool needsRefresh = !hasCachedFrame;
+    if (!needsRefresh) {
+        float mdx = centerWorldPos.x - lastUpdatePos.x;
+        float mdy = centerWorldPos.y - lastUpdatePos.y;
+        float movedSq = mdx * mdx + mdy * mdy;
+        float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() -
+                                                     lastUpdateTime).count();
+        needsRefresh = (movedSq >= updateDistance * updateDistance) || (elapsed >= updateIntervalSec);
+    }
+
+    // Also refresh if player crossed a tile boundary
+    auto [curTileX, curTileY] = core::coords::worldToTile(centerWorldPos.x, centerWorldPos.y);
+    tileX = curTileX;
+    tileY = curTileY;
+    return needsRefresh || curTileX != lastCenterTileX || curTileY != lastCenterTileY;
+}
+
+void Minimap::markComposited(const glm::vec3& centerWorldPos, int tileX, int tileY) {
+    lastCenterTileX = tileX;
+    lastCenterTileY = tileY;
+    lastUpdateTime = std::chrono::steady_clock::now();
     lastUpdatePos = centerWorldPos;
     hasCachedFrame = true;
 }
@@ -515,6 +552,20 @@ void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB, &offset);
 
+    MinimapDisplayPush push{};
+    fillDisplayPush(push, playerCamera, centerWorldPos, screenWidth, screenHeight,
+                    playerOrientation, hasPlayerOrientation);
+    vkCmdPushConstants(cmd, displayPipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(push), &push);
+
+    vkCmdDraw(cmd, 6, 1, 0, 0);
+}
+
+void Minimap::fillDisplayPush(MinimapDisplayPush& push, const Camera& playerCamera,
+                              const glm::vec3& centerWorldPos,
+                              int screenWidth, int screenHeight,
+                              float playerOrientation, bool hasPlayerOrientation) const {
     // Top-right corner, unless something asked for a particular rect - which
     // is what happens when FrameXML owns the minimap and the map has to sit
     // inside the frame it drew.
@@ -586,7 +637,7 @@ void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
         arrowRotation = playerOrientation + rotation;
     }
 
-    MinimapDisplayPush push{};
+    push = {};
     push.rect = glm::vec4(x, y, pixelW, pixelH);
     push.playerUV = glm::vec2(playerU, playerV);
     push.rotation = rotation;
@@ -594,13 +645,144 @@ void Minimap::render(VkCommandBuffer cmd, const Camera& playerCamera,
     push.zoomRadius = zoomRadius;
     push.squareShape = squareShape ? 1 : 0;
     push.opacity = opacity_;
-
-    vkCmdPushConstants(cmd, displayPipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(push), &push);
-
-    vkCmdDraw(cmd, 6, 1, 0, 0);
 }
+
+#ifdef WOWEE_METAL
+bool Minimap::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                              uint32_t sampleCount, int size) {
+    if (!ctx) return false;
+    mapSize = size;
+
+    const MetalBindings tileVert("minimap_tile_vert");
+    const MetalBindings tileFrag("minimap_tile_frag");
+    const MetalBindings displayVert("minimap_display_vert");
+    const MetalBindings displayFrag("minimap_display_frag");
+    mtlTileVertPush_ = tileVert.pushConstants();
+    mtlTileTex_ = tileFrag.texture(0, 0);
+    mtlTileSampler_ = tileFrag.sampler(0, 0);
+    mtlDisplayVertPush_ = displayVert.pushConstants();
+    mtlDisplayFragPush_ = displayFrag.pushConstants();
+    mtlDisplayTex_ = displayFrag.texture(0, 0);
+    mtlDisplaySampler_ = displayFrag.sampler(0, 0);
+    if (!tileVert.valid() || !tileFrag.valid() || !displayVert.valid() || !displayFrag.valid())
+        return false;
+
+    // Two vec2s per vertex, position then texture coordinate, as on Vulkan.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(2 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(4 * sizeof(float));
+
+    MetalPipelineDesc desc;
+    desc.vertexDescriptor = vd;
+    desc.vertexFunction = "minimap_tile_vert";
+    desc.fragmentFunction = "minimap_tile_frag";
+    desc.colorFormat = MTL::PixelFormatRGBA8Unorm;
+    desc.label = "minimap tiles";
+    mtlTilePipeline_ = buildMetalPipeline(*ctx, desc);
+
+    desc.vertexFunction = "minimap_display_vert";
+    desc.fragmentFunction = "minimap_display_frag";
+    desc.colorFormat = colorFormat;
+    // Drawn inside the world pass, so it declares that pass's depth, unused.
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "minimap";
+    mtlDisplayPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlTilePipeline_ || !mtlDisplayPipeline_) return false;
+
+    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, COMPOSITE_PX, COMPOSITE_PX, false);
+    texDesc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+    texDesc->setStorageMode(MTL::StorageModePrivate);
+    mtlComposite_ = ctx->getDevice()->newTexture(texDesc);
+
+    const float quadVerts[] = {
+        0.0f, 0.0f,  0.0f, 0.0f,
+        1.0f, 0.0f,  1.0f, 0.0f,
+        1.0f, 1.0f,  1.0f, 1.0f,
+        0.0f, 0.0f,  0.0f, 0.0f,
+        1.0f, 1.0f,  1.0f, 1.0f,
+        0.0f, 1.0f,  0.0f, 1.0f,
+    };
+    mtlQuad_ = ctx->newBuffer(quadVerts, sizeof(quadVerts));
+    if (!mtlComposite_ || !mtlQuad_) return false;
+
+    metal_ = ctx;
+    noDataTexture = std::make_unique<VkTexture>();
+    const uint8_t darkPixel[4] = { 12, 20, 30, 255 };
+    noDataTexture->uploadMetal(*ctx, darkPixel, 1, 1, false);
+    noDataTexture->setMetalSampler(ctx->sampler(MetalContext::Filter::Nearest,
+                                                MetalContext::Address::ClampToEdge));
+    LOG_INFO("Minimap initialized (Metal, ", COMPOSITE_PX, "x", COMPOSITE_PX, " composite)");
+    return true;
+}
+
+void Minimap::compositeMetal(MTL::CommandBuffer* commandBuffer, const glm::vec3& centerWorldPos) {
+    if (!enabled || !assetManager || !metal_ || !mtlComposite_ || !commandBuffer) return;
+    if (!trsParsed) parseTRS();
+
+    int curTileX = 0, curTileY = 0;
+    if (!compositeNeedsRefresh(centerWorldPos, curTileX, curTileY)) return;
+
+    auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    auto* color = pass->colorAttachments()->object(0);
+    color->setTexture(mtlComposite_);
+    color->setLoadAction(MTL::LoadActionClear);
+    color->setClearColor(MTL::ClearColor::Make(0.05, 0.08, 0.12, 1.0));
+    color->setStoreAction(MTL::StoreActionStore);
+    MTL::RenderCommandEncoder* encoder = commandBuffer->renderCommandEncoder(pass);
+    encoder->setLabel(NS::String::string("minimap composite", NS::UTF8StringEncoding));
+    encoder->setRenderPipelineState(mtlTilePipeline_);
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(mtlQuad_, 0, kMetalVertexBufferIndex);
+
+    for (int dr = -1; dr <= 1; dr++) {
+        for (int dc = -1; dc <= 1; dc++) {
+            VkTexture* tileTex = getOrLoadTileTexture(curTileX + dr, curTileY + dc);
+            if (!tileTex || !tileTex->metalTexture()) tileTex = noDataTexture.get();
+            encoder->setFragmentTexture(tileTex->metalTexture(), mtlTileTex_);
+            encoder->setFragmentSamplerState(tileTex->metalSampler(), mtlTileSampler_);
+
+            MinimapTilePush push{};
+            push.gridOffset = glm::vec2(static_cast<float>(dc + 1),
+                                        static_cast<float>(dr + 1));
+            encoder->setVertexBytes(&push, sizeof(push), mtlTileVertPush_);
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+        }
+    }
+    encoder->endEncoding();
+    markComposited(centerWorldPos, curTileX, curTileY);
+}
+
+void Minimap::renderMetal(MTL::RenderCommandEncoder* encoder, const Camera& playerCamera,
+                          const glm::vec3& centerWorldPos, int screenWidth, int screenHeight,
+                          float playerOrientation, bool hasPlayerOrientation) {
+    if (!enabled || !hasCachedFrame || !mtlDisplayPipeline_ || !encoder) return;
+
+    MinimapDisplayPush push{};
+    fillDisplayPush(push, playerCamera, centerWorldPos, screenWidth, screenHeight,
+                    playerOrientation, hasPlayerOrientation);
+
+    encoder->setRenderPipelineState(mtlDisplayPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(false, false));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(mtlQuad_, 0, kMetalVertexBufferIndex);
+    encoder->setVertexBytes(&push, sizeof(push), mtlDisplayVertPush_);
+    encoder->setFragmentBytes(&push, sizeof(push), mtlDisplayFragPush_);
+    encoder->setFragmentTexture(mtlComposite_, mtlDisplayTex_);
+    encoder->setFragmentSamplerState(metal_->sampler(MetalContext::Filter::Linear,
+                                                     MetalContext::Address::ClampToEdge),
+                                     mtlDisplaySampler_);
+    encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee
