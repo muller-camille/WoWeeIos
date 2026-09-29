@@ -2362,7 +2362,8 @@ void Renderer::runDeferredWorldInitStep(float deltaTime) {
             if (audioCoordinator_->getMovementSoundManager()) audioCoordinator_->getMovementSoundManager()->initialize(cachedAssetManager);
             break;
         case 5:
-            if (questMarkerRenderer && !questMarkerRenderer->initialize(vkCtx, perFrameSetLayout, cachedAssetManager))
+            if (questMarkerRenderer && vkCtx &&
+                !questMarkerRenderer->initialize(vkCtx, perFrameSetLayout, cachedAssetManager))
                 LOG_WARNING("Quest marker renderer re-init failed (non-fatal)");
             if (footprintRenderer && !footprintRenderer->initialize(this, vkCtx, perFrameSetLayout, cachedAssetManager))
                 LOG_WARNING("Footprint renderer re-init failed (non-fatal)");
@@ -3774,6 +3775,15 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             minimap.reset();
         }
     }
+    if (metal_ && !questMarkerRenderer) {
+        // The ! and ? over the heads of quest givers.
+        questMarkerRenderer = std::make_unique<QuestMarkerRenderer>();
+        if (!questMarkerRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
+                                                  MTL::PixelFormatDepth32Float, 1)) {
+            LOG_WARNING("Quest marker renderer (Metal) initialization failed (non-fatal)");
+            questMarkerRenderer.reset();
+        }
+    }
     if (metal_ && !worldMap) {
         worldMap = std::make_unique<WorldMap>();
         if (!worldMap->initializeMetal(metal_, assetManager)) {
@@ -3998,7 +4008,7 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             if (audioCoordinator_->getMovementSoundManager()) {
                 audioCoordinator_->getMovementSoundManager()->initialize(assetManager);
             }
-            if (questMarkerRenderer) {
+            if (questMarkerRenderer && vkCtx) {  // Metal's is made with the renderers
                 if (!questMarkerRenderer->initialize(vkCtx, perFrameSetLayout, assetManager))
                     LOG_WARNING("Quest marker renderer initialization failed (non-fatal)");
             }
@@ -5002,12 +5012,20 @@ bool Renderer::initializeMetal() {
     // No shadow map to sample until shadows are ported (M4).
     shadowsEnabled = false;
 
-    // The sky's gradient; the sun, moons, clouds and stars come later.
+    // The sky: the gradient, the sun and moons, the clouds and the stars.
     skySystem = std::make_unique<SkySystem>();
     if (!skySystem->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
                                     MTL::PixelFormatDepth32Float, 1)) {
         LOG_WARNING("Sky system (Metal) initialization failed - the fog colour stands in");
         skySystem.reset();
+    }
+
+    // The selection circle and the full-screen tints (underwater, ghost).
+    overlaySystem_ = std::make_unique<OverlaySystem>(nullptr);
+    if (!overlaySystem_->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                         MTL::PixelFormatDepth32Float, 1)) {
+        LOG_WARNING("Overlay system (Metal) initialization failed - no selection circle");
+        overlaySystem_.reset();
     }
 
     lightingManager = std::make_unique<LightingManager>();
@@ -5124,12 +5142,35 @@ void Renderer::renderFrameMetal() {
             // Vulkan.
             m2Renderer->renderEffectsMetal(encoder, mtlFrameData_, offset, h);
         }
+        // The target's circle, on the ground under the characters that stand
+        // in it, as the Vulkan frame records it before them.
+        if (overlaySystem_) overlaySystem_->setMetalEncoder(encoder);
+        if (overlaySystem_) {
+            overlaySystem_->renderSelectionCircle(
+                camera->getViewMatrix(), camera->getProjectionMatrix(), VK_NULL_HANDLE,
+                terrainManager ? OverlaySystem::HeightQuery2D([&](float x, float y) { return terrainManager->getHeightAt(x, y); }) : OverlaySystem::HeightQuery2D{},
+                wmoRenderer ? OverlaySystem::HeightQuery3D([&](float x, float y, float z) { return wmoRenderer->getFloorHeight(x, y, z); }) : OverlaySystem::HeightQuery3D{},
+                m2Renderer ? OverlaySystem::HeightQuery3D([&](float x, float y, float z) { return m2Renderer->getFloorHeight(x, y, z); }) : OverlaySystem::HeightQuery3D{});
+        }
         if (characterRenderer) {
             characterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }
         // Last: blended over everything opaque, as the Vulkan frame has it.
         if (waterRenderer) {
             waterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, w, h);
+        }
+        // Over the water as on Vulkan: the quest givers' marks.
+        if (questMarkerRenderer) {
+            questMarkerRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
+        // The underwater tint and the ghost's grey, over the whole scene.
+        if (overlaySystem_) {
+            renderUnderwaterOverlay(VK_NULL_HANDLE);
+            if (ghostMode_) {
+                overlaySystem_->renderOverlay(glm::vec4(0.30f, 0.35f, 0.42f, 0.45f),
+                                              VK_NULL_HANDLE);
+            }
+            overlaySystem_->setMetalEncoder(nullptr);
         }
         // Over the world, under the interface that frames it.
         if (drawMinimap) {

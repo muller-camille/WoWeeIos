@@ -5,12 +5,43 @@
 #include "rendering/vk_pipeline.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
 
 namespace wowee {
 namespace rendering {
+
+namespace {
+/// The selection circle's unit disc, as a triangle list: a centre and a ring
+/// of 48 around it.
+void buildDisc(std::vector<float>& verts, std::vector<uint16_t>& indices) {
+    constexpr int SEGMENTS = 48;
+    verts.clear();
+    verts.reserve((SEGMENTS + 2) * 3);
+    // Center vertex
+    verts.insert(verts.end(), {0.0f, 0.0f, 0.0f});
+    // Ring vertices
+    for (int i = 0; i <= SEGMENTS; ++i) {
+        float angle = core::coords::TWO_PI * static_cast<float>(i) / static_cast<float>(SEGMENTS);
+        verts.push_back(std::cos(angle));
+        verts.push_back(std::sin(angle));
+        verts.push_back(0.0f);
+    }
+    indices.clear();
+    indices.reserve(SEGMENTS * 3);
+    for (int i = 0; i < SEGMENTS; ++i) {
+        indices.push_back(0);
+        indices.push_back(static_cast<uint16_t>(i + 1));
+        indices.push_back(static_cast<uint16_t>(i + 2));
+    }
+}
+}  // namespace
 
 OverlaySystem::OverlaySystem(VkContext* ctx)
     : vkCtx_(ctx) {}
@@ -20,6 +51,17 @@ OverlaySystem::~OverlaySystem() {
 }
 
 void OverlaySystem::cleanup() {
+#ifdef WOWEE_METAL
+    const auto release = [](auto*& object) {
+        if (object) { object->release(); object = nullptr; }
+    };
+    release(mtlSelCircle_);
+    release(mtlOverlay_);
+    release(mtlSelCircleVerts_);
+    release(mtlSelCircleIndices_);
+    metal_ = nullptr;
+    mtlEncoder_ = nullptr;
+#endif
     if (!vkCtx_) return;
     VkDevice device = vkCtx_->getDevice();
     destroy(device, selCirclePipeline_);
@@ -79,29 +121,10 @@ void OverlaySystem::initSelectionCircle() {
     VkVertexInputBindingDescription vertBind{.binding = 0, .stride = 12, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription vertAttr{.location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0};
 
-    // Build disc geometry as TRIANGLE_LIST (N=48 segments)
-    constexpr int SEGMENTS = 48;
     std::vector<float> verts;
-    verts.reserve((SEGMENTS + 1) * 3);
-    // Center vertex
-    verts.insert(verts.end(), {0.0f, 0.0f, 0.0f});
-    // Ring vertices
-    for (int i = 0; i <= SEGMENTS; ++i) {
-        float angle = core::coords::TWO_PI * static_cast<float>(i) / static_cast<float>(SEGMENTS);
-        verts.push_back(std::cos(angle));
-        verts.push_back(std::sin(angle));
-        verts.push_back(0.0f);
-    }
-
-    // Build TRIANGLE_LIST indices
     std::vector<uint16_t> indices;
-    indices.reserve(SEGMENTS * 3);
-    for (int i = 0; i < SEGMENTS; ++i) {
-        indices.push_back(0);
-        indices.push_back(static_cast<uint16_t>(i + 1));
-        indices.push_back(static_cast<uint16_t>(i + 2));
-    }
-    selCircleVertCount_ = SEGMENTS * 3;
+    buildDisc(verts, indices);
+    selCircleVertCount_ = static_cast<int>(indices.size());
 
     // Upload vertex buffer
     if (selCircleVertBuf_ == VK_NULL_HANDLE) {
@@ -145,8 +168,16 @@ void OverlaySystem::renderSelectionCircle(const glm::mat4& view, const glm::mat4
                                            const HeightQuery3D& wmoHeight,
                                            const HeightQuery3D& m2Height) {
     if (!selCircleVisible_) return;
+#ifdef WOWEE_METAL
+    const bool metal = mtlEncoder_ != nullptr;
+    if (metal ? !mtlSelCircle_ : false) return;
+    if (!metal) {
+#endif
     initSelectionCircle();
     if (selCirclePipeline_ == VK_NULL_HANDLE || cmd == VK_NULL_HANDLE) return;
+#ifdef WOWEE_METAL
+    }
+#endif
 
     // Keep circle anchored near target foot Z. The floor queries are collision
     // raycasts; reuse the last result while the target stands still, refreshing
@@ -182,6 +213,22 @@ void OverlaySystem::renderSelectionCircle(const glm::mat4& view, const glm::mat4
 
     glm::mat4 mvp = projection * view * model;
     glm::vec4 color4(selCircleColor_, 1.0f);
+#ifdef WOWEE_METAL
+    if (metal) {
+        struct { glm::mat4 mvp; glm::vec4 color; } push{mvp, color4};
+        mtlEncoder_->setRenderPipelineState(mtlSelCircle_);
+        mtlEncoder_->setDepthStencilState(metal_->depthState(false, false));
+        mtlEncoder_->setCullMode(MTL::CullModeNone);
+        mtlEncoder_->setVertexBuffer(mtlSelCircleVerts_, 0, kMetalVertexBufferIndex);
+        mtlEncoder_->setVertexBytes(&push, sizeof(push), mtlSelVertPush_);
+        mtlEncoder_->setFragmentBytes(&push, sizeof(push), mtlSelFragPush_);
+        mtlEncoder_->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle,
+                                           NS::UInteger(selCircleVertCount_),
+                                           MTL::IndexTypeUInt16, mtlSelCircleIndices_,
+                                           NS::UInteger(0));
+        return;
+    }
+#endif
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, selCirclePipeline_);
     VkDeviceSize offset = 0;
@@ -272,6 +319,19 @@ void OverlaySystem::renderOverlay(const glm::vec4& color, VkCommandBuffer cmd) {
 void OverlaySystem::renderWaterline(const glm::vec4& color, const glm::mat4& invViewProj,
                                     float waterZ, float softness, float rippleAmp,
                                     float time, bool hasSeam, VkCommandBuffer cmd) {
+#ifdef WOWEE_METAL
+    if (mtlEncoder_) {
+        if (!mtlOverlay_) return;
+        OverlayPush push = makeOverlayPush(color, invViewProj, waterZ, softness, rippleAmp,
+                                           time, hasSeam);
+        mtlEncoder_->setRenderPipelineState(mtlOverlay_);
+        mtlEncoder_->setDepthStencilState(metal_->depthState(false, false));
+        mtlEncoder_->setCullMode(MTL::CullModeNone);
+        mtlEncoder_->setFragmentBytes(&push, sizeof(push), mtlOverlayFragPush_);
+        mtlEncoder_->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        return;
+    }
+#endif
     if (!overlayPipeline_) initOverlayPipeline();
     if (!overlayPipeline_ || cmd == VK_NULL_HANDLE) return;
     OverlayPush push = makeOverlayPush(color, invViewProj, waterZ, softness, rippleAmp,
@@ -350,6 +410,56 @@ void OverlaySystem::renderBrightnessScale(float scale, VkCommandBuffer cmd) {
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }
+
+#ifdef WOWEE_METAL
+bool OverlaySystem::initializeMetal(MetalContext* ctx, uint32_t colorFormat,
+                                    uint32_t depthFormat, uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings selVert("selection_circle_vert");
+    const MetalBindings selFrag("selection_circle_frag");
+    const MetalBindings overlayFrag("overlay_frag");
+    mtlSelVertPush_ = selVert.pushConstants();
+    mtlSelFragPush_ = selFrag.pushConstants();
+    mtlOverlayFragPush_ = overlayFrag.pushConstants();
+    if (!selVert.valid() || !selFrag.valid() || !overlayFrag.valid()) return false;
+
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(3 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "selection_circle_vert";
+    desc.fragmentFunction = "selection_circle_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "selection circle";
+    mtlSelCircle_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    // The full-screen triangle postprocess_vert makes from the vertex index.
+    desc.vertexDescriptor = nullptr;
+    desc.vertexFunction = "postprocess_vert";
+    desc.fragmentFunction = "overlay_frag";
+    desc.label = "overlay";
+    mtlOverlay_ = buildMetalPipeline(*ctx, desc);
+
+    std::vector<float> verts;
+    std::vector<uint16_t> indices;
+    buildDisc(verts, indices);
+    selCircleVertCount_ = static_cast<int>(indices.size());
+    mtlSelCircleVerts_ = ctx->newBuffer(verts.data(), verts.size() * sizeof(float));
+    mtlSelCircleIndices_ = ctx->newBuffer(indices.data(), indices.size() * sizeof(uint16_t));
+    if (!mtlSelCircle_ || !mtlOverlay_ || !mtlSelCircleVerts_ || !mtlSelCircleIndices_) {
+        return false;
+    }
+    metal_ = ctx;
+    return true;
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

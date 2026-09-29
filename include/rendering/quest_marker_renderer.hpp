@@ -9,12 +9,21 @@
 
 #include "rendering/vk_texture.hpp"
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace pipeline { class AssetManager; }
 namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 
 /**
  * Renders quest markers as billboarded sprites above NPCs
@@ -54,7 +63,27 @@ public:
      */
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera);
 
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* assetManager,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera);
+#endif
+
 private:
+    /// One marker as it is drawn this frame: which texture, where and how
+    /// faded. The same for both backends.
+    struct MarkerDraw {
+        int type;
+        glm::mat4 model;
+        float alpha;
+        float grayscale;
+    };
+    void collectDraws(const Camera& camera);
+    std::vector<MarkerDraw> draws_;
+
     struct Marker {
         glm::vec3 position;
         int type; // 0=available, 1=turnin, 2=incomplete
@@ -86,6 +115,14 @@ private:
     void createQuad();
     void loadTextures(pipeline::AssetManager* assetManager);
     void createDescriptorResources();
+
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipeline_ = nullptr;
+    MTL::Buffer* mtlQuad_ = nullptr;
+    int mtlVertPerFrame_ = -1, mtlVertPush_ = -1, mtlFragPush_ = -1;
+    int mtlFragTexture_ = -1, mtlFragSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

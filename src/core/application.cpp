@@ -5106,8 +5106,10 @@ void Application::render() {
 #ifdef WOWEE_METAL
     // WOWEE_WORLD_SCREENSHOT=<file.png>: a picture of the world, taken
     // WOWEE_WORLD_SCREENSHOT_DELAY seconds (20 by default, for the doodads to
-    // stream in) after entering it, then the client quits - how the Mac sees
-    // what the device draws. A relative path lands under the config root.
+    // stream in) after entering it - how the Mac sees what the device draws. A
+    // relative path lands under the config root. The game goes on afterwards;
+    // WOWEE_WORLD_SCREENSHOT_QUIT=1 quits instead, which leaves iOS on a black
+    // screen until the app is closed by hand.
     bool worldShotTaken = false;
     if (const char* shot = std::getenv("WOWEE_WORLD_SCREENSHOT"); shot && *shot) {
         static std::chrono::steady_clock::time_point inWorldSince{};
@@ -5147,7 +5149,9 @@ void Application::render() {
 #endif
     runRenderStage("endFrame", [&] { renderer->endFrame(); });
 #ifdef WOWEE_METAL
-    if (worldShotTaken) running = false;
+    if (worldShotTaken && core::envFlagEnabled("WOWEE_WORLD_SCREENSHOT_QUIT", false)) {
+        running = false;
+    }
 #endif
 
     // A picture of the client, written once and then done with.

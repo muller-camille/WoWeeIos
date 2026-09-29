@@ -8,10 +8,19 @@
 #include <functional>
 #include <optional>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class RenderCommandEncoder;
+class RenderPipelineState;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /// Manages selection circle and fullscreen overlay Vulkan pipelines.
 /// Extracted from Renderer to isolate overlay rendering resources.
@@ -58,6 +67,15 @@ public:
     /// Recreate pipelines after swapchain resize / MSAA change.
     void recreatePipelines();
 
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md), built for the
+    /// world pass. While an encoder is set, the calls above record into it
+    /// and their command buffer is not looked at; set it to null after.
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void setMetalEncoder(MTL::RenderCommandEncoder* encoder) { mtlEncoder_ = encoder; }
+#endif
+
 private:
     void initSelectionCircle();
     void initOverlayPipeline();
@@ -90,6 +108,16 @@ private:
     VkPipelineLayout overlayPipelineLayout_ = VK_NULL_HANDLE;
     // Multiplicative brightness pipeline (shares overlayPipelineLayout_).
     VkPipeline brightnessPipeline_ = VK_NULL_HANDLE;
+
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::RenderCommandEncoder* mtlEncoder_ = nullptr;
+    MTL::RenderPipelineState* mtlSelCircle_ = nullptr;
+    MTL::RenderPipelineState* mtlOverlay_ = nullptr;
+    MTL::Buffer* mtlSelCircleVerts_ = nullptr;
+    MTL::Buffer* mtlSelCircleIndices_ = nullptr;
+    int mtlSelVertPush_ = -1, mtlSelFragPush_ = -1, mtlOverlayFragPush_ = -1;
+#endif
 };
 
 } // namespace rendering

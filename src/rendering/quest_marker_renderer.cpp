@@ -9,6 +9,11 @@
 #include "pipeline/asset_manager.hpp"
 #include "pipeline/blp_loader.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <SDL3/SDL.h>
@@ -116,6 +121,16 @@ bool QuestMarkerRenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFr
 }
 
 void QuestMarkerRenderer::shutdown() {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // A frame still drawing these holds its own references.
+        for (auto& texture : textures_) texture.destroy(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+        if (mtlQuad_) { mtlQuad_->release(); mtlQuad_ = nullptr; }
+        markers_.clear();
+        metal_ = nullptr;
+    }
+#endif
     if (!vkCtx_) return;
 
     VkDevice device = vkCtx_->getDevice();
@@ -329,6 +344,43 @@ void QuestMarkerRenderer::clear() {
 
 void QuestMarkerRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
     if (markers_.empty() || pipeline_ == VK_NULL_HANDLE || quadVB_ == VK_NULL_HANDLE) return;
+    collectDraws(camera);
+    if (draws_.empty()) return;
+
+    // Bind pipeline
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+
+    // Bind per-frame descriptor set (set 0)
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+        0, 1, &perFrameSet, 0, nullptr);
+
+    // Bind quad vertex buffer
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB_, &offset);
+
+    for (const MarkerDraw& draw : draws_) {
+        // Bind material descriptor set (set 1) for this marker's texture
+        if (!texDescSets_[draw.type]) continue;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
+            1, 1, &texDescSets_[draw.type], 0, nullptr);
+
+        // Push constants: model matrix + alpha + grayscale tint
+        QuestMarkerPushConstants push{};
+        push.model = draw.model;
+        push.alpha = draw.alpha;
+        push.grayscale = draw.grayscale;
+
+        vkCmdPushConstants(cmd, pipelineLayout_,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(push), &push);
+
+        // Draw the quad (6 vertices, 2 triangles)
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+    }
+}
+
+void QuestMarkerRenderer::collectDraws(const Camera& camera) {
+    draws_.clear();
 
     // WoW-style quest marker tuning parameters
     constexpr float BASE_SIZE = 0.65f;          // Base world-space size
@@ -355,17 +407,6 @@ void QuestMarkerRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
     glm::vec3 cameraRight = glm::vec3(view[0][0], view[1][0], view[2][0]);
     glm::vec3 cameraUp = glm::vec3(view[0][1], view[1][1], view[2][1]);
     const glm::vec3 cameraForward = glm::cross(cameraRight, cameraUp);
-
-    // Bind pipeline
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-
-    // Bind per-frame descriptor set (set 0)
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-        0, 1, &perFrameSet, 0, nullptr);
-
-    // Bind quad vertex buffer
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &quadVB_, &offset);
 
     for (const auto& [guid, marker] : markers_) {
         if (marker.type < 0 || marker.type > 2) continue;
@@ -416,24 +457,107 @@ void QuestMarkerRenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
         model[1] = glm::vec4(cameraUp * size, 0.0f);
         model[2] = glm::vec4(cameraForward, 0.0f);
 
-        // Bind material descriptor set (set 1) for this marker's texture
-        if (marker.type < 0 || marker.type >= 3 || !texDescSets_[marker.type]) continue;
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-            1, 1, &texDescSets_[marker.type], 0, nullptr);
-
-        // Push constants: model matrix + alpha + grayscale tint
-        QuestMarkerPushConstants push{};
-        push.model = model;
-        push.alpha = fadeAlpha;
-        push.grayscale = marker.grayscale;
-
-        vkCmdPushConstants(cmd, pipelineLayout_,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(push), &push);
-
-        // Draw the quad (6 vertices, 2 triangles)
-        vkCmdDraw(cmd, 6, 1, 0, 0);
+        draws_.push_back({.type = marker.type, .model = model, .alpha = fadeAlpha,
+                          .grayscale = marker.grayscale});
     }
 }
+
+#ifdef WOWEE_METAL
+bool QuestMarkerRenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* assetManager,
+                                          uint32_t colorFormat, uint32_t depthFormat,
+                                          uint32_t sampleCount) {
+    if (!ctx || !assetManager) return false;
+    const MetalBindings vert("quest_marker_vert");
+    const MetalBindings frag("quest_marker_frag");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    mtlVertPush_ = vert.pushConstants();
+    mtlFragPush_ = frag.pushConstants();
+    mtlFragTexture_ = frag.texture(1, 0);
+    mtlFragSampler_ = frag.sampler(1, 0);
+    if (!vert.valid() || !frag.valid()) return false;
+
+    // Position then texture coordinate, as createQuad lays them out.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->attributes()->object(1)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(1)->setOffset(3 * sizeof(float));
+    vd->attributes()->object(1)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(5 * sizeof(float));
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "quest_marker_vert";
+    desc.fragmentFunction = "quest_marker_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "quest markers";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    const float vertices[] = {
+        -0.5f, -0.5f, 0.0f,  0.0f, 1.0f,
+         0.5f, -0.5f, 0.0f,  1.0f, 1.0f,
+         0.5f,  0.5f, 0.0f,  1.0f, 0.0f,
+        -0.5f,  0.5f, 0.0f,  0.0f, 0.0f,
+        -0.5f, -0.5f, 0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f, 0.0f,  1.0f, 0.0f
+    };
+    mtlQuad_ = ctx->newBuffer(vertices, sizeof(vertices));
+    if (!mtlPipeline_ || !mtlQuad_) return false;
+    metal_ = ctx;
+
+    const char* paths[3] = {
+        "Interface\\GossipFrame\\AvailableQuestIcon.blp",
+        "Interface\\GossipFrame\\ActiveQuestIcon.blp",
+        "Interface\\GossipFrame\\IncompleteQuestIcon.blp"
+    };
+    // As loadTextures: the grey question mark falls back to the active one.
+    const char* fallback[3] = {nullptr, nullptr, "Interface\\GossipFrame\\ActiveQuestIcon.blp"};
+    for (int i = 0; i < 3; ++i) {
+        pipeline::BLPImage blp = assetManager->loadTexture(paths[i]);
+        if (!blp.isValid() && fallback[i]) blp = assetManager->loadTexture(fallback[i]);
+        if (!blp.isValid() ||
+            !textures_[i].uploadMetal(*ctx, blp.data.data(), blp.width, blp.height, true)) {
+            LOG_WARNING("Failed to load quest marker texture: ", paths[i]);
+            continue;
+        }
+        textures_[i].setMetalSampler(ctx->sampler(MetalContext::Filter::Linear,
+                                                  MetalContext::Address::ClampToEdge));
+    }
+    LOG_INFO("QuestMarkerRenderer: initialized (Metal)");
+    return true;
+}
+
+void QuestMarkerRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                      size_t offset, const Camera& camera) {
+    if (markers_.empty() || !mtlPipeline_ || !encoder) return;
+    collectDraws(camera);
+    if (draws_.empty()) return;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    // Tested against the scene, never written, as the Vulkan pipeline has it.
+    encoder->setDepthStencilState(metal_->depthState(true, false));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBuffer(mtlQuad_, 0, kMetalVertexBufferIndex);
+    // The push block as Metal lays it out: the matrix's 16-byte alignment
+    // rounds it up to 80.
+    struct { glm::mat4 model; float alpha; float grayscale; float pad[2]; } push{};
+    for (const MarkerDraw& draw : draws_) {
+        const VkTexture& texture = textures_[draw.type];
+        if (!texture.metalTexture()) continue;
+        push.model = draw.model;
+        push.alpha = draw.alpha;
+        push.grayscale = draw.grayscale;
+        encoder->setVertexBytes(&push, sizeof(push), mtlVertPush_);
+        encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
+        encoder->setFragmentTexture(texture.metalTexture(), mtlFragTexture_);
+        encoder->setFragmentSamplerState(texture.metalSampler(), mtlFragSampler_);
+        encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(6));
+    }
+}
+#endif
 
 }} // namespace wowee::rendering

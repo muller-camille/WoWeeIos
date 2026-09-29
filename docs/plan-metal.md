@@ -36,7 +36,8 @@ glow sprites, whose vertices both backends write through the same functions - an
 visuals, which are M2 instances and only needed their system created. The sky's sun and moons, procedural stars,
 clouds and lens flare are ported too, through one SkySystem::renderImpl both backends draw with;
 in zones whose sky is a model, as Teldrassil's, the model supplies them and these stay unused, as
-on Vulkan.
+on Vulkan. The selection circle, the underwater and ghost tints (OverlaySystem, which records into
+the world pass's encoder while one is set) and the quest markers are ported as well.
 
 Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
 textures where the GPU has them, and checking the character list's preview and the equipment on
