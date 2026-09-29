@@ -1352,6 +1352,7 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         }
     } else if (key == "fxaa") {
         if (post) post->setFXAAEnabled(pendingFXAA);
+        if (renderer) renderer->setWorldFxaaEnabled(pendingFXAA);
     } else if (key == "normalmapping") {
         if (wmo) wmo->setNormalMappingEnabled(pendingNormalMapping);
         if (chars) chars->setNormalMappingEnabled(pendingNormalMapping);
@@ -1376,7 +1377,8 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         if (renderer) {
             renderer->setFSREnabled(pendingUpscalingMode == 1);
             renderer->setFSR2Enabled(pendingUpscalingMode == 2);
-            // Metal has no FSR: the same choice sets how small it draws.
+            // On Metal the same choice sets how small the world is drawn,
+            // for MetalFX - or FSR 1 where there is none - to bring back up.
             renderer->setWorldRenderScale(pendingUpscalingMode != 0
                                               ? fsrScaleForChoice(pendingFSRQuality) : 1.0f);
             // Multisampling is the player's own setting and survives the
@@ -1395,6 +1397,7 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         }
     } else if (key == "fsrsharpness") {
         if (post) post->setFSRSharpness(pendingFSRSharpness);
+        if (renderer) renderer->setWorldUpscaleSharpness(pendingFSRSharpness);
     } else if (key == "fogstrength") {
         if (renderer) {
             if (auto* lighting = renderer->getLightingManager()) {

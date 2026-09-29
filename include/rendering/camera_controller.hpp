@@ -257,6 +257,7 @@ public:
     void setHoverActive(bool active) { hoverActive_ = active; }
     void setMounted(bool m) { mounted_ = m; }
     void setIntoxication(float amount) { intoxication_ = std::clamp(amount, 0.0f, 1.0f); }
+    [[nodiscard]] float getIntoxication() const { return intoxication_; }
     void setMountHeightOffset(float offset) { mountHeightOffset_ = offset; }
     void setExternalFollow(bool enabled) { externalFollow_ = enabled; }
     void setExternalMoving(bool moving) { externalMoving_ = moving; }

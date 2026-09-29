@@ -34,7 +34,7 @@ namespace MTLFX { class SpatialScaler; }
 
 namespace wowee {
 namespace core { class Window; }
-namespace rendering { class VkContext; class MetalContext; }
+namespace rendering { class VkContext; class MetalContext; class MetalPostProcess; }
 namespace game { class World; class ZoneManager; class GameHandler; }
 namespace audio { class AudioCoordinator; }
 namespace pipeline { class AssetManager; }
@@ -447,6 +447,10 @@ public:
     /// The menu's water reflections, on by default. The Metal renderer skips
     /// its reflection pass when off; MoltenVK's always draws it.
     void setWaterReflectionEnabled(bool enabled) { waterReflectionEnabled_ = enabled; }
+    /// The menu's FXAA and upscaling sharpness, for the Metal renderer
+    /// likewise; on Vulkan PostProcessPipeline takes both.
+    void setWorldFxaaEnabled(bool enabled) { worldFxaaEnabled_ = enabled; }
+    void setWorldUpscaleSharpness(float sharpness) { worldUpscaleSharpness_ = sharpness; }
     void setFSR2Enabled(bool enabled);
 
     void setWaterRefractionEnabled(bool enabled);
@@ -512,12 +516,21 @@ private:
     /// mtlWorldColor_, and MetalFX's spatial scaler brings it up to
     /// mtlUpscaled_, which is copied to the drawable under the interface -
     /// what the MoltenVK build does with FSR 1 at its iOS default of 0.67.
+    /// Where the device has no MetalFX, FSR 1 itself draws it up onto the
+    /// drawable (mtlFsrUpscale_). With FXAA on, the world is drawn into
+    /// mtlWorldColor_ at any scale and smoothed on its way out: onto the
+    /// drawable, or into mtlAaColor_ ahead of the upscale.
     float mtlRenderScale_ = 1.0f;
     MTL::Texture* mtlWorldColor_ = nullptr;
+    MTL::Texture* mtlAaColor_ = nullptr;
     MTL::Texture* mtlUpscaled_ = nullptr;
     MTLFX::SpatialScaler* mtlScaler_ = nullptr;
+    bool mtlFsrUpscale_ = false;
+    int mtlMetalFxSupport_ = -1;  // unknown until asked, then 0 or 1
+    std::unique_ptr<MetalPostProcess> mtlPostProcess_;
     bool mtlRenderScaleFromEnv_ = false;  // WOWEE_RENDER_SCALE wins over the menu
     uint32_t mtlScalerOutW_ = 0, mtlScalerOutH_ = 0;
+    uint32_t mtlScalerInW_ = 0, mtlScalerInH_ = 0;  // the world's size when scaled
     /// SHADOW_MAP_SIZE square, depth only: a ring, one per MetalContext slot,
     /// as Vulkan has one per frame in flight. With one, the next frame's
     /// shadow pass waited for this frame's world to finish reading it, and
@@ -533,8 +546,9 @@ private:
     MTL::Texture* mtlReflColors_[3] = {};  // a ring, for the same reason
     MTL::Texture* mtlReflDepth_ = nullptr;  // memoryless: one is enough
     void renderReflectionPassMetal(size_t reflOffset);
-    /// Makes the scaler and its output for a screen this size; false when
-    /// MetalFX cannot, and the world is then drawn at full size.
+    /// Makes the scaler and its output for a screen this size - MetalFX's,
+    /// or FSR 1 where the device has no MetalFX; false when neither can, and
+    /// the world is then drawn at full size.
     bool ensureMetalScaler(uint32_t outW, uint32_t outH);
     uint32_t mtlShadowMapSize_ = 0;
     /// The casters into the shadow map, before the world pass samples it.
@@ -666,6 +680,8 @@ private:
     bool sunShaftsEnabled_ = true;
     float worldBrightness_ = 1.0f;  // setWorldBrightness
     bool waterReflectionEnabled_ = true;  // setWaterReflectionEnabled
+    bool worldFxaaEnabled_ = false;       // setWorldFxaaEnabled
+    float worldUpscaleSharpness_ = 1.6f;  // setWorldUpscaleSharpness, FSR 1's default
     /// renderWorld ran this frame. The shafts are built from the world's
     /// picture, and a login screen or a loading screen is not one.
     bool worldDrawnThisFrame_ = false;

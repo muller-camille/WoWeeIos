@@ -64,6 +64,7 @@
 #include <Metal/Metal.hpp>
 #include <MetalFX/MetalFX.hpp>
 #include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_post_process.hpp"
 #include "ui/ui_manager.hpp"
 #endif
 #include "core/logger.hpp"
@@ -1024,8 +1025,11 @@ void Renderer::shutdown() {
     if (waterRenderer) waterRenderer->setMetalScene(nullptr, nullptr);
     if (mtlSceneColor_) { mtlSceneColor_->release(); mtlSceneColor_ = nullptr; }
     if (mtlWorldColor_) { mtlWorldColor_->release(); mtlWorldColor_ = nullptr; }
+    if (mtlAaColor_) { mtlAaColor_->release(); mtlAaColor_ = nullptr; }
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
+    mtlFsrUpscale_ = false;
+    mtlPostProcess_.reset();
     if (mtlSceneDepth_) { mtlSceneDepth_->release(); mtlSceneDepth_ = nullptr; }
     if (waterRenderer) waterRenderer->setMetalReflection(nullptr);
     for (auto*& refl : mtlReflColors_) {
@@ -5087,6 +5091,14 @@ bool Renderer::initializeMetal() {
         overlaySystem_.reset();
     }
 
+    // FSR 1, for a device MetalFX does not run on, and FXAA.
+    mtlPostProcess_ = std::make_unique<MetalPostProcess>();
+    if (!mtlPostProcess_->initialize(metal_, MTL::PixelFormatBGRA8Unorm)) {
+        LOG_WARNING("Post-processing (Metal) initialization failed - no FXAA, and no "
+                    "upscaling where MetalFX is missing");
+        mtlPostProcess_.reset();
+    }
+
     // Rain, snow and storms; the zones' weather drives it from update().
     weather = std::make_unique<Weather>();
     if (!weather->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
@@ -5116,19 +5128,44 @@ bool Renderer::initializeMetal() {
 bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
     const uint32_t inW = std::max(1u, static_cast<uint32_t>(outW * mtlRenderScale_));
     const uint32_t inH = std::max(1u, static_cast<uint32_t>(outH * mtlRenderScale_));
-    if (mtlScaler_ && mtlScalerOutW_ == outW && mtlScalerOutH_ == outH) return true;
+    // The input's size as well as the output's: MetalFX's scaler is made for
+    // one input size, and the menu's render scale changes it.
+    if ((mtlScaler_ || mtlFsrUpscale_) && mtlScalerOutW_ == outW && mtlScalerOutH_ == outH &&
+        mtlScalerInW_ == inW && mtlScalerInH_ == inH) {
+        return true;
+    }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
-    mtlScalerOutW_ = mtlScalerOutH_ = 0;
+    mtlFsrUpscale_ = false;
+    mtlScalerOutW_ = mtlScalerOutH_ = mtlScalerInW_ = mtlScalerInH_ = 0;
 
     MTL::Device* device = metal_->getDevice();
-    if (!MTLFX::SpatialScalerDescriptor::supportsDevice(device)) {
-        static bool said = false;
-        if (!said) {
-            said = true;
-            LOG_WARNING("MetalFX spatial scaling is not supported here: drawing at full size");
+    if (mtlMetalFxSupport_ < 0) {
+        // WOWEE_METAL_FSR1=1 takes FSR 1 where MetalFX would run, so a device
+        // that has it can show what one without it draws.
+        mtlMetalFxSupport_ = MTLFX::SpatialScalerDescriptor::supportsDevice(device) &&
+                                     !core::envFlagEnabled("WOWEE_METAL_FSR1", false)
+                                 ? 1 : 0;
+    }
+    if (!mtlMetalFxSupport_) {
+        // FSR 1, as the MoltenVK build upscales everywhere: straight onto the
+        // drawable, with nothing of its own to make.
+        if (!mtlPostProcess_) {
+            static bool said = false;
+            if (!said) {
+                said = true;
+                LOG_WARNING("Neither MetalFX nor FSR 1 can upscale here: drawing at full size");
+            }
+            return false;
         }
-        return false;
+        mtlFsrUpscale_ = true;
+        mtlScalerOutW_ = outW;
+        mtlScalerOutH_ = outH;
+        mtlScalerInW_ = inW;
+        mtlScalerInH_ = inH;
+        LOG_WARNING("Metal: the world is drawn at ", inW, "x", inH, " and upscaled to ", outW,
+                    "x", outH, " by FSR 1 (no MetalFX on this device)");
+        return true;
     }
     auto* desc = MTLFX::SpatialScalerDescriptor::alloc()->init();
     desc->setInputWidth(inW);
@@ -5155,6 +5192,8 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
     }
     mtlScalerOutW_ = outW;
     mtlScalerOutH_ = outH;
+    mtlScalerInW_ = inW;
+    mtlScalerInH_ = inH;
     LOG_WARNING("Metal: the world is drawn at ", inW, "x", inH, " and upscaled to ", outW, "x",
                 outH, " by MetalFX");
     return true;
@@ -5392,27 +5431,37 @@ void Renderer::renderFrameMetal() {
         const uint32_t screenW = metal_->drawableWidth();
         const uint32_t screenH = metal_->drawableHeight();
         const bool scaled = mtlRenderScale_ < 0.999f && ensureMetalScaler(screenW, screenH);
-        const uint32_t w = scaled ? std::max(1u, static_cast<uint32_t>(screenW * mtlRenderScale_))
-                                  : screenW;
-        const uint32_t h = scaled ? std::max(1u, static_cast<uint32_t>(screenH * mtlRenderScale_))
-                                  : screenH;
+        const uint32_t w = scaled ? mtlScalerInW_ : screenW;
+        const uint32_t h = scaled ? mtlScalerInH_ : screenH;
+        // FXAA as the menu has it, or while the player is drunk, whose blur
+        // the same pass draws - as PostProcessPipeline::needsFXAAPass.
+        const float intoxication = cameraController ? cameraController->getIntoxication() : 0.0f;
+        const bool fxaa = mtlPostProcess_ && (worldFxaaEnabled_ || intoxication > 0.001f);
+        // Drawn to a texture of its own, rather than the drawable, for either.
+        const bool offscreen = scaled || fxaa;
         const bool splitForWater = waterRenderer && waterRenderer->hasSurfaces() &&
                                    !metalSkips("refraction");
         if (!mtlDepth_ || mtlDepthWidth_ != w || mtlDepthHeight_ != h ||
-            scaled != (mtlWorldColor_ != nullptr)) {
+            offscreen != (mtlWorldColor_ != nullptr) ||
+            (scaled && fxaa) != (mtlAaColor_ != nullptr)) {
             const auto make = [&](MTL::PixelFormat format, MTL::TextureUsage usage) {
                 auto* desc = MTL::TextureDescriptor::texture2DDescriptor(format, w, h, false);
                 desc->setUsage(usage);
                 desc->setStorageMode(MTL::StorageModePrivate);
                 return metal_->getDevice()->newTexture(desc);
             };
-            for (MTL::Texture** t : {&mtlDepth_, &mtlSceneColor_, &mtlSceneDepth_, &mtlWorldColor_}) {
+            for (MTL::Texture** t : {&mtlDepth_, &mtlSceneColor_, &mtlSceneDepth_, &mtlWorldColor_,
+                                     &mtlAaColor_}) {
                 if (*t) { (*t)->release(); *t = nullptr; }
             }
             mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget);
-            if (scaled) {
+            if (offscreen) {
                 mtlWorldColor_ = make(MTL::PixelFormatBGRA8Unorm,
                                       MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
+            }
+            if (scaled && fxaa) {
+                mtlAaColor_ = make(MTL::PixelFormatBGRA8Unorm,
+                                   MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
             }
             mtlSceneColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageShaderRead);
             mtlSceneDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageShaderRead);
@@ -5423,9 +5472,9 @@ void Renderer::renderFrameMetal() {
         MTL::RenderPassDescriptor* pass = metal_->renderPass();
         auto* color = pass->colorAttachments()->object(0);
         // The drawable, for the interface and the upscaled world; the world
-        // itself goes to its own texture when it is drawn scaled.
+        // itself goes to its own texture when it is drawn scaled or smoothed.
         MTL::Texture* drawableTexture = color->texture();
-        if (scaled && mtlWorldColor_) color->setTexture(mtlWorldColor_);
+        if (offscreen && mtlWorldColor_) color->setTexture(mtlWorldColor_);
         // No sky yet: the fog colour stands in for it, which is the colour the
         // distance fades to anyway.
         const glm::vec4& fog = currentFrameData.fogColor;
@@ -5572,19 +5621,32 @@ void Renderer::renderFrameMetal() {
         encoder->endEncoding();
 
         if (profile) metal_->splitCommandBuffer("water and after");
-        // Up to the screen's size, then onto the drawable the interface is
-        // drawn over.
-        if (scaled && mtlWorldColor_) {
-            mtlScaler_->setColorTexture(mtlWorldColor_);
-            mtlScaler_->setOutputTexture(mtlUpscaled_);
-            mtlScaler_->setInputContentWidth(w);
-            mtlScaler_->setInputContentHeight(h);
-            mtlScaler_->encodeToCommandBuffer(metal_->commandBuffer());
-            MTL::BlitCommandEncoder* blit = metal_->commandBuffer()->blitCommandEncoder();
-            blit->copyFromTexture(mtlUpscaled_, drawableTexture);
-            blit->endEncoding();
+        // Smoothed, up to the screen's size, then onto the drawable the
+        // interface is drawn over. FXAA first: MetalFX's spatial scaler wants
+        // its input anti-aliased, and FSR 1 sharpens whatever edges it gets.
+        if (offscreen && mtlWorldColor_) {
+            MTL::CommandBuffer* commandBuffer = metal_->commandBuffer();
+            MTL::Texture* world = mtlWorldColor_;
+            if (fxaa && (!scaled || mtlAaColor_)) {
+                MTL::Texture* smoothed = scaled ? mtlAaColor_ : drawableTexture;
+                mtlPostProcess_->encodeFxaa(commandBuffer, world, smoothed, w, h, intoxication);
+                world = smoothed;
+            }
+            if (scaled && mtlScaler_) {
+                mtlScaler_->setColorTexture(world);
+                mtlScaler_->setOutputTexture(mtlUpscaled_);
+                mtlScaler_->setInputContentWidth(w);
+                mtlScaler_->setInputContentHeight(h);
+                mtlScaler_->encodeToCommandBuffer(commandBuffer);
+                MTL::BlitCommandEncoder* blit = commandBuffer->blitCommandEncoder();
+                blit->copyFromTexture(mtlUpscaled_, drawableTexture);
+                blit->endEncoding();
+            } else if (scaled && mtlFsrUpscale_) {
+                mtlPostProcess_->encodeUpscale(commandBuffer, world, w, h, drawableTexture,
+                                               screenW, screenH, worldUpscaleSharpness_);
+            }
             color->setTexture(drawableTexture);
-            if (profile) metal_->splitCommandBuffer("upscale");
+            if (profile) metal_->splitCommandBuffer("post-process");
         }
 
         // The interface goes on top of what is there, with no depth.

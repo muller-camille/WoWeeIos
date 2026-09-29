@@ -1337,6 +1337,7 @@ if(IOS)
         list(APPEND WOWEE_PLATFORM_SOURCES
             src/rendering/metal/metal_context.cpp
             src/rendering/metal/metal_pipeline.cpp
+            src/rendering/metal/metal_post_process.cpp
             src/rendering/metal/metal_cpp_impl.cpp)
     endif()
     # The app icon, compiled by Xcode's actool into the bundle. Only Xcode
