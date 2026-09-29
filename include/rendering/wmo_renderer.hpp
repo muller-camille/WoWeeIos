@@ -21,6 +21,10 @@
 #include <future>
 #include <algorithm>
 
+#ifdef WOWEE_METAL
+namespace MTL { class Buffer; class RenderCommandEncoder; class RenderPipelineState; }
+#endif
+
 namespace wowee {
 namespace pipeline {
     struct WMOModel;
@@ -35,6 +39,7 @@ class Frustum;
 class M2Renderer;
 class RtScene;
 class VkContext;
+class MetalContext;
 class VkTexture;
 
 /**
@@ -222,6 +227,18 @@ public:
     /// neither alone is reliably the right place to start.
     void render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera,
                 const glm::vec3* viewerPos = nullptr);
+
+#ifdef WOWEE_METAL
+    /// The same renderer on Metal (docs/plan-metal.md, M3): the portal and
+    /// distance culling and the draw loop are shared with render(); each
+    /// batch's material goes with its draw. No shadows, wireframe or
+    /// occlusion yet. Formats are MTL::PixelFormat values.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* assets,
+                                       uint32_t colorFormat, uint32_t depthFormat,
+                                       uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
+                     const Camera& camera, const glm::vec3* viewerPos = nullptr);
+#endif
 
     /**
      * Initialize shadow pipeline (Phase 7)
@@ -490,6 +507,10 @@ private:
         VmaAllocation vertexAlloc = VK_NULL_HANDLE;
         ::VkBuffer indexBuffer = VK_NULL_HANDLE;
         VmaAllocation indexAlloc = VK_NULL_HANDLE;
+#ifdef WOWEE_METAL
+        MTL::Buffer* mtlVertexBuffer = nullptr;
+        MTL::Buffer* mtlIndexBuffer = nullptr;
+#endif
         uint32_t indexCount = 0;
         uint32_t vertexCount = 0;
         glm::vec3 boundingBoxMin;
@@ -513,6 +534,11 @@ private:
             VkTexture* normalHeightMap = nullptr;  // generated from diffuse, NOT owned
             float heightMapVariance = 0.0f; // variance of height map (low = flat texture)
             VkDescriptorSet materialSet = VK_NULL_HANDLE;  // set 1
+#ifdef WOWEE_METAL
+            /// The material as it would be in the UBO, handed to each draw.
+            WMOMaterialUBO mtlMaterial{};
+            bool mtlHasMaterial = false;
+#endif
             ::VkBuffer materialUBO = VK_NULL_HANDLE;
             VmaAllocation materialUBOAlloc = VK_NULL_HANDLE;
             bool hasTexture = false;
@@ -803,6 +829,26 @@ private:
 
     // Vulkan context
     VkContext* vkCtx_ = nullptr;
+    /// The pipelines the draw loop picks from, named for both backends.
+    enum class PipelineKind : uint8_t { Opaque, Transparent, Glass };
+    template <typename Sink>
+    void renderImpl(Sink& sink, const Camera& camera, const glm::vec3* viewerPos);
+    /// RGBA8 with mipmaps and a repeating sampler, on whichever backend this
+    /// renderer has. Null when the upload fails.
+    std::unique_ptr<VkTexture> uploadRGBA(const uint8_t* rgba, uint32_t width, uint32_t height);
+#ifdef WOWEE_METAL
+    void shutdownMetal();
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlPipelines_[3] = {};
+    /// Where wmo_vert and wmo_frag take each binding, from the shader manifest.
+    struct MetalSlots {
+        int vertPerFrame = -1, vertPush = -1;
+        int fragPerFrame = -1, fragMaterial = -1, fragTex = -1, fragTexSampler = -1;
+        int fragNormal = -1, fragNormalSampler = -1;
+        int fragShadow = -1, fragShadowSampler = -1, fragFog = -1, fragFogSampler = -1;
+        int fragRtA = -1, fragRtASampler = -1, fragRtB = -1, fragRtBSampler = -1;
+    } mtlSlots_;
+#endif
 
     // Asset manager for loading textures
     pipeline::AssetManager* assetManager = nullptr;

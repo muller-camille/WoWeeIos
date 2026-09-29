@@ -6,6 +6,11 @@
 #include "rendering/wmo_vertex.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/wmo_renderer.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include "rendering/rt_bvh.hpp"
 #include "rendering/rt_scene.hpp"
 #include "rendering/wmo_material_class.hpp"
@@ -321,6 +326,12 @@ bool WMORenderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayou
 
 void WMORenderer::shutdown() {
     core::Logger::getInstance().info("Shutting down WMO renderer...");
+#ifdef WOWEE_METAL
+    if (metal_) {
+        shutdownMetal();
+        return;
+    }
+#endif
 
     // Without a context there is nothing to free on the GPU and nothing to drain
     // - and nothing to call it on either, which is what this used to try.
@@ -489,7 +500,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
     // Batch all GPU uploads (textures, VBs, IBs) into a single command buffer
     // submission with one fence wait, instead of one per upload.
-    vkCtx_->beginUploadBatch();
+    if (vkCtx_) vkCtx_->beginUploadBatch();
 
     // Textures and materials are model-level and done once; a resumed call has
     // them already and goes straight to the remaining groups.
@@ -505,7 +516,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                     std::chrono::steady_clock::now() - texStart).count();
                 if (spent >= budgetMs) {
                     modelData.nextTextureIndex = i;
-                    vkCtx_->endUploadBatch();
+                    if (vkCtx_) vkCtx_->endUploadBatch();
                     return ModelLoadResult::InProgress;  // resume at this texture
                 }
             }
@@ -610,7 +621,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
                 // the building - the interior floors past a doorway in
                 // Stormwind, on a model big enough to break several times.
                 modelData.nextGroupIndex = gi;
-                vkCtx_->endUploadBatch();
+                if (vkCtx_) vkCtx_->endUploadBatch();
                 return ModelLoadResult::InProgress;
             }
         }
@@ -660,7 +671,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
     if (modelData.loadedGroups == 0) {
         core::Logger::getInstance().warning("No valid groups loaded for WMO ", id);
-        vkCtx_->endUploadBatch();
+        if (vkCtx_) vkCtx_->endUploadBatch();
         loadingModels_.erase(id);
         return ModelLoadResult::Failed;
     }
@@ -844,6 +855,32 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         for (auto& [key, mb] : batchMap) {
             if (mb.hasTexture) anyTextured = true;
 
+#ifdef WOWEE_METAL
+            // The material as the UBO would hold it, handed to each draw.
+            if (metal_) {
+                WMOMaterialUBO& matData = mb.mtlMaterial;
+                matData = WMOMaterialUBO{};
+                matData.hasTexture = mb.hasTexture ? 1 : 0;
+                matData.alphaTest = mb.alphaTest ? 1 : 0;
+                matData.unlit = mb.unlit ? 1 : 0;
+                matData.isInterior = isInterior ? 1 : 0;
+                matData.specularIntensity = 0.5f;
+                matData.isWindow = mb.isWindow ? (wmoOnlyMap_ ? 2 : 1) : 0;
+                matData.enableNormalMap = normalMappingEnabled_ ? 1 : 0;
+                matData.enablePOM = pomEnabled_ ? 1 : 0;
+                matData.pomScale = 0.012f;
+                matData.pomMaxSamples = pomSamplesFor(pomQuality_);
+                matData.heightMapVariance = mb.heightMapVariance;
+                matData.normalMapStrength = normalMapStrength_;
+                matData.isLava = mb.isLava ? 1 : 0;
+                matData.wmoAmbientR = modelData.wmoAmbientColor.r;
+                matData.wmoAmbientG = modelData.wmoAmbientColor.g;
+                matData.wmoAmbientB = modelData.wmoAmbientColor.b;
+                matData.emissive = static_cast<int32_t>(mb.emissiveLevel);
+                mb.mtlHasMaterial = true;
+            } else
+#endif
+            {
             // Create material UBO
             VmaAllocator allocator = vkCtx_->getAllocator();
             AllocatedBuffer matBuf = createBuffer(allocator, sizeof(WMOMaterialUBO),
@@ -931,6 +968,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
 
                 vkUpdateDescriptorSets(vkCtx_->getDevice(), 3, writes, 0, nullptr);
             }
+            }
 
             if (mb.isLava) {
                 for (const auto& draw : mb.draws) {
@@ -962,7 +1000,7 @@ WMORenderer::ModelLoadResult WMORenderer::loadModelIncremental(
         groupRes.allUntextured = !anyTextured && !groupRes.mergedBatches.empty();
     }
 
-    vkCtx_->endUploadBatch();
+    if (vkCtx_) vkCtx_->endUploadBatch();
 
     // Copy portal data for visibility culling
     modelData.portalVertices = model.portalVertices;
@@ -1373,6 +1411,14 @@ void WMORenderer::clearInstances() {
 
 void WMORenderer::clearAll() {
     clearInstances();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        for (auto& [id, model] : loadedModels) {
+            releaseRtModel(id);
+            for (auto& group : model.groups) destroyGroupGPU(group);
+        }
+    }
+#endif
 
     if (vkCtx_) {
         VkDevice device = vkCtx_->getDevice();
@@ -1618,6 +1664,18 @@ void WMORenderer::prepareRender() {
         for (auto& [modelId, model] : loadedModels) {
             for (auto& group : model.groups) {
                 for (auto& mb : group.mergedBatches) {
+#ifdef WOWEE_METAL
+                    if (mb.mtlHasMaterial) {
+                        WMOMaterialUBO& ubo = mb.mtlMaterial;
+                        ubo.enableNormalMap = normalMappingEnabled_ ? 1 : 0;
+                        ubo.enablePOM = pomEnabled_ ? 1 : 0;
+                        ubo.pomScale = 0.012f;
+                        ubo.pomMaxSamples = maxSamples;
+                        ubo.heightMapVariance = mb.heightMapVariance;
+                        ubo.normalMapStrength = normalMapStrength_;
+                        continue;
+                    }
+#endif
                     if (!mb.materialUBO) continue;
                     VmaAllocationInfo allocInfo{};
                     vmaGetAllocationInfo(vkCtx_->getAllocator(), mb.materialUBOAlloc, &allocInfo);
@@ -1636,9 +1694,9 @@ void WMORenderer::prepareRender() {
     }
 }
 
-void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera,
-                         const glm::vec3* viewerPos) {
-    if (!opaquePipeline_ || instances.empty()) {
+template <typename Sink>
+void WMORenderer::renderImpl(Sink& sink, const Camera& camera, const glm::vec3* viewerPos) {
+    if (!sink.ready() || instances.empty()) {
         lastDrawCalls = 0;
         return;
     }
@@ -1802,12 +1860,8 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
 
     // ── Phase 2: Vulkan draw ────────────────────────────────
     // Select pipeline based on wireframe mode
-    VkPipeline activePipeline = (wireframeMode && wireframePipeline_) ? wireframePipeline_ : opaquePipeline_;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePipeline);
-
-    // Bind per-frame descriptor set (set 0)
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-                             0, 1, &perFrameSet, 0, nullptr);
+    // The opaque pipeline (or its wireframe) and set 0.
+    sink.begin();
 
     // Track which pipeline is currently bound: 0=opaque, 1=transparent, 2=glass
     int currentPipelineKind = 0;
@@ -1824,8 +1878,7 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
         WMOPushConstants push{};
         push.model = instance.modelMatrix;
         push.cloth = glm::vec4(0.0f);
-        vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                            0, sizeof(WMOPushConstants), &push);
+        sink.pushConstants(push);
         glm::vec4 pushedCloth(0.0f);
 
         // LOD shell groups render only beyond this distance squared (190 units)
@@ -1847,40 +1900,35 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
             }
 
             // Skip groups with invalid GPU resources
-            if (group.vertexBuffer == VK_NULL_HANDLE || group.indexBuffer == VK_NULL_HANDLE) continue;
+            if (!sink.hasGeometry(group)) continue;
 
             // Bind vertex + index buffers
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &group.vertexBuffer, &offset);
-            vkCmdBindIndexBuffer(cmd, group.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+            sink.bindGeometry(group);
 
             // Render each merged batch
             for (const auto& mb : group.mergedBatches) {
-                if (!mb.materialSet) continue;
+                if (!sink.hasMaterial(mb)) continue;
 
                 // Determine which pipeline this batch needs
                 int neededPipeline = 0; // opaque
-                if (mb.isWindow && glassPipeline_) {
+                if (mb.isWindow && sink.hasPipeline(PipelineKind::Glass)) {
                     neededPipeline = 2; // glass (alpha blend + depth write)
-                } else if (mb.isTransparent && transparentPipeline_) {
+                } else if (mb.isTransparent && sink.hasPipeline(PipelineKind::Transparent)) {
                     neededPipeline = 1; // transparent (alpha blend, no depth write)
                 }
 
                 // Switch pipeline if needed (descriptor sets and push constants
                 // are preserved across compatible pipeline layout switches)
                 if (neededPipeline != currentPipelineKind) {
-                    VkPipeline targetPipeline = activePipeline;
-                    if (neededPipeline == 1) targetPipeline = transparentPipeline_;
-                    else if (neededPipeline == 2) targetPipeline = glassPipeline_;
-                    if (targetPipeline == VK_NULL_HANDLE) continue;
-
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
+                    const PipelineKind kind = neededPipeline == 1 ? PipelineKind::Transparent
+                                            : neededPipeline == 2 ? PipelineKind::Glass
+                                                                  : PipelineKind::Opaque;
+                    if (!sink.bindPipeline(kind)) continue;
                     currentPipelineKind = neededPipeline;
                 }
 
                 // Bind material descriptor set (set 1)
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_,
-                                         1, 1, &mb.materialSet, 0, nullptr);
+                sink.bindMaterial(mb);
 
                 // Where this batch's cloth hangs, when it is cloth. Written
                 // only when it changes: most batches are walls and share the
@@ -1889,15 +1937,13 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
                                           mb.clothCentreX, mb.clothCentreY);
                 if (wantCloth != pushedCloth) {
                     pushedCloth = wantCloth;
-                    vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
-                                       offsetof(WMOPushConstants, cloth),
-                                       sizeof(glm::vec4), &pushedCloth);
+                    sink.pushCloth(pushedCloth);
                 }
 
                 // Issue draw calls for each range in this merged batch
                 for (const auto& dr : mb.draws) {
                     if (dr.indexCount == 0) continue;
-                    vkCmdDrawIndexed(cmd, dr.indexCount, 1, dr.firstIndex, 0, 0);
+                    sink.draw(dr.indexCount, dr.firstIndex);
                     lastDrawCalls++;
                 }
             }
@@ -1906,6 +1952,67 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
         lastPortalCulledGroups += dl.portalCulled;
         lastDistanceCulledGroups += dl.distanceCulled;
     }
+}
+
+void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera,
+                         const glm::vec3* viewerPos) {
+    // The Vulkan calls renderImpl makes.
+    struct VulkanSink {
+        WMORenderer& r;
+        VkCommandBuffer cmd;
+        VkDescriptorSet perFrameSet;
+
+        bool ready() const { return r.opaquePipeline_ != VK_NULL_HANDLE; }
+        VkPipeline pipelineFor(PipelineKind kind) const {
+            switch (kind) {
+                case PipelineKind::Transparent: return r.transparentPipeline_;
+                case PipelineKind::Glass: return r.glassPipeline_;
+                case PipelineKind::Opaque: break;
+            }
+            return (r.wireframeMode && r.wireframePipeline_) ? r.wireframePipeline_
+                                                             : r.opaquePipeline_;
+        }
+        void begin() {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineFor(PipelineKind::Opaque));
+            // Bind per-frame descriptor set (set 0)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipelineLayout_,
+                                    0, 1, &perFrameSet, 0, nullptr);
+        }
+        bool hasPipeline(PipelineKind kind) const { return pipelineFor(kind) != VK_NULL_HANDLE; }
+        bool bindPipeline(PipelineKind kind) {
+            VkPipeline target = pipelineFor(kind);
+            if (target == VK_NULL_HANDLE) return false;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, target);
+            return true;
+        }
+        void pushConstants(const WMOPushConstants& push) {
+            vkCmdPushConstants(cmd, r.pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
+                               0, sizeof(WMOPushConstants), &push);
+        }
+        void pushCloth(const glm::vec4& cloth) {
+            vkCmdPushConstants(cmd, r.pipelineLayout_, VK_SHADER_STAGE_VERTEX_BIT,
+                               offsetof(WMOPushConstants, cloth), sizeof(glm::vec4), &cloth);
+        }
+        bool hasGeometry(const GroupResources& group) const {
+            return group.vertexBuffer != VK_NULL_HANDLE && group.indexBuffer != VK_NULL_HANDLE;
+        }
+        void bindGeometry(const GroupResources& group) {
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &group.vertexBuffer, &offset);
+            vkCmdBindIndexBuffer(cmd, group.indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+        }
+        bool hasMaterial(const GroupResources::MergedBatch& mb) const { return mb.materialSet != VK_NULL_HANDLE; }
+        void bindMaterial(const GroupResources::MergedBatch& mb) {
+            // Bind material descriptor set (set 1)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipelineLayout_,
+                                    1, 1, &mb.materialSet, 0, nullptr);
+        }
+        void draw(uint32_t indexCount, uint32_t firstIndex) {
+            vkCmdDrawIndexed(cmd, indexCount, 1, firstIndex, 0, 0);
+        }
+    };
+    VulkanSink sink{*this, cmd, perFrameSet};
+    renderImpl(sink, camera, viewerPos);
 }
 
 bool WMORenderer::initializeShadow(VkRenderPass shadowRenderPass) {
@@ -2123,6 +2230,16 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
         }
     }
 
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Shared and written once: the GPU reads the CPU's memory directly.
+        resources.mtlVertexBuffer = metal_->newBuffer(vertices.data(),
+                                                      vertices.size() * sizeof(WMOVertex));
+        resources.mtlIndexBuffer = metal_->newBuffer(group.indices.data(),
+                                                     group.indices.size() * sizeof(uint16_t));
+    } else
+#endif
+    {
     // Upload vertex buffer to GPU
     AllocatedBuffer vertBuf = uploadBuffer(*vkCtx_, vertices.data(),
         vertices.size() * sizeof(WMOVertex),
@@ -2136,6 +2253,7 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     resources.indexBuffer = idxBuf.buffer;
     resources.indexAlloc = idxBuf.allocation;
+    }
 
     // Store collision geometry for floor raycasting.
     // Use MOPY per-triangle flags to exclude detail/decorative geometry (flag 0x04)
@@ -2228,6 +2346,14 @@ bool WMORenderer::createGroupResources(const pipeline::WMOGroup& group, GroupRes
 // renderGroup removed - draw calls are inlined in render()
 
 void WMORenderer::destroyGroupGPU(GroupResources& group, bool defer) {
+#ifdef WOWEE_METAL
+    if (metal_) {
+        // Command buffers still in flight retain the buffers they draw from.
+        if (group.mtlVertexBuffer) { group.mtlVertexBuffer->release(); group.mtlVertexBuffer = nullptr; }
+        if (group.mtlIndexBuffer) { group.mtlIndexBuffer->release(); group.mtlIndexBuffer = nullptr; }
+        return;
+    }
+#endif
     if (!vkCtx_) return;
     VkDevice device = vkCtx_->getDevice();
     VmaAllocator allocator = vkCtx_->getAllocator();
@@ -2554,24 +2680,20 @@ pipeline::BLPImage WMORenderer::generateNormalHeightMapPixels(
 
 std::unique_ptr<VkTexture> WMORenderer::generateNormalHeightMap(
         const uint8_t* pixels, uint32_t width, uint32_t height, float& outVariance) {
-    if (!vkCtx_) return nullptr;
     auto normalPixels = generateNormalHeightMapPixels(pixels, width, height, outVariance);
     if (!normalPixels.isValid()) return nullptr;
 
     // Upload the CPU-generated pixels to the GPU with mipmaps.
-    auto tex = std::make_unique<VkTexture>();
-    if (!tex->upload(*vkCtx_, normalPixels.data.data(), width, height,
-                     VK_FORMAT_R8G8B8A8_UNORM, true)) {
-        return nullptr;
-    }
-    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                        VK_SAMPLER_ADDRESS_MODE_REPEAT);
-    return tex;
+    return uploadRGBA(normalPixels.data.data(), width, height);
 }
 
 VkTexture* WMORenderer::loadTexture(const std::string& path) {
     constexpr uint64_t kFailedTextureRetryLookups = 512;
-    if (!assetManager || !vkCtx_) {
+    if (!assetManager || (!vkCtx_
+#ifdef WOWEE_METAL
+                          && !metal_
+#endif
+                          )) {
         return whiteTexture_.get();
     }
 
@@ -2720,12 +2842,24 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
 
     // Create Vulkan texture
     auto texture = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!texture->uploadBLPMetal(*metal_, blp)) {
+            core::Logger::getInstance().warning("WMO: Failed to upload texture to GPU: ", path);
+            return whiteTexture_.get();
+        }
+        texture->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                 MetalContext::Address::Repeat));
+    } else
+#endif
+    {
     if (!texture->uploadBLP(*vkCtx_, blp)) {
         core::Logger::getInstance().warning("WMO: Failed to upload texture to GPU: ", path);
         return whiteTexture_.get();
     }
     texture->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
                             VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    }
 
     // Prefer normal/height pixels generated by terrain workers. This preserves
     // advanced materials without running the Sobel/blur pass on the render
@@ -2737,14 +2871,13 @@ VkTexture* WMORenderer::loadTexture(const std::string& path) {
             auto normalIt = predecodedNormalMapCache_->find(resolvedKey);
             if (normalIt != predecodedNormalMapCache_->end()) {
                 auto& normalPixels = normalIt->second;
-                auto uploaded = std::make_unique<VkTexture>();
-                if (normalPixels.isValid() &&
-                    uploaded->upload(*vkCtx_, normalPixels.data.data(),
-                                     static_cast<uint32_t>(normalPixels.width),
-                                     static_cast<uint32_t>(normalPixels.height),
-                                     VK_FORMAT_R8G8B8A8_UNORM, true)) {
-                    uploaded->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
-                                            VK_SAMPLER_ADDRESS_MODE_REPEAT);
+                std::unique_ptr<VkTexture> uploaded;
+                if (normalPixels.isValid()) {
+                    uploaded = uploadRGBA(normalPixels.data.data(),
+                                          static_cast<uint32_t>(normalPixels.width),
+                                          static_cast<uint32_t>(normalPixels.height));
+                }
+                if (uploaded) {
                     nhMap = std::move(uploaded);
                     if (predecodedNormalMapVariances_) {
                         auto varianceIt = predecodedNormalMapVariances_->find(resolvedKey);
@@ -4401,6 +4534,224 @@ void WMORenderer::syncRtScene() {
         }
     }
 }
+
+std::unique_ptr<VkTexture> WMORenderer::uploadRGBA(const uint8_t* rgba, uint32_t width,
+                                                   uint32_t height) {
+    auto tex = std::make_unique<VkTexture>();
+#ifdef WOWEE_METAL
+    if (metal_) {
+        if (!tex->uploadMetal(*metal_, rgba, width, height, true)) return nullptr;
+        tex->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                             MetalContext::Address::Repeat));
+        return tex;
+    }
+#endif
+    if (!vkCtx_) return nullptr;
+    if (!tex->upload(*vkCtx_, rgba, width, height, VK_FORMAT_R8G8B8A8_UNORM, true)) {
+        return nullptr;
+    }
+    tex->createSampler(vkCtx_->getDevice(), VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+                       VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    return tex;
+}
+
+#ifdef WOWEE_METAL
+bool WMORenderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* assets,
+                                  uint32_t colorFormat, uint32_t depthFormat,
+                                  uint32_t sampleCount) {
+    if (initialized_) { assetManager = assets; return true; }
+    if (!ctx) return false;
+    core::Logger::getInstance().info("Initializing WMO renderer (Metal)...");
+    metal_ = ctx;
+    assetManager = assets;
+
+    const unsigned hc = std::thread::hardware_concurrency();
+    const size_t availableCores = (hc > 1u) ? static_cast<size_t>(hc - 1u) : 1ull;
+    const size_t defaultCullThreads = std::max<size_t>(1, availableCores / 4);
+    numCullThreads_ = static_cast<uint32_t>(std::max<size_t>(
+        1, envSizeOrDefault("WOWEE_WMO_CULL_THREADS", defaultCullThreads)));
+
+    const MetalBindings vert("wmo_vert");
+    const MetalBindings frag("wmo_frag");
+    mtlSlots_.vertPerFrame = vert.buffer(0, 0);
+    mtlSlots_.vertPush = vert.pushConstants();
+    mtlSlots_.fragPerFrame = frag.buffer(0, 0);
+    mtlSlots_.fragMaterial = frag.buffer(1, 1);
+    mtlSlots_.fragTex = frag.texture(1, 0);
+    mtlSlots_.fragTexSampler = frag.sampler(1, 0);
+    mtlSlots_.fragNormal = frag.texture(1, 2);
+    mtlSlots_.fragNormalSampler = frag.sampler(1, 2);
+    mtlSlots_.fragShadow = frag.texture(0, 1);
+    mtlSlots_.fragShadowSampler = frag.sampler(0, 1);
+    mtlSlots_.fragFog = frag.texture(0, 2);
+    mtlSlots_.fragFogSampler = frag.sampler(0, 2);
+    mtlSlots_.fragRtA = frag.texture(0, 3);
+    mtlSlots_.fragRtASampler = frag.sampler(0, 3);
+    mtlSlots_.fragRtB = frag.texture(0, 4);
+    mtlSlots_.fragRtBSampler = frag.sampler(0, 4);
+    if (!vert.valid() || !frag.valid()) {
+        core::Logger::getInstance().error("WMO (Metal): the manifest does not match the WMO shaders");
+        metal_ = nullptr;
+        return false;
+    }
+
+    // WMOVertex, from the table the Vulkan pipelines are built from too.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    for (const auto& a : kWmoVertexAttributes) {
+        auto* attr = vd->attributes()->object(a.location);
+        attr->setFormat(a.componentCount == 2 ? MTL::VertexFormatFloat2
+                        : a.componentCount == 3 ? MTL::VertexFormatFloat3
+                                                : MTL::VertexFormatFloat4);
+        attr->setOffset(a.offset);
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(WMOVertex));
+
+    // Opaque, transparent and glass, as buildMainPassPipelines makes them;
+    // their depth writes are set with each (see renderMetal).
+    struct Spec { PipelineKind kind; MetalBlend blend; const char* label; };
+    const Spec specs[] = {
+        {PipelineKind::Opaque, MetalBlend::None, "wmo opaque"},
+        {PipelineKind::Transparent, MetalBlend::Alpha, "wmo transparent"},
+        {PipelineKind::Glass, MetalBlend::Alpha, "wmo glass"},
+    };
+    bool built = true;
+    for (const Spec& spec : specs) {
+        MetalPipelineDesc desc;
+        desc.vertexFunction = "wmo_vert";
+        desc.fragmentFunction = "wmo_frag";
+        desc.vertexDescriptor = vd;
+        desc.colorFormat = colorFormat;
+        desc.depthFormat = depthFormat;
+        desc.sampleCount = sampleCount;
+        desc.blend = spec.blend;
+        desc.label = spec.label;
+        auto*& slot = mtlPipelines_[static_cast<size_t>(spec.kind)];
+        slot = buildMetalPipeline(*metal_, desc);
+        built = built && slot != nullptr;
+    }
+    vd->release();
+
+    const uint8_t whitePixel[4] = {255, 255, 255, 255};
+    whiteTexture_ = uploadRGBA(whitePixel, 1, 1);
+    const uint8_t flatNormalPixel[4] = {128, 128, 255, 128};
+    flatNormalTexture_ = uploadRGBA(flatNormalPixel, 1, 1);
+    if (!built || !whiteTexture_ || !flatNormalTexture_) {
+        core::Logger::getInstance().error("WMO (Metal): pipelines or fallback textures failed");
+        shutdownMetal();
+        return false;
+    }
+
+    textureCacheBudgetBytes_ =
+        envSizeMBOrDefault("WOWEE_WMO_TEX_CACHE_MB", kTextureCacheDefaultMB) * 1024ull * 1024ull;
+    modelCacheLimit_ = envSizeMBOrDefault("WOWEE_WMO_MODEL_LIMIT", 4000);
+    core::Logger::getInstance().info("WMO renderer initialized (Metal)");
+    initialized_ = true;
+    return true;
+}
+
+void WMORenderer::shutdownMetal() {
+    clearAll();
+    loadedModels.clear();
+    textureCache.clear();
+    whiteTexture_.reset();
+    flatNormalTexture_.reset();
+    for (auto*& pipeline : mtlPipelines_) {
+        if (pipeline) { pipeline->release(); pipeline = nullptr; }
+    }
+    metal_ = nullptr;
+    initialized_ = false;
+}
+
+void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                              size_t offset, const Camera& camera, const glm::vec3* viewerPos) {
+    if (!metal_ || !encoder) return;
+
+    // The Metal calls renderImpl makes.
+    struct MetalSink {
+        WMORenderer& r;
+        MTL::RenderCommandEncoder* encoder;
+        MTL::Buffer* perFrame;
+        size_t perFrameOffset;
+        MTL::Buffer* indexBuffer = nullptr;
+        WMOPushConstants push{};
+
+        bool ready() const { return r.mtlPipelines_[0] != nullptr; }
+        bool hasPipeline(PipelineKind kind) const {
+            return r.mtlPipelines_[static_cast<size_t>(kind)] != nullptr;
+        }
+        bool bindPipeline(PipelineKind kind) {
+            MTL::RenderPipelineState* state = r.mtlPipelines_[static_cast<size_t>(kind)];
+            if (!state) return false;
+            encoder->setRenderPipelineState(state);
+            // Transparent is the one that does not write depth.
+            encoder->setDepthStencilState(r.metal_->depthState(
+                true, kind != PipelineKind::Transparent, /*lessEqual=*/true));
+            return true;
+        }
+        void begin() {
+            const MetalSlots& s = r.mtlSlots_;
+            MetalContext& m = *r.metal_;
+            bindPipeline(PipelineKind::Opaque);
+            encoder->setCullMode(MTL::CullModeNone);
+            encoder->setVertexBuffer(perFrame, perFrameOffset, s.vertPerFrame);
+            encoder->setFragmentBuffer(perFrame, perFrameOffset, s.fragPerFrame);
+            MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
+                                                       MetalContext::Address::ClampToEdge);
+            // Stand-ins for the shadow map, the fog volume and the ray traced light.
+            encoder->setFragmentTexture(m.neutralDepthTexture(), s.fragShadow);
+            encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
+            encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+            encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
+            encoder->setFragmentTexture(m.whiteTexture(), s.fragRtA);
+            encoder->setFragmentSamplerState(clampLinear, s.fragRtASampler);
+            encoder->setFragmentTexture(m.whiteTexture(), s.fragRtB);
+            encoder->setFragmentSamplerState(clampLinear, s.fragRtBSampler);
+        }
+        // Metal has no partial update of the push constants: the whole block
+        // goes each time either half changes.
+        void pushConstants(const WMOPushConstants& p) {
+            push = p;
+            encoder->setVertexBytes(&push, sizeof(push), r.mtlSlots_.vertPush);
+        }
+        void pushCloth(const glm::vec4& cloth) {
+            push.cloth = cloth;
+            encoder->setVertexBytes(&push, sizeof(push), r.mtlSlots_.vertPush);
+        }
+        bool hasGeometry(const GroupResources& group) const {
+            return group.mtlVertexBuffer && group.mtlIndexBuffer;
+        }
+        void bindGeometry(const GroupResources& group) {
+            encoder->setVertexBuffer(group.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
+            indexBuffer = group.mtlIndexBuffer;
+        }
+        bool hasMaterial(const GroupResources::MergedBatch& mb) const { return mb.mtlHasMaterial; }
+        // The texture and normal map with the same fallbacks the Vulkan
+        // descriptor set is written with, and the material as bytes.
+        void bindMaterial(const GroupResources::MergedBatch& mb) {
+            const auto pick = [](VkTexture* wanted, VkTexture* fallback) {
+                return (wanted && wanted->isValid()) ? wanted : fallback;
+            };
+            VkTexture* tex = pick(mb.texture, r.whiteTexture_.get());
+            VkTexture* normal = pick(mb.normalHeightMap, r.flatNormalTexture_.get());
+            const MetalSlots& s = r.mtlSlots_;
+            encoder->setFragmentTexture(tex->metalTexture(), s.fragTex);
+            encoder->setFragmentSamplerState(tex->metalSampler(), s.fragTexSampler);
+            encoder->setFragmentTexture(normal->metalTexture(), s.fragNormal);
+            encoder->setFragmentSamplerState(normal->metalSampler(), s.fragNormalSampler);
+            encoder->setFragmentBytes(&mb.mtlMaterial, sizeof(WMOMaterialUBO), s.fragMaterial);
+        }
+        void draw(uint32_t indexCount, uint32_t firstIndex) {
+            if (!indexBuffer) return;
+            encoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, indexCount,
+                                           MTL::IndexTypeUInt16, indexBuffer,
+                                           static_cast<NS::UInteger>(firstIndex) * sizeof(uint16_t));
+        }
+    };
+    MetalSink sink{*this, encoder, perFrame, offset};
+    renderImpl(sink, camera, viewerPos);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

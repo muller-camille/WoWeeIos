@@ -3709,6 +3709,16 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             skyboxModelRenderer_.reset();
         }
     }
+    if (metal_ && !wmoRenderer) {
+        // The buildings, and with them the floors, walls and portals the
+        // camera and the character collide with.
+        wmoRenderer = std::make_unique<WMORenderer>();
+        if (!wmoRenderer->initializeMetal(metal_, assetManager, MTL::PixelFormatBGRA8Unorm,
+                                          MTL::PixelFormatDepth32Float, 1)) {
+            LOG_ERROR("WMORenderer (Metal) initialization failed");
+            wmoRenderer.reset();
+        }
+    }
     if (metal_ && !m2Renderer) {
         // The doodads, and with them the collision the camera and the
         // character stand on beside the terrain's.
@@ -5048,6 +5058,10 @@ void Renderer::renderFrameMetal() {
 
         if (terrainRenderer) {
             terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
+        if (wmoRenderer) {
+            wmoRenderer->prepareRender();
+            wmoRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, &characterPosition);
         }
         if (m2Renderer) {
             m2Renderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
