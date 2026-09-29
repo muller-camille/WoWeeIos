@@ -128,7 +128,16 @@ MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx, const MetalPipel
 
     auto* color = pd->colorAttachments()->object(0);
     color->setPixelFormat(static_cast<MTL::PixelFormat>(desc.colorFormat));
-    if (desc.blend != MetalBlend::None) {
+    if (desc.blend == MetalBlend::Multiply) {
+        // result = src * dst + dst: pushing (scale - 1) scales what is there.
+        color->setBlendingEnabled(true);
+        color->setRgbBlendOperation(MTL::BlendOperationAdd);
+        color->setAlphaBlendOperation(MTL::BlendOperationAdd);
+        color->setSourceRGBBlendFactor(MTL::BlendFactorDestinationColor);
+        color->setDestinationRGBBlendFactor(MTL::BlendFactorOne);
+        color->setSourceAlphaBlendFactor(MTL::BlendFactorZero);
+        color->setDestinationAlphaBlendFactor(MTL::BlendFactorOne);
+    } else if (desc.blend != MetalBlend::None) {
         color->setBlendingEnabled(true);
         color->setRgbBlendOperation(MTL::BlendOperationAdd);
         color->setAlphaBlendOperation(MTL::BlendOperationAdd);

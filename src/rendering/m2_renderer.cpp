@@ -2870,7 +2870,10 @@ bool M2Renderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* asse
         desc.depthFormat = depthFormat;
         desc.sampleCount = sampleCount;
         desc.blend = spec.blend;
-        desc.alphaToCoverage = spec.alphaToCoverage && sampleCount > 1;
+        // At one sample too, as the Vulkan pipelines have it: coverage from
+        // alpha is then the cutout's threshold, and without it a leaf card's
+        // clear texels were drawn - solid black canopies.
+        desc.alphaToCoverage = spec.alphaToCoverage;
         desc.label = spec.label;
         auto*& slot = metalPipelines_[static_cast<size_t>(spec.kind)];
         slot = buildMetalPipeline(*metal_, desc);

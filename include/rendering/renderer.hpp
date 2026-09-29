@@ -437,6 +437,16 @@ public:
     // Post-process pipeline API - delegates to PostProcessPipeline (§4.3)
     PostProcessPipeline* getPostProcessPipeline() const;
     void setFSREnabled(bool enabled);
+    /// The graphics menu's render scale for the Metal renderer, which has no
+    /// post-process pipeline to hand it to: 1 draws the world at the screen's
+    /// size, below 1 draws it smaller and upscales with MetalFX where the
+    /// device has it. Nothing on Vulkan, where FSR takes the same choice.
+    void setWorldRenderScale(float scale);
+    /// The menu's brightness, 1 neutral, for the Metal renderer likewise.
+    void setWorldBrightness(float brightness) { worldBrightness_ = brightness; }
+    /// The menu's water reflections, on by default. The Metal renderer skips
+    /// its reflection pass when off; MoltenVK's always draws it.
+    void setWaterReflectionEnabled(bool enabled) { waterReflectionEnabled_ = enabled; }
     void setFSR2Enabled(bool enabled);
 
     void setWaterRefractionEnabled(bool enabled);
@@ -506,8 +516,13 @@ private:
     MTL::Texture* mtlWorldColor_ = nullptr;
     MTL::Texture* mtlUpscaled_ = nullptr;
     MTLFX::SpatialScaler* mtlScaler_ = nullptr;
+    bool mtlRenderScaleFromEnv_ = false;  // WOWEE_RENDER_SCALE wins over the menu
     uint32_t mtlScalerOutW_ = 0, mtlScalerOutH_ = 0;
-    MTL::Texture* mtlShadowMap_ = nullptr;  // SHADOW_MAP_SIZE square, depth only
+    /// SHADOW_MAP_SIZE square, depth only: a ring, one per MetalContext slot,
+    /// as Vulkan has one per frame in flight. With one, the next frame's
+    /// shadow pass waited for this frame's world to finish reading it, and
+    /// the GPU stopped overlapping frames - 27 ms a frame on an A14.
+    MTL::Texture* mtlShadowMaps_[3] = {};
     /// The world as drawn before the water, copied each frame there is water:
     /// what its refraction and shoreline fade read.
     MTL::Texture* mtlSceneColor_ = nullptr;
@@ -515,8 +530,8 @@ private:
     /// The water's reflection: the sky, terrain and buildings seen from the
     /// camera mirrored in the nearest water, as renderReflectionPass draws
     /// them on Vulkan. Its per-frame data is the second half of mtlFrameData_.
-    MTL::Texture* mtlReflColor_ = nullptr;
-    MTL::Texture* mtlReflDepth_ = nullptr;
+    MTL::Texture* mtlReflColors_[3] = {};  // a ring, for the same reason
+    MTL::Texture* mtlReflDepth_ = nullptr;  // memoryless: one is enough
     void renderReflectionPassMetal(size_t reflOffset);
     /// Makes the scaler and its output for a screen this size; false when
     /// MetalFX cannot, and the world is then drawn at full size.
@@ -649,6 +664,8 @@ private:
     // endFrame and added in the overlay pass ahead of the interface.
     std::unique_ptr<SunShafts> sunShafts_;
     bool sunShaftsEnabled_ = true;
+    float worldBrightness_ = 1.0f;  // setWorldBrightness
+    bool waterReflectionEnabled_ = true;  // setWaterReflectionEnabled
     /// renderWorld ran this frame. The shafts are built from the world's
     /// picture, and a login screen or a loading screen is not one.
     bool worldDrawnThisFrame_ = false;

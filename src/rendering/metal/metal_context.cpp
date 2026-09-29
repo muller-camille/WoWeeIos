@@ -1,6 +1,9 @@
 #include "rendering/metal/metal_context.hpp"
 
 #include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
@@ -191,14 +194,8 @@ bool MetalContext::beginFrame() {
 
     ++frameNumber_;
     commandBuffer_ = queue_->commandBuffer();
-    dispatch_semaphore_t slots = frameSlots_;
-    std::atomic<double>* gpuMs = &lastGpuMs_;
-    commandBuffer_->addCompletedHandler([slots, gpuMs](MTL::CommandBuffer* cb) {
-        // How long the GPU spent on the frame, for WOWEE_FRAME_PROFILE.
-        gpuMs->store((cb->GPUEndTime() - cb->GPUStartTime()) * 1000.0,
-                     std::memory_order_relaxed);
-        dispatch_semaphore_signal(slots);
-    });
+    frameGpuStart_ = 0.0;
+    gpuSegmentCount_ = 0;
 
     renderPass_ = MTL::RenderPassDescriptor::renderPassDescriptor();
     auto* color = renderPass_->colorAttachments()->object(0);
@@ -207,6 +204,58 @@ bool MetalContext::beginFrame() {
     color->setClearColor(MTL::ClearColor::Make(0.0, 0.0, 0.0, 1.0));
     color->setStoreAction(MTL::StoreActionStore);
     return true;
+}
+
+void MetalContext::endGpuSegment(const char* name) {
+    if (!commandBuffer_ || gpuSegmentCount_ >= kMaxGpuSegments) return;
+    const int index = gpuSegmentCount_++;
+    GpuSegments* segments = &gpuSegments_;
+    std::atomic<double>* frameStart = &frameGpuStartShared_;
+    const bool first = index == 0;
+    // The frame's last: "interface", which endFrame closes with.
+    const bool last = std::strcmp(name, "interface") == 0;
+    commandBuffer_->addCompletedHandler([segments, index, name, frameStart, first,
+                                         last](MTL::CommandBuffer* cb) {
+        std::lock_guard<std::mutex> lock(segments->mutex);
+        segments->names[index] = name;
+        segments->end[index] = cb->GPUEndTime();
+        segments->count = std::max(segments->count, index + 1);
+        if (first) {
+            segments->start = cb->GPUStartTime();
+            frameStart->store(cb->GPUStartTime(), std::memory_order_relaxed);
+        }
+        // The GPU overlaps consecutive command buffers, so each one's own
+        // start-to-end says little. What each pass adds is how much later it
+        // finished than the one before it.
+        if (last) {
+            double previous = segments->start;
+            for (int i = 0; i <= index; ++i) {
+                segments->ms[i] += std::max(0.0, segments->end[i] - previous) * 1000.0;
+                previous = std::max(previous, segments->end[i]);
+            }
+        }
+    });
+}
+
+void MetalContext::splitCommandBuffer(const char* segmentName) {
+    if (!commandBuffer_) return;
+    endGpuSegment(segmentName);
+    commandBuffer_->commit();
+    commandBuffer_ = queue_->commandBuffer();
+}
+
+std::string MetalContext::takeGpuSegmentReport(int frames) {
+    std::lock_guard<std::mutex> lock(gpuSegments_.mutex);
+    std::string out;
+    for (int i = 0; i < gpuSegments_.count; ++i) {
+        if (!out.empty()) out += ", ";
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s %.1f", gpuSegments_.names[i] ? gpuSegments_.names[i] : "?",
+                      gpuSegments_.ms[i] / std::max(frames, 1));
+        out += buf;
+        gpuSegments_.ms[i] = 0.0;
+    }
+    return out;
 }
 
 void MetalContext::endFrame() {
@@ -227,6 +276,18 @@ void MetalContext::endFrame() {
     }
 
     commandBuffer_->presentDrawable(drawable_);
+    // The frame's last command buffer hands the slot back, and says how long
+    // the GPU took from the first one's start - for WOWEE_FRAME_PROFILE.
+    endGpuSegment("interface");
+    dispatch_semaphore_t slots = frameSlots_;
+    std::atomic<double>* gpuMs = &lastGpuMs_;
+    std::atomic<double>* frameStart = &frameGpuStartShared_;
+    commandBuffer_->addCompletedHandler([slots, gpuMs, frameStart](MTL::CommandBuffer* cb) {
+        const double start = frameStart->exchange(0.0, std::memory_order_relaxed);
+        gpuMs->store((cb->GPUEndTime() - (start > 0.0 ? start : cb->GPUStartTime())) * 1000.0,
+                     std::memory_order_relaxed);
+        dispatch_semaphore_signal(slots);
+    });
     commandBuffer_->commit();
 
     if (capture) {

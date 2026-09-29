@@ -406,7 +406,9 @@ void LensFlare::renderMetal(MTL::RenderCommandEncoder* encoder, const Camera& ca
                   sunOcclusion);
     if (flarePushes_.empty()) return;
     encoder->setRenderPipelineState(mtlPipeline_);
-    encoder->setDepthStencilState(metal_->depthState(false, false));
+    // Tested, where Vulkan has none: the sky is drawn after the ground on
+    // Metal, so the ground no longer paints over a flare behind it.
+    encoder->setDepthStencilState(metal_->depthState(true, false, /*lessEqual=*/true));
     encoder->setCullMode(MTL::CullModeNone);
     encoder->setVertexBuffer(mtlVertices_, 0, kMetalVertexBufferIndex);
     for (const FlarePushConstants& push : flarePushes_) {

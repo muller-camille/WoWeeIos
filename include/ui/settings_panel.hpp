@@ -69,6 +69,7 @@ public:
     /// A multiplier on how thick that mist is. See Renderer::setVolumetricFogDensity.
     float pendingVolumetricDensity = 1.0f;
     bool pendingWaterRefraction = kDefaultWaterRefraction;
+    bool pendingWaterReflection = true;  // Metal only; see the schema
     int pendingBrightness = 50; // 0-100, maps to 0.0-2.0 (50 = 1.0 default)
 
     // ---- Pending audio settings ----

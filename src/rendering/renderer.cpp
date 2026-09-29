@@ -1018,7 +1018,9 @@ void Renderer::shutdown() {
 #ifdef WOWEE_METAL
     if (mtlDepth_) { mtlDepth_->release(); mtlDepth_ = nullptr; }
     if (metal_) metal_->setShadowMap(nullptr);
-    if (mtlShadowMap_) { mtlShadowMap_->release(); mtlShadowMap_ = nullptr; }
+    for (auto*& map : mtlShadowMaps_) {
+        if (map) { map->release(); map = nullptr; }
+    }
     if (waterRenderer) waterRenderer->setMetalScene(nullptr, nullptr);
     if (mtlSceneColor_) { mtlSceneColor_->release(); mtlSceneColor_ = nullptr; }
     if (mtlWorldColor_) { mtlWorldColor_->release(); mtlWorldColor_ = nullptr; }
@@ -1026,7 +1028,9 @@ void Renderer::shutdown() {
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
     if (mtlSceneDepth_) { mtlSceneDepth_->release(); mtlSceneDepth_ = nullptr; }
     if (waterRenderer) waterRenderer->setMetalReflection(nullptr);
-    if (mtlReflColor_) { mtlReflColor_->release(); mtlReflColor_ = nullptr; }
+    for (auto*& refl : mtlReflColors_) {
+        if (refl) { refl->release(); refl = nullptr; }
+    }
     if (mtlReflDepth_) { mtlReflDepth_->release(); mtlReflDepth_ = nullptr; }
     if (mtlFrameData_) { mtlFrameData_->release(); mtlFrameData_ = nullptr; }
     metal_ = nullptr;
@@ -2373,6 +2377,14 @@ void Renderer::clearSelectionCircle() {
 
 PostProcessPipeline* Renderer::getPostProcessPipeline() const {
     return postProcessPipeline_.get();
+}
+
+void Renderer::setWorldRenderScale(float scale) {
+#ifdef WOWEE_METAL
+    if (!mtlRenderScaleFromEnv_) mtlRenderScale_ = std::clamp(scale, 0.25f, 1.0f);
+#else
+    (void)scale;
+#endif
 }
 
 void Renderer::setFSREnabled(bool enabled) {
@@ -5055,6 +5067,7 @@ bool Renderer::initializeMetal() {
 #endif
     if (const char* scale = std::getenv("WOWEE_RENDER_SCALE"); scale && *scale) {
         mtlRenderScale_ = std::clamp(static_cast<float>(std::atof(scale)), 0.25f, 1.0f);
+        mtlRenderScaleFromEnv_ = true;
     }
 
 
@@ -5150,20 +5163,52 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
 namespace {
 /// WOWEE_METAL_SKIP=<names>: a comma list of Metal passes to leave out -
 /// shadow, reflection, sky, terrain, wmo, m2, effects, characters, water,
-/// refraction - to tell what a frame's GPU time is made of.
-bool metalSkips(const char* pass) {
-    static const std::string skip = [] {
+/// refraction, shadowterrain, shadowwmo, shadowm2, shadowchars - to tell what
+/// a frame's GPU time is made of.
+///
+/// WOWEE_METAL_SKIP_CYCLE=<set>;<set>;...: the same, stepping to the next set
+/// every profile report (WOWEE_FRAME_PROFILE's 120 frames), so the sets are
+/// compared in one session at one spot rather than across launches that each
+/// look somewhere else. "none" is the empty set.
+std::string& metalSkipSet() {
+    static std::string skip = [] {
         const char* v = std::getenv("WOWEE_METAL_SKIP");
         return std::string(",") + (v ? v : "") + ",";
     }();
-    return skip.find(std::string(",") + pass + ",") != std::string::npos;
+    return skip;
+}
+bool metalSkips(const char* pass) {
+    return metalSkipSet().find(std::string(",") + pass + ",") != std::string::npos;
+}
+/// Steps WOWEE_METAL_SKIP_CYCLE on; the set now in force, for the report.
+std::string advanceMetalSkipCycle() {
+    static std::vector<std::string> sets = [] {
+        std::vector<std::string> out;
+        const char* v = std::getenv("WOWEE_METAL_SKIP_CYCLE");
+        std::string all = v ? v : "";
+        size_t start = 0;
+        while (!all.empty() && start <= all.size()) {
+            const size_t end = all.find(';', start);
+            out.push_back(all.substr(start, end == std::string::npos ? std::string::npos
+                                                                      : end - start));
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        return out;
+    }();
+    static size_t index = 0;
+    if (sets.empty()) return {};
+    const std::string& set = sets[index % sets.size()];
+    ++index;
+    metalSkipSet() = "," + (set == "none" ? std::string() : set) + ",";
+    return set;
 }
 }  // namespace
 
 void Renderer::renderReflectionPassMetal(size_t reflOffset) {
     if (!waterRenderer) return;
     waterRenderer->setMetalReflection(nullptr);
-    if (metalSkips("reflection")) return;
+    if (!waterReflectionEnabled_ || metalSkips("reflection")) return;
     if (!waterRenderer->hasSurfaces() || !camera) return;
     GPUPerFrameData reflData;
     if (!reflectionFrameData(reflData)) return;
@@ -5172,23 +5217,27 @@ void Renderer::renderReflectionPassMetal(size_t reflOffset) {
 
     // WaterRenderer::REFLECTION_WIDTH/HEIGHT, as the Vulkan target is.
     constexpr uint32_t kReflectionSize = 512;
-    if (!mtlReflColor_) {
+    const uint32_t ringSlot = static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize);
+    MTL::Texture*& reflColor = mtlReflColors_[ringSlot];
+    if (!reflColor) {
         auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
             MTL::PixelFormatBGRA8Unorm, kReflectionSize, kReflectionSize, false);
         desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
         desc->setStorageMode(MTL::StorageModePrivate);
-        mtlReflColor_ = metal_->getDevice()->newTexture(desc);
-        desc = MTL::TextureDescriptor::texture2DDescriptor(
+        reflColor = metal_->getDevice()->newTexture(desc);
+    }
+    if (!mtlReflDepth_) {
+        auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
             MTL::PixelFormatDepth32Float, kReflectionSize, kReflectionSize, false);
         desc->setUsage(MTL::TextureUsageRenderTarget);
         desc->setStorageMode(MTL::StorageModeMemoryless);
         mtlReflDepth_ = metal_->getDevice()->newTexture(desc);
-        if (!mtlReflColor_ || !mtlReflDepth_) return;
     }
+    if (!reflColor || !mtlReflDepth_) return;
 
     auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
     auto* color = pass->colorAttachments()->object(0);
-    color->setTexture(mtlReflColor_);
+    color->setTexture(reflColor);
     color->setLoadAction(MTL::LoadActionClear);
     color->setClearColor(MTL::ClearColor::Make(0.0, 0.0, 0.0, 1.0));
     color->setStoreAction(MTL::StoreActionStore);
@@ -5212,38 +5261,51 @@ void Renderer::renderReflectionPassMetal(size_t reflOffset) {
         wmoRenderer->renderMetal(encoder, mtlFrameData_, reflOffset, *camera);
     }
     encoder->endEncoding();
-    waterRenderer->setMetalReflection(mtlReflColor_);
+    waterRenderer->setMetalReflection(reflColor);
 }
 
 void Renderer::renderShadowPassMetal() {
-    static const bool skipShadows = (std::getenv("WOWEE_SKIP_SHADOWS") != nullptr) ||
-                                    metalSkips("shadow");
+    static const bool skipShadowsEnv = (std::getenv("WOWEE_SKIP_SHADOWS") != nullptr);
+    const bool skipShadows = skipShadowsEnv || metalSkips("shadow");
     // No light yet (the character is not placed): nothing is sampled either,
     // since the per-frame data says shadows are off until there is a map.
     if (skipShadows || lightSpaceMatrix == glm::mat4(0.0f)) {
         metal_->setShadowMap(nullptr);
         return;
     }
-    if (!mtlShadowMap_ || mtlShadowMapSize_ != SHADOW_MAP_SIZE) {
-        if (mtlShadowMap_) mtlShadowMap_->release();
+    const uint32_t ringSlot = static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize);
+    if (mtlShadowMapSize_ != SHADOW_MAP_SIZE) {
+        for (auto*& map : mtlShadowMaps_) {
+            if (map) { map->release(); map = nullptr; }
+        }
+        mtlShadowMapSize_ = SHADOW_MAP_SIZE;
+    }
+    MTL::Texture*& shadowMap = mtlShadowMaps_[ringSlot];
+    if (!shadowMap) {
         auto* desc = MTL::TextureDescriptor::texture2DDescriptor(
             MTL::PixelFormatDepth32Float, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, false);
         desc->setUsage(MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead);
         desc->setStorageMode(MTL::StorageModePrivate);
-        mtlShadowMap_ = metal_->getDevice()->newTexture(desc);
-        mtlShadowMapSize_ = mtlShadowMap_ ? SHADOW_MAP_SIZE : 0;
-        if (!mtlShadowMap_) {
+        shadowMap = metal_->getDevice()->newTexture(desc);
+        if (!shadowMap) {
             LOG_ERROR("Renderer (Metal): could not make the shadow map");
             metal_->setShadowMap(nullptr);
             return;
         }
     }
 
-    // One map: frames in flight read and write it in submission order, which
-    // Metal's hazard tracking keeps for a resource it tracks.
+    {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            LOG_WARNING("Shadow map (Metal): ", SHADOW_MAP_SIZE, " square, distance ",
+                        shadowDistance_, " yd");
+        }
+    }
+    // This slot's map: the frame before is still reading its own.
     auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
     auto* depth = pass->depthAttachment();
-    depth->setTexture(mtlShadowMap_);
+    depth->setTexture(shadowMap);
     depth->setLoadAction(MTL::LoadActionClear);
     depth->setClearDepth(1.0);
     depth->setStoreAction(MTL::StoreActionStore);
@@ -5254,25 +5316,25 @@ void Renderer::renderShadowPassMetal() {
     // shadow rather than an old one.
     if (shadowsEnabled) {
         const float shadowCullRadius = shadowDistance_ * 1.35f;
-        if (terrainRenderer) {
+        if (terrainRenderer && !metalSkips("shadowterrain")) {
             terrainRenderer->renderShadowMetal(encoder, lightSpaceMatrix, shadowCenter,
                                                shadowCullRadius);
         }
-        if (wmoRenderer) {
+        if (wmoRenderer && !metalSkips("shadowwmo")) {
             wmoRenderer->renderShadowMetal(encoder, lightSpaceMatrix, shadowCenter,
                                            shadowCullRadius);
         }
-        if (m2Renderer) {
+        if (m2Renderer && !metalSkips("shadowm2")) {
             m2Renderer->renderShadowMetal(encoder, lightSpaceMatrix, globalTime,
                                           shadowCullRadius);
         }
-        if (characterRenderer) {
+        if (characterRenderer && !metalSkips("shadowchars")) {
             characterRenderer->renderShadowMetal(encoder, lightSpaceMatrix, shadowCenter,
                                                  shadowCullRadius);
         }
     }
     encoder->endEncoding();
-    metal_->setShadowMap(mtlShadowMap_);
+    metal_->setShadowMap(shadowMap);
 }
 
 void Renderer::renderFrameMetal() {
@@ -5307,14 +5369,19 @@ void Renderer::renderFrameMetal() {
         // carries it to every shader that samples the map drawn with it.
         lightSpaceMatrix = computeLightSpaceMatrix();
         renderShadowPassMetal();
+        if (profile) metal_->splitCommandBuffer("shadow");
         mark(Shadow);
         updatePerFrameUBO();
         const size_t stride = (sizeof(GPUPerFrameData) + 255) & ~size_t(255);
         const size_t offset = (metal_->frameNumber() % MetalContext::kRingSize) * stride;
+        // WOWEE_METAL_SKIP=shadowsample: the map is drawn but no surface
+        // reads it, to tell the drawing's cost from the sampling's.
+        if (metalSkips("shadowsample")) currentFrameData.shadowParams.x = 0.0f;
         std::memcpy(static_cast<char*>(mtlFrameData_->contents()) + offset, &currentFrameData,
                     sizeof(GPUPerFrameData));
         // The water's reflection, from its own half of the per-frame buffer.
         renderReflectionPassMetal(offset + MetalContext::kRingSize * stride);
+        if (profile) metal_->splitCommandBuffer("reflection");
         mark(Reflection);
 
         // The depth the world is drawn against. Stored rather than kept in
@@ -5380,9 +5447,23 @@ void Renderer::renderFrameMetal() {
 
         MTL::RenderCommandEncoder* encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
 
-        // The sky first, behind everything, as renderWorld has it: the
-        // gradient, then the zone's sky models where it has any.
+        if (terrainRenderer && !metalSkips("terrain")) {
+            terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+        }
+        if (wmoRenderer && !metalSkips("wmo")) {
+            wmoRenderer->prepareRender();
+            wmoRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, &characterPosition);
+        }
+        // The sky, after the ground and the buildings rather than first as
+        // renderWorld has it, and at the far plane: the viewport's depth range
+        // pinned to 1 makes every sky fragment behind whatever is drawn, so
+        // the pixels the ground already covers fail the depth test and are
+        // never shaded. First, it was a full-screen blended gradient and its
+        // layers, most of it painted over - 6 ms of an A14's frame. Still
+        // before the doodads, whose blended leaf edges need it behind them.
         if (skySystem) {
+            encoder->setViewport(MTL::Viewport{0.0, 0.0, static_cast<double>(w),
+                                               static_cast<double>(h), 1.0, 1.0});
             auto* skybox = skySystem->getSkybox();
             const float timeOfDay = lightingManager
                 ? lightingManager->getVisualTimeOfDayHours()
@@ -5408,15 +5489,10 @@ void Renderer::renderFrameMetal() {
             if (drawSkyModels) {
                 skyboxModelRenderer_->renderMetal(encoder, mtlFrameData_, offset, *camera);
             }
+            encoder->setViewport(MTL::Viewport{0.0, 0.0, static_cast<double>(w),
+                                               static_cast<double>(h), 0.0, 1.0});
         }
 
-        if (terrainRenderer && !metalSkips("terrain")) {
-            terrainRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
-        }
-        if (wmoRenderer && !metalSkips("wmo")) {
-            wmoRenderer->prepareRender();
-            wmoRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, &characterPosition);
-        }
         if (m2Renderer && !metalSkips("m2")) {
             m2Renderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
             // Their smoke, particles, ribbons and glow, after the models as on
@@ -5444,6 +5520,7 @@ void Renderer::renderFrameMetal() {
         // continuation pass does.
         if (splitForWater && mtlSceneColor_ && mtlSceneDepth_) {
             encoder->endEncoding();
+            if (profile) metal_->splitCommandBuffer("opaque world");
             MTL::BlitCommandEncoder* blit = metal_->commandBuffer()->blitCommandEncoder();
             blit->copyFromTexture(color->texture(), mtlSceneColor_);
             blit->copyFromTexture(mtlDepth_, mtlSceneDepth_);
@@ -5476,6 +5553,14 @@ void Renderer::renderFrameMetal() {
                 overlaySystem_->renderOverlay(glm::vec4(0.30f, 0.35f, 0.42f, 0.45f),
                                               VK_NULL_HANDLE);
             }
+            // The menu's brightness, as renderPostSceneOverlays applies it:
+            // darker as a black veil, brighter as a multiply.
+            if (worldBrightness_ < 0.99f) {
+                overlaySystem_->renderOverlay(
+                    glm::vec4(0.0f, 0.0f, 0.0f, 1.0f - worldBrightness_), VK_NULL_HANDLE);
+            } else if (worldBrightness_ > 1.01f) {
+                overlaySystem_->renderBrightnessScale(worldBrightness_, VK_NULL_HANDLE);
+            }
             overlaySystem_->setMetalEncoder(nullptr);
         }
         // Over the world, under the interface that frames it.
@@ -5486,6 +5571,7 @@ void Renderer::renderFrameMetal() {
         }
         encoder->endEncoding();
 
+        if (profile) metal_->splitCommandBuffer("water and after");
         // Up to the screen's size, then onto the drawable the interface is
         // drawn over.
         if (scaled && mtlWorldColor_) {
@@ -5498,6 +5584,7 @@ void Renderer::renderFrameMetal() {
             blit->copyFromTexture(mtlUpscaled_, drawableTexture);
             blit->endEncoding();
             color->setTexture(drawableTexture);
+            if (profile) metal_->splitCommandBuffer("upscale");
         }
 
         // The interface goes on top of what is there, with no depth.
@@ -5516,6 +5603,7 @@ void Renderer::renderFrameMetal() {
     if (profile) {
         static double sums[kSteps] = {};
         static double gpuSum = 0.0, waitSum = 0.0;
+        static std::string cycleLabel = advanceMetalSkipCycle();
         static int frames = 0;
         for (int i = 0; i < kSteps; ++i) {
             sums[i] += std::chrono::duration<double, std::milli>(marks[i + 1] - marks[i]).count();
@@ -5528,7 +5616,10 @@ void Renderer::renderFrameMetal() {
                         avg(waitSum), "), shadow ", avg(sums[Shadow]), ", reflection ",
                         avg(sums[Reflection]), ", world ", avg(sums[World]), ", interface ",
                         avg(sums[Interface]), ", submit ", avg(sums[Submit]), " | GPU ",
-                        avg(gpuSum), " ms");
+                        avg(gpuSum), " ms: ", metal_->takeGpuSegmentReport(frames),
+                        cycleLabel.empty() ? "" : " [skipping " + cycleLabel + "]");
+            // The next period runs with the next set, if there is a cycle.
+            cycleLabel = advanceMetalSkipCycle();
             for (double& v : sums) v = 0.0;
             gpuSum = waitSum = 0.0;
             frames = 0;

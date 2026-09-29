@@ -4,9 +4,49 @@
 iPhone and iPad as its only platforms. Vulkan, MoltenVK, and the Linux, Windows, macOS and
 Android builds go at the end of the port (M6), not the start.
 
-**Status:** M0 and M1 done, M2 under way. On 2026-09-28 the Mac build compiled all 80
+**Status (2026-09-29):** M0 to M3 done, M4 under way. The Metal build plays on the iPad: the
+world, its effects, shadows, water with refraction and reflection, the minimap and world map, all
+drawn through Metal and upscaled by MetalFX, at about 27 fps at the Shadowglen pond on the A14.
+What is left is in **Next steps** just below. On 2026-09-28 the Mac build compiled all 80
 translated shaders into `default.metallib` with no error or warning, the library in the app holds
 exactly the 80 functions the manifest lists, and the MoltenVK build still played on the iPad.
+
+## Next steps (handoff, 2026-09-29)
+
+In order. What each one needs is noted, because the device work needs the Mac.
+
+1. **Terrain fragment cost** (~6 ms of the ~37 ms frame). `terrain.frag.glsl` takes about 30
+   samples a pixel: four layers, three alpha masks each smoothed with five taps
+   (`sampleAlphaSmooth`-style code around line 110), nine PCF taps. One bilinear tap per mask is
+   the likely win. This is a shader change, so the SPIR-V and the Metal translation are
+   regenerated: `glslc`/`glslangValidator` and `spirv-cross`, then
+   `tools/metal/convert_shaders.py`. The Mac has none of them (no Homebrew); a Linux cloud
+   session can `apt install glslang-tools spirv-cross`. Both backends take the change.
+2. **Black foliage (open bug).** The nearest tree's canopy draws solid black at night in
+   Tirisfal (Tusa's spot) while distant canopies are fine. Ruled out: shadows (black with
+   `WOWEE_METAL_SKIP=shadow`), the cutout (the leaf shapes are cut; only their colour is black),
+   and alpha-to-coverage (now on at one sample, as Vulkan has it - correct, not the cause).
+   Suspects: the leaf texture's high mips as Metal uploads them (`uploadBLPMetal`, BC where the
+   GPU has it), or a foliage-only term in `m2.frag.glsl` (fringe fix at `textureLod(..., 4.0)`,
+   mip-alpha boost, canopy AO). Compare against the MoltenVK build (`-DWOWEE_METAL=OFF` in a
+   separate build directory) at the same spot to know whether it is Metal's at all.
+3. **FSR 1 fallback** where MetalFX is unsupported: `fsr_easu`/`fsr_rcas` are already translated.
+   Today those devices draw at full size.
+4. **The rest of M4's list:** lightning, swim ripples, mount dust, charge trail; anti-aliasing
+   (MSAA/FXAA choices do nothing on Metal); volumetric fog, sun shafts, grass and RT lighting
+   (all off by default on iOS, so last).
+5. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
+   answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
+   is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
+6. Close M4: fps and memory at Goldshire and a capital, then the branch merges.
+
+Device testing, from the Mac with the iPad unlocked (see the memory notes for the commands):
+`WOWEE_AUTO_ENTER=1` (with `WOWEE_AUTO_CHARACTER=<name>`) enters the world, 
+`WOWEE_WORLD_SCREENSHOT=<png>` takes a picture after `WOWEE_WORLD_SCREENSHOT_DELAY` seconds and
+the game keeps running, `WOWEE_WORLD_SCREENSHOT_LUA` runs interface Lua before it,
+`WOWEE_FRAME_PROFILE=1` logs the frame per step and per GPU segment every 120 frames,
+`WOWEE_METAL_SKIP_CYCLE="none;terrain;..."` compares skipped passes in one session,
+`WOWEE_MEMORY_REPORT=1` logs the footprint every two seconds.
 
 With `WOWEE_METAL` (on by default for iOS) the iPad draws, through Metal:
 
@@ -29,15 +69,31 @@ their Metal textures too.
 From M4, shadows (2026-09-29): one depth map drawn each frame before the world pass, with the
 terrain, buildings, doodads (foliage alpha-tested and bent by the wind, through the same
 M2Renderer::renderShadowImpl as Vulkan) and characters (skinned) as casters, and every surface
-sampling it. The sampler, bias, culling and compare match the Vulkan pipeline. Open: at night some
-foliage goes solid black with shadows on - not yet compared against the MoltenVK build, which is
-the test that says whether it is Metal's.
+sampling it. The sampler, bias, culling and compare match the Vulkan pipeline. A ring of maps,
+one per MetalContext slot, as Vulkan has one per frame in flight. The map's side follows
+extShadowQuality (1024 on a phone). The black foliage once put down to shadows is not theirs -
+see Next steps.
 
 Water refraction and the shoreline fade (2026-09-29, seen on the iPad): where there is water the
 world pass stops before it, the drawable's colour and the depth so far are copied out, and the
 pass is taken up again with its attachments loaded, as Vulkan's scene continuation pass does.
 The world's depth is stored rather than memoryless for it, and drawables are readable. The
-reflection pass is next.
+reflection draws the sky, terrain and buildings from the mirrored camera into a 512 target;
+the Detail page's "Water reflections" (Metal only) turns it off.
+
+Performance, iPad Air 4 (A14), Shadowglen pond, 2026-09-29: about 8 fps with the world at full
+resolution; about 25 fps (a frame every ~40 ms, GPU-bound) once it is drawn at 0.67 and
+upscaled by MetalFX's spatial scaler, which the menu's upscaling and render-quality choices now
+drive on Metal (full size where the device has no MetalFX). Measured with WOWEE_FRAME_PROFILE,
+which splits the frame into command buffers and times each by how much later it ends than the
+one before, and WOWEE_METAL_SKIP_CYCLE, which steps through sets of skipped passes in one
+session - launches compared against each other are too noisy, each facing somewhere else. The
+"GPU ms" total overstates the frame when the GPU overlaps frames; the frame period is the
+report's interval over its 120 frames. Shadows move the total but not the frame rate. What the
+frame is spent on is the opaque world pass, about 28 ms of the 40: the sky and the terrain about
+6 ms each. The sky is now drawn after the terrain and buildings with the viewport's depth range
+pinned to the far plane, so covered pixels are never shaded: the opaque pass came down to ~23 ms
+and the frame to ~37 ms (~27 fps). The terrain is next.
 
 Also from M4, done and seen on the iPad (2026-09-29): the minimap (its 3x3 tile composite, then the
 disc over the world) and the world map (its tile and explored-overlay composite, the zone
@@ -55,10 +111,7 @@ weather (rain, snow, storms) and the footprints, the latter seen on the iPad (a 
 the Dun Morogh snow). Still Vulkan-only from the frame's effects:
 lightning, swim ripples, mount dust and the charge trail.
 
-Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
-textures where the GPU has them, and checking the character list's preview and the equipment on
-the device. `WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config
-root.
+`WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config root.
 
 **Target:** iOS 16 or later on a Metal 3 GPU (A13 or later): iPhone 11 onward, iPad Air 4 onward,
 every M-series iPad. The test device is an iPad Air (4th generation, A14, 4 GB).

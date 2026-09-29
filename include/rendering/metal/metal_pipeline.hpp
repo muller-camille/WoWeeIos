@@ -51,6 +51,7 @@ enum class MetalBlend : uint8_t {
     None,      // PipelineBuilder::blendDisabled
     Alpha,     // PipelineBuilder::blendAlpha
     Additive,  // PipelineBuilder::blendAdditive
+    Multiply,  // dst * (1 + src), the brightness overlay's; alpha kept
 };
 
 struct MetalPipelineDesc {

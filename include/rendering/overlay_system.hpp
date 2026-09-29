@@ -114,6 +114,7 @@ private:
     MTL::RenderCommandEncoder* mtlEncoder_ = nullptr;
     MTL::RenderPipelineState* mtlSelCircle_ = nullptr;
     MTL::RenderPipelineState* mtlOverlay_ = nullptr;
+    MTL::RenderPipelineState* mtlBrightness_ = nullptr;
     MTL::Buffer* mtlSelCircleVerts_ = nullptr;
     MTL::Buffer* mtlSelCircleIndices_ = nullptr;
     int mtlSelVertPush_ = -1, mtlSelFragPush_ = -1, mtlOverlayFragPush_ = -1;

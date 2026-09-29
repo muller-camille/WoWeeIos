@@ -855,7 +855,7 @@ constexpr const char* kGraphicsApplyKeys[] = {
     "viewdistance", "shadows", "shadowdistance", "antialiasing", "fxaa",
     "normalmapping", "normalmapstrength", "parallax", "parallaxquality",
     "groundclutter", "grassenabled", "grassdensity", "grassheight",
-    "grassdistance", "waterrefraction", "upscaling", "fsrquality",
+    "grassdistance", "waterrefraction", "waterreflection", "upscaling", "fsrquality",
     "fsrsharpness", "framegen", "brightness", "uiopacity", "minimapsquare",
     "minimapnpcdots", "minimapclock", "minimapcoords", "minimaprotate", "latencymeter",
     "fogskyblend", "fogstrength", "sharpstars", "lightshafts", "mistdensity", "sunshafts",
@@ -1040,6 +1040,7 @@ constexpr FieldBinding kFieldBindings[] = {
     {.key = "shadows",           .asBool  = &SettingsPanel::pendingShadows},
     {.key = "shadowdistance",    .asFloat = &SettingsPanel::pendingShadowDistance},
     {.key = "waterrefraction",   .asBool  = &SettingsPanel::pendingWaterRefraction},
+    {.key = "waterreflection",   .asBool  = &SettingsPanel::pendingWaterReflection},
     {.key = "antialiasing",      .asInt   = &SettingsPanel::pendingAntiAliasing},
     {.key = "fxaa",              .asBool  = &SettingsPanel::pendingFXAA},
     {.key = "normalmapping",     .asBool  = &SettingsPanel::pendingNormalMapping},
@@ -1233,6 +1234,8 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         if (renderer) renderer->setShadowDistance(pendingShadowDistance);
     } else if (key == "waterrefraction") {
         if (renderer) renderer->setWaterRefractionEnabled(pendingWaterRefraction);
+    } else if (key == "waterreflection") {
+        if (renderer) renderer->setWaterReflectionEnabled(pendingWaterReflection);
     } else if (key == "groundclutter") {
         if (renderer) {
             if (auto* tm = renderer->getTerrainManager()) {
@@ -1373,6 +1376,9 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         if (renderer) {
             renderer->setFSREnabled(pendingUpscalingMode == 1);
             renderer->setFSR2Enabled(pendingUpscalingMode == 2);
+            // Metal has no FSR: the same choice sets how small it draws.
+            renderer->setWorldRenderScale(pendingUpscalingMode != 0
+                                              ? fsrScaleForChoice(pendingFSRQuality) : 1.0f);
             // Multisampling is the player's own setting and survives the
             // upscaler either way: re-asserted here so a device that had to
             // give it up while upscaling gets it back the moment upscaling is
@@ -1384,6 +1390,9 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
         // How far below the display resolution the world is drawn, in the same
         // order the schema lists the choices.
         if (post) post->setFSRQuality(fsrScaleForChoice(pendingFSRQuality));
+        if (renderer && pendingUpscalingMode != 0) {
+            renderer->setWorldRenderScale(fsrScaleForChoice(pendingFSRQuality));
+        }
     } else if (key == "fsrsharpness") {
         if (post) post->setFSRSharpness(pendingFSRSharpness);
     } else if (key == "fogstrength") {
@@ -1414,6 +1423,7 @@ void SettingsPanel::applySettingSideEffects(const std::string& key) {
     } else if (key == "brightness") {
         // 50 is neutral, so the field is twice the multiplier the pipeline wants.
         if (post) post->setBrightness(static_cast<float>(pendingBrightness) / 50.0f);
+        if (renderer) renderer->setWorldBrightness(static_cast<float>(pendingBrightness) / 50.0f);
     } else if (key == "fullscreen") {
         if (services_.window) {
             services_.window->setFullscreen(pendingFullscreen);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <cstdint>
 #include <dispatch/dispatch.h>
 #include <string>
@@ -148,6 +149,12 @@ public:
     /// WOWEE_FRAME_PROFILE.
     [[nodiscard]] double lastGpuMs() const { return lastGpuMs_.load(std::memory_order_relaxed); }
     [[nodiscard]] double lastSlotWaitMs() const { return lastSlotWaitMs_; }
+    /// WOWEE_FRAME_PROFILE: commits what the frame has recorded so far as a
+    /// command buffer of its own, timed under segmentName, and carries on in
+    /// a new one - so the GPU's time can be told apart pass by pass. Only
+    /// between encoders. takeGpuSegmentReport averages them over frames.
+    void splitCommandBuffer(const char* segmentName);
+    [[nodiscard]] std::string takeGpuSegmentReport(int frames);
 
     [[nodiscard]] uint32_t drawableWidth() const { return drawableWidth_; }
     [[nodiscard]] uint32_t drawableHeight() const { return drawableHeight_; }
@@ -187,6 +194,19 @@ private:
     MTL::Texture* neutralVolume_ = nullptr;
     MTL::Texture* shadowMap_ = nullptr;  // the renderer's; not owned
     std::atomic<double> lastGpuMs_{0.0};
+    void endGpuSegment(const char* name);
+    static constexpr int kMaxGpuSegments = 12;
+    struct GpuSegments {
+        std::mutex mutex;
+        const char* names[kMaxGpuSegments] = {};
+        double ms[kMaxGpuSegments] = {};
+        double end[kMaxGpuSegments] = {};  // this frame's, until its last is in
+        double start = 0.0;
+        int count = 0;
+    } gpuSegments_;
+    int gpuSegmentCount_ = 0;
+    double frameGpuStart_ = 0.0;
+    std::atomic<double> frameGpuStartShared_{0.0};
     double lastSlotWaitMs_ = 0.0;
     std::vector<MTL::Texture*> interfaceTextures_;
     std::string capturePath_;

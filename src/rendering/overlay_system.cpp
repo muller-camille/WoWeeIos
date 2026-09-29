@@ -57,6 +57,7 @@ void OverlaySystem::cleanup() {
     };
     release(mtlSelCircle_);
     release(mtlOverlay_);
+    release(mtlBrightness_);
     release(mtlSelCircleVerts_);
     release(mtlSelCircleIndices_);
     metal_ = nullptr;
@@ -393,6 +394,19 @@ void OverlaySystem::initBrightnessPipeline() {
 
 void OverlaySystem::renderBrightnessScale(float scale, VkCommandBuffer cmd) {
     if (scale <= 1.0f) return; // darkening handled by the black overlay path
+#ifdef WOWEE_METAL
+    if (mtlEncoder_) {
+        if (!mtlBrightness_) return;
+        const glm::vec4 tint(scale - 1.0f, scale - 1.0f, scale - 1.0f, 1.0f);
+        OverlayPush push = makeOverlayPush(tint, glm::mat4(1.0f), 0.0f, 0.0f, 0.0f, 0.0f, false);
+        mtlEncoder_->setRenderPipelineState(mtlBrightness_);
+        mtlEncoder_->setDepthStencilState(metal_->depthState(false, false));
+        mtlEncoder_->setCullMode(MTL::CullModeNone);
+        mtlEncoder_->setFragmentBytes(&push, sizeof(push), mtlOverlayFragPush_);
+        mtlEncoder_->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+        return;
+    }
+#endif
     if (!brightnessPipeline_) initBrightnessPipeline();
     if (!brightnessPipeline_ || cmd == VK_NULL_HANDLE) return;
     // overlay.frag outputs the pushed color; the blend multiplies it by dst.
@@ -446,6 +460,9 @@ bool OverlaySystem::initializeMetal(MetalContext* ctx, uint32_t colorFormat,
     desc.fragmentFunction = "overlay_frag";
     desc.label = "overlay";
     mtlOverlay_ = buildMetalPipeline(*ctx, desc);
+    desc.blend = MetalBlend::Multiply;
+    desc.label = "brightness";
+    mtlBrightness_ = buildMetalPipeline(*ctx, desc);
 
     std::vector<float> verts;
     std::vector<uint16_t> indices;

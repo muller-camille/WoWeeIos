@@ -170,6 +170,14 @@ constexpr SettingDesc kSchema[] = {
      "How far out doodads - crates, bushes, lamps, fences - keep being\n"
      "drawn, as a percentage. Lower empties the middle distance first.", "", 100},
 
+#ifdef WOWEE_METAL
+    // Only where it can be turned off: the MoltenVK renderer always draws it.
+    {"waterreflection", "Water reflections", SettingKind::Bool, 0, 0, 0, "Detail", "Water",
+     "The sky and the shore mirrored in lakes, rivers and the sea. A\n"
+     "second, smaller picture of the world every frame there is water\n"
+     "in view; off, the water keeps its colour, ripples and depth.", "", 1},
+#endif
+
     {"texturefiltering", "Texture filtering", SettingKind::Enum, 0, 4, 1, "Detail", "Textures",
      "How sharp textures stay when seen at a shallow angle - a road\n"
      "ahead, a floor underfoot. Costs little on any modern card, and\n"
