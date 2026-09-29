@@ -139,6 +139,18 @@ MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx, const MetalPipel
         color->setDestinationRGBBlendFactor(MTL::BlendFactorOne);
         color->setSourceAlphaBlendFactor(MTL::BlendFactorZero);
         color->setDestinationAlphaBlendFactor(MTL::BlendFactorOne);
+    } else if (desc.blend == MetalBlend::Screen) {
+        // Screened rather than added, and the alpha left alone, as the sun
+        // shafts' Vulkan pipeline blends and masks it.
+        color->setBlendingEnabled(true);
+        color->setRgbBlendOperation(MTL::BlendOperationAdd);
+        color->setAlphaBlendOperation(MTL::BlendOperationAdd);
+        color->setSourceRGBBlendFactor(MTL::BlendFactorOne);
+        color->setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceColor);
+        color->setSourceAlphaBlendFactor(MTL::BlendFactorZero);
+        color->setDestinationAlphaBlendFactor(MTL::BlendFactorOne);
+        color->setWriteMask(MTL::ColorWriteMaskRed | MTL::ColorWriteMaskGreen |
+                            MTL::ColorWriteMaskBlue);
     } else if (desc.blend != MetalBlend::None) {
         color->setBlendingEnabled(true);
         color->setRgbBlendOperation(MTL::BlendOperationAdd);

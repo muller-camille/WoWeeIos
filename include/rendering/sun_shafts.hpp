@@ -5,10 +5,20 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class CommandBuffer;
+class ComputePipelineState;
+class RenderPipelineState;
+class Texture;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /**
  * Crepuscular rays drawn over the finished picture: the bright sky around the
@@ -65,6 +75,20 @@ public:
     /// something this frame.
     void composite(VkCommandBuffer cmd, uint32_t frame);
 
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx);
+    /// This frame's rays, marched out of picture - the finished world, under
+    /// the interface - into a target a quarter of outW x outH, the screen's.
+    /// The picture is read as it is rather than from a quarter-size copy: a
+    /// Metal blit does not scale, and the march takes its places from the
+    /// rays' own size. Returns whether compositeMetal has anything to add.
+    bool recordMetal(MTL::CommandBuffer* commandBuffer, MTL::Texture* picture, uint32_t outW,
+                     uint32_t outH, const FrameInputs& in);
+    /// Screen this frame's rays onto target, in a pass of their own.
+    void compositeMetal(MTL::CommandBuffer* commandBuffer, MTL::Texture* target);
+#endif
+
 private:
     static constexpr uint32_t MAX_FRAMES = 2;
 
@@ -108,6 +132,17 @@ private:
     VkDescriptorPool descPool_ = VK_NULL_HANDLE;
     VkDescriptorSet marchSets_[MAX_FRAMES] = {};
     VkDescriptorSet compositeSets_[MAX_FRAMES] = {};
+
+#ifdef WOWEE_METAL
+    MetalContext* metal_ = nullptr;
+    MTL::ComputePipelineState* mtlMarch_ = nullptr;
+    MTL::RenderPipelineState* mtlComposite_ = nullptr;
+    MTL::Texture* mtlRays_[3] = {};  // a ring of MetalContext::kRingSize
+    uint32_t mtlRaysW_ = 0, mtlRaysH_ = 0;
+    MTL::Texture* mtlRaysThisFrame_ = nullptr;  // what recordMetal left to composite
+    int mtlMarchFrame_ = -1, mtlMarchFrameSampler_ = -1, mtlMarchRays_ = -1, mtlMarchPush_ = -1;
+    int mtlCompositeRays_ = -1, mtlCompositeSampler_ = -1;
+#endif
 };
 
 } // namespace rendering

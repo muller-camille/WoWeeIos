@@ -5,10 +5,20 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 
+#ifdef WOWEE_METAL
+namespace MTL {
+class Buffer;
+class CommandBuffer;
+class ComputePipelineState;
+class Texture;
+}  // namespace MTL
+#endif
+
 namespace wowee {
 namespace rendering {
 
 class VkContext;
+class MetalContext;
 
 /**
  * Fog that light moves through: lit by the sun past the shadow map, so trees
@@ -135,8 +145,28 @@ public:
     /// reprojecting air from somewhere else would smear it across the view.
     void resetHistory() { historyValid_ = false; }
 
+#ifdef WOWEE_METAL
+    /// The same on the Metal renderer (docs/plan-metal.md): the two kernels
+    /// now, the volumes at applyPendingQuality, as on Vulkan.
+    [[nodiscard]] bool initializeMetal(MetalContext* ctx);
+    /// Build frame's volume, as record() does: the inject and integrate
+    /// passes on commandBuffer, reading the per-frame block at perFrameOffset
+    /// and shadowMap. Between render passes, after the shadow map's.
+    void recordMetal(MTL::CommandBuffer* commandBuffer, uint64_t frame, MTL::Buffer* perFrame,
+                     size_t perFrameOffset, MTL::Texture* shadowMap, const FrameInputs& in);
+    /// What frame's world pass reads: its slot's integrated volume, or null
+    /// while the fog is off.
+    [[nodiscard]] MTL::Texture* volumeMetal(uint64_t frame) const;
+#endif
+
 private:
     static constexpr uint32_t MAX_FRAMES = 2;
+
+    /// Whether frame slot may blend in the other slot's cells: they have to
+    /// be the ones built just before, of this place.
+    [[nodiscard]] bool historyUsable(uint32_t frame, const glm::vec3& cameraPos) const;
+    /// What the next frame reprojects from, once frame slot is recorded.
+    void recorded(uint32_t frame, const FrameInputs& in);
 
     struct Volume {
         VkImage image = VK_NULL_HANDLE;
@@ -184,6 +214,25 @@ private:
     bool historyValid_ = false;
     uint32_t frameCounter_ = 0;
     int lastRecordedFrame_ = -1;
+
+#ifdef WOWEE_METAL
+    bool createVolumesMetal(glm::uvec3 size);
+    void destroyVolumesMetal();
+
+    MetalContext* metal_ = nullptr;
+    MTL::ComputePipelineState* mtlInject_ = nullptr;
+    MTL::ComputePipelineState* mtlIntegrate_ = nullptr;
+    // Per frame slot, as on Vulkan: Metal's hazard tracking orders a slot's
+    // writes after the frame before last's reads, as the barriers do.
+    MTL::Texture* mtlScatter_[MAX_FRAMES] = {};
+    MTL::Texture* mtlIntegrated_[MAX_FRAMES] = {};
+    MTL::Buffer* mtlParams_[3] = {};  // written every frame: MetalContext::kRingSize
+    int mtlInjectPerFrame_ = -1, mtlInjectParams_ = -1, mtlInjectShadow_ = -1,
+        mtlInjectShadowSampler_ = -1, mtlInjectCellsOut_ = -1, mtlInjectHistory_ = -1,
+        mtlInjectHistorySampler_ = -1;
+    int mtlIntegratePerFrame_ = -1, mtlIntegrateParams_ = -1, mtlIntegrateCells_ = -1,
+        mtlIntegrateCellsSampler_ = -1, mtlIntegrateOut_ = -1;
+#endif
 };
 
 } // namespace rendering

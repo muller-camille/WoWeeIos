@@ -19,6 +19,8 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "rendering/sky_system.hpp"
+#include "rendering/sun_shafts.hpp"
+#include "rendering/volumetric_fog.hpp"
 #include "core/screen_recorder.hpp"
 #include "pipeline/custom_zone_discovery.hpp"
 
@@ -664,6 +666,9 @@ private:
     /// the weather and the hour ask for so walking indoors does not switch it.
     float fogExtinction_ = -1.0f;
     void renderVolumetricFog();
+    /// This frame's air: the layer and extinction chased toward what the
+    /// ground, zone, weather and hour ask for. Both backends build from it.
+    VolumetricFog::FrameInputs volumetricFogInputs();
     void writeFogVolumeBindings();
     float volumetricFogExtinction() const;
 
@@ -686,6 +691,9 @@ private:
     /// picture, and a login screen or a loading screen is not one.
     bool worldDrawnThisFrame_ = false;
     void recordSunShafts();
+    /// Where the sun is and how strongly its rays show this frame; zero
+    /// strength when they are off or it is not up.
+    [[nodiscard]] SunShafts::FrameInputs sunShaftInputs() const;
 
     // GPU-driven grass: compute cull with atomic compaction feeding an
     // indirect draw, over a population generated from terrain suitability.

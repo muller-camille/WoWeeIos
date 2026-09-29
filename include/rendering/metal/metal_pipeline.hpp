@@ -55,6 +55,7 @@ enum class MetalBlend : uint8_t {
     Alpha,     // PipelineBuilder::blendAlpha
     Additive,  // PipelineBuilder::blendAdditive
     Multiply,  // dst * (1 + src), the brightness overlay's; alpha kept
+    Screen,    // src + dst * (1 - src), the sun shafts' composite; alpha kept
 };
 
 struct MetalPipelineDesc {

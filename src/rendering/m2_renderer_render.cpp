@@ -2641,7 +2641,7 @@ void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* pe
             // light, none of which the Metal renderer has yet.
             encoder->setFragmentTexture(m.shadowMap(), s.fragShadow);
             encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
-            encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+            encoder->setFragmentTexture(m.fogVolume(), s.fragFog);
             encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
             encoder->setFragmentTexture(m.whiteTexture(), s.fragRtA);
             encoder->setFragmentSamplerState(clampLinear, s.fragRtASampler);
@@ -2761,7 +2761,7 @@ void M2Renderer::renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
         encoder->setRenderPipelineState(pipeline);
         encoder->setVertexBuffer(perFrame, offset, mtlFx_.particleVertPerFrame);
         // No fog volume on Metal yet: the neutral one lets everything through.
-        encoder->setVertexTexture(m.neutralVolumeTexture(), mtlFx_.particleVertFog);
+        encoder->setVertexTexture(m.fogVolume(), mtlFx_.particleVertFog);
         encoder->setVertexSamplerState(clampLinear, mtlFx_.particleVertFogSampler);
         encoder->setVertexBuffer(vb, 0, kMetalVertexBufferIndex);
     };
@@ -2821,7 +2821,7 @@ void M2Renderer::renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
             if (pipeline != bound) {
                 encoder->setRenderPipelineState(pipeline);
                 encoder->setVertexBuffer(perFrame, offset, mtlFx_.ribbonVertPerFrame);
-                encoder->setVertexTexture(m.neutralVolumeTexture(), mtlFx_.ribbonVertFog);
+                encoder->setVertexTexture(m.fogVolume(), mtlFx_.ribbonVertFog);
                 encoder->setVertexSamplerState(clampLinear, mtlFx_.ribbonVertFogSampler);
                 encoder->setVertexBuffer(mtlRibbonVB_[slot], 0, kMetalVertexBufferIndex);
                 bound = pipeline;

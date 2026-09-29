@@ -2285,7 +2285,7 @@ void WaterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer*
     encoder->setFragmentBytes(&frameUBO_, sizeof(frameUBO_), s.fragFrame);
     MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
                                                MetalContext::Address::ClampToEdge);
-    encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+    encoder->setFragmentTexture(m.fogVolume(), s.fragFog);
     encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
     // The world as drawn before the water, when the renderer copied it:
     // refraction and the shoreline fade. Without it the colour is not read

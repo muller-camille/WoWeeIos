@@ -1030,6 +1030,11 @@ void Renderer::shutdown() {
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
     mtlFsrUpscale_ = false;
     mtlPostProcess_.reset();
+    if (metal_) metal_->setFogVolume(nullptr);
+    if (volumetricFog_) {
+        volumetricFog_->shutdown();
+        volumetricFog_.reset();
+    }
     if (mtlSceneDepth_) { mtlSceneDepth_->release(); mtlSceneDepth_ = nullptr; }
     if (waterRenderer) waterRenderer->setMetalReflection(nullptr);
     for (auto*& refl : mtlReflColors_) {
@@ -4850,6 +4855,11 @@ void Renderer::renderVolumetricFog() {
     // this slot's volume as it was - clear air, until the first real frame -
     // and the shaders read that.
     if (shadowDepthLayout_[frame] != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return;
+    volumetricFog_->record(currentCmd, frame, perFrameDescSets[frame], volumetricFogInputs());
+    if (vkCtx) vkCtx->gpuMark(currentCmd, "volumetric fog");
+}
+
+VolumetricFog::FrameInputs Renderer::volumetricFogInputs() {
     const float dt = std::max(lastDeltaTime_, 0.0f);
 
     // The ground the mist lies on: the terrain under the player, or the
@@ -4882,8 +4892,6 @@ void Renderer::renderVolumetricFog() {
     in.time = globalTime;
     in.density = fogExtinction_;
     in.layerBase = fogLayerBase_;
-    volumetricFog_->record(currentCmd, frame, perFrameDescSets[frame], in);
-    if (vkCtx) vkCtx->gpuMark(currentCmd, "volumetric fog");
 
     // What it was built from, every few seconds, for the report that says the
     // fog is too thick or missing: INFO, so it costs nothing unless asked for.
@@ -4893,14 +4901,24 @@ void Renderer::renderVolumetricFog() {
         LOG_INFO("volumetricFog: extinction=", fogExtinction_, "/yd (target ", target,
                  ") layerBase=", fogLayerBase_, " lights=", currentFrameData.localLightMeta.x);
     }
+    return in;
 }
 
 void Renderer::recordSunShafts() {
     if (!sunShafts_ || currentCmd == VK_NULL_HANDLE) return;
     SunShafts::FrameInputs in;
     const auto& images = vkCtx->getSwapchainImages();
-    if (sunShaftsEnabled_ && worldDrawnThisFrame_ && camera && lightingManager &&
-        currentImageIndex < images.size() &&
+    if (worldDrawnThisFrame_ && currentImageIndex < images.size()) in = sunShaftInputs();
+    // Called every frame, strength zero included, so the composite knows
+    // there is nothing of this frame's to add.
+    sunShafts_->record(currentCmd, vkCtx->getCurrentFrame(),
+                       currentImageIndex < images.size() ? images[currentImageIndex] : VK_NULL_HANDLE,
+                       vkCtx->getSwapchainExtent(), in);
+}
+
+SunShafts::FrameInputs Renderer::sunShaftInputs() const {
+    SunShafts::FrameInputs in;
+    if (sunShaftsEnabled_ && camera && lightingManager &&
         !(passAblation_ && passAblation_->skip(AblationPass::SunShafts))) {
         const auto& lp = lightingManager->getLightingParams();
         // The sun the lens flare draws around, from the same rule.
@@ -4931,11 +4949,7 @@ void Renderer::recordSunShafts() {
             in.strength = strength;
         }
     }
-    // Called every frame, strength zero included, so the composite knows
-    // there is nothing of this frame's to add.
-    sunShafts_->record(currentCmd, vkCtx->getCurrentFrame(),
-                       currentImageIndex < images.size() ? images[currentImageIndex] : VK_NULL_HANDLE,
-                       vkCtx->getSwapchainExtent(), in);
+    return in;
 }
 
 // Build the per-frame render graph for off-screen pre-passes.
@@ -5098,6 +5112,19 @@ bool Renderer::initializeMetal() {
         overlaySystem_.reset();
     }
 
+    // The mist the light moves through, and the sun's rays over the frame.
+    // Both start off on iOS; the menu's choices turn them on.
+    volumetricFog_ = std::make_unique<VolumetricFog>();
+    if (!volumetricFog_->initializeMetal(metal_)) {
+        LOG_WARNING("Volumetric fog (Metal) initialization failed - no light shafts or mist");
+        volumetricFog_.reset();
+    }
+    sunShafts_ = std::make_unique<SunShafts>();
+    if (!sunShafts_->initializeMetal(metal_)) {
+        LOG_WARNING("Sun shafts (Metal) initialization failed (non-fatal)");
+        sunShafts_.reset();
+    }
+
     // FSR 1, for a device MetalFX does not run on, and FXAA.
     mtlPostProcess_ = std::make_unique<MetalPostProcess>();
     if (!mtlPostProcess_->initialize(metal_, MTL::PixelFormatBGRA8Unorm)) {
@@ -5231,8 +5258,8 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
 namespace {
 /// WOWEE_METAL_SKIP=<names>: a comma list of Metal passes to leave out -
 /// shadow, reflection, sky, terrain, wmo, m2, effects, characters, water,
-/// refraction, shadowterrain, shadowwmo, shadowm2, shadowchars - to tell what
-/// a frame's GPU time is made of.
+/// refraction, grass, fog, sunshafts, shadowterrain, shadowwmo, shadowm2,
+/// shadowchars - to tell what a frame's GPU time is made of.
 ///
 /// WOWEE_METAL_SKIP_CYCLE=<set>;<set>;...: the same, stepping to the next set
 /// every profile report (WOWEE_FRAME_PROFILE's 120 frames), so the sets are
@@ -5439,6 +5466,10 @@ void Renderer::renderFrameMetal() {
         renderShadowPassMetal();
         if (profile) metal_->splitCommandBuffer("shadow");
         mark(Shadow);
+        // A quality the menu changed takes effect here, before the per-frame
+        // block says whether this frame has a fog volume to read. Nothing to
+        // rewrite when it does: the volume is handed over every frame.
+        if (volumetricFog_) static_cast<void>(volumetricFog_->applyPendingQuality());
         updatePerFrameUBO();
         const size_t stride = (sizeof(GPUPerFrameData) + 255) & ~size_t(255);
         const size_t offset = (metal_->frameNumber() % MetalContext::kRingSize) * stride;
@@ -5447,6 +5478,16 @@ void Renderer::renderFrameMetal() {
         if (metalSkips("shadowsample")) currentFrameData.shadowParams.x = 0.0f;
         std::memcpy(static_cast<char*>(mtlFrameData_->contents()) + offset, &currentFrameData,
                     sizeof(GPUPerFrameData));
+        // The fog volume, from the shadow map just drawn, before any pass
+        // reads it; the world's shaders take it from MetalContext::fogVolume.
+        metal_->setFogVolume(nullptr);
+        if (volumetricThisFrame_ && volumetricFog_ && !metalSkips("fog")) {
+            volumetricFog_->recordMetal(metal_->commandBuffer(), metal_->frameNumber(),
+                                        mtlFrameData_, offset, metal_->shadowMap(),
+                                        volumetricFogInputs());
+            metal_->setFogVolume(volumetricFog_->volumeMetal(metal_->frameNumber()));
+            if (profile) metal_->splitCommandBuffer("fog");
+        }
         // The water's reflection, from its own half of the per-frame buffer.
         renderReflectionPassMetal(offset + MetalContext::kRingSize * stride);
         if (profile) metal_->splitCommandBuffer("reflection");
@@ -5688,6 +5729,8 @@ void Renderer::renderFrameMetal() {
         // Smoothed, up to the screen's size, then onto the drawable the
         // interface is drawn over. FXAA first: MetalFX's spatial scaler wants
         // its input anti-aliased, and FSR 1 sharpens whatever edges it gets.
+        // The finished picture before the interface, at the world's size.
+        MTL::Texture* finished = drawableTexture;
         if (offscreen && mtlWorldColor_) {
             MTL::CommandBuffer* commandBuffer = metal_->commandBuffer();
             MTL::Texture* world = mtlWorldColor_;
@@ -5709,8 +5752,16 @@ void Renderer::renderFrameMetal() {
                 mtlPostProcess_->encodeUpscale(commandBuffer, world, w, h, drawableTexture,
                                                screenW, screenH, worldUpscaleSharpness_);
             }
+            finished = world;
             color->setTexture(drawableTexture);
             if (profile) metal_->splitCommandBuffer("post-process");
+        }
+        // The sun's rays, marched out of it and screened onto the drawable,
+        // under the interface as Vulkan's overlay pass adds them.
+        if (sunShafts_ && !metalSkips("sunshafts") &&
+            sunShafts_->recordMetal(metal_->commandBuffer(), finished, screenW, screenH,
+                                    sunShaftInputs())) {
+            sunShafts_->compositeMetal(metal_->commandBuffer(), drawableTexture);
         }
 
         // The interface goes on top of what is there, with no depth.

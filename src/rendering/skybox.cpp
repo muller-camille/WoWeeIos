@@ -199,7 +199,7 @@ void Skybox::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFra
     encoder->setFragmentBuffer(perFrame, offset, mtlFragPerFrame_);
     encoder->setFragmentBytes(&push, sizeof(push), mtlFragPush_);
     // No fog volume on Metal yet: the neutral one, which lets everything through.
-    encoder->setFragmentTexture(metal_->neutralVolumeTexture(), mtlFragFog_);
+    encoder->setFragmentTexture(metal_->fogVolume(), mtlFragFog_);
     encoder->setFragmentSamplerState(metal_->sampler(MetalContext::Filter::Linear,
                                                      MetalContext::Address::ClampToEdge),
                                      mtlFragFogSampler_);

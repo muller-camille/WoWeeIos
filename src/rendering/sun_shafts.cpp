@@ -5,6 +5,11 @@
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
 #include "core/profiler.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 #include <algorithm>
 
 namespace wowee {
@@ -396,6 +401,16 @@ void SunShafts::composite(VkCommandBuffer cmd, uint32_t frame) {
 }
 
 void SunShafts::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlMarch_) { mtlMarch_->release(); mtlMarch_ = nullptr; }
+    if (mtlComposite_) { mtlComposite_->release(); mtlComposite_ = nullptr; }
+    for (auto*& rays : mtlRays_) {
+        if (rays) { rays->release(); rays = nullptr; }
+    }
+    mtlRaysW_ = mtlRaysH_ = 0;
+    mtlRaysThisFrame_ = nullptr;
+    metal_ = nullptr;
+#endif
     if (!ctx_) return;
     VkDevice device = ctx_->getDevice();
     vkDeviceWaitIdle(device);
@@ -416,6 +431,109 @@ void SunShafts::shutdown() {
     usable_ = false;
     ctx_ = nullptr;
 }
+
+#ifdef WOWEE_METAL
+bool SunShafts::initializeMetal(MetalContext* ctx) {
+    if (!ctx) return false;
+    const MetalBindings march("sun_shafts_comp");
+    const MetalBindings composite("sun_shafts_composite_frag");
+    mtlMarchFrame_ = march.texture(0, 0);
+    mtlMarchFrameSampler_ = march.sampler(0, 0);
+    mtlMarchRays_ = march.texture(0, 1);
+    mtlMarchPush_ = march.pushConstants();
+    mtlCompositeRays_ = composite.texture(0, 0);
+    mtlCompositeSampler_ = composite.sampler(0, 0);
+    if (!march.valid() || !composite.valid()) return false;
+    metal_ = ctx;
+
+    mtlMarch_ = buildMetalComputePipeline(*ctx, "sun_shafts_comp");
+    // Over the whole screen from postprocess_vert, screened onto the frame.
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "postprocess_vert";
+    desc.fragmentFunction = "sun_shafts_composite_frag";
+    desc.colorFormat = MTL::PixelFormatBGRA8Unorm;
+    desc.blend = MetalBlend::Screen;
+    desc.label = "sun shafts";
+    mtlComposite_ = buildMetalPipeline(*ctx, desc);
+    if (!mtlMarch_ || !mtlComposite_) {
+        shutdown();
+        return false;
+    }
+    return true;
+}
+
+bool SunShafts::recordMetal(MTL::CommandBuffer* commandBuffer, MTL::Texture* picture,
+                            uint32_t outW, uint32_t outH, const FrameInputs& in) {
+    mtlRaysThisFrame_ = nullptr;
+    if (!metal_ || !mtlMarch_ || !commandBuffer || !picture || in.strength <= 0.0f ||
+        outW < 4 || outH < 4) {
+        return false;
+    }
+    // A quarter of the screen, as on Vulkan; made again when it changes size.
+    const uint32_t w = std::max(1u, outW / 4), h = std::max(1u, outH / 4);
+    if (w != mtlRaysW_ || h != mtlRaysH_) {
+        for (auto*& rays : mtlRays_) {
+            if (rays) { rays->release(); rays = nullptr; }
+        }
+        auto* desc = MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatRGBA16Float, w,
+                                                                 h, false);
+        desc->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+        desc->setStorageMode(MTL::StorageModePrivate);
+        for (auto*& rays : mtlRays_) {
+            rays = metal_->getDevice()->newTexture(desc);
+            if (!rays) {
+                LOG_WARNING("SunShafts (Metal): could not allocate ", w, "x", h,
+                            " targets - no sun shafts");
+                mtlRaysW_ = mtlRaysH_ = 0;
+                return false;
+            }
+        }
+        mtlRaysW_ = w;
+        mtlRaysH_ = h;
+    }
+    MTL::Texture* rays = mtlRays_[metal_->frameNumber() % MetalContext::kRingSize];
+
+    MarchPush push{};
+    push.sun = glm::vec4(in.sunUV, static_cast<float>(outW) / static_cast<float>(outH),
+                         in.strength);
+    push.tint = glm::vec4(in.tint, 0.0f);
+    MTL::ComputeCommandEncoder* compute = commandBuffer->computeCommandEncoder();
+    compute->setLabel(NS::String::string("sun shafts", NS::UTF8StringEncoding));
+    compute->setComputePipelineState(mtlMarch_);
+    compute->setTexture(picture, mtlMarchFrame_);
+    compute->setSamplerState(
+        metal_->sampler(MetalContext::Filter::Linear, MetalContext::Address::ClampToEdge),
+        mtlMarchFrameSampler_);
+    compute->setTexture(rays, mtlMarchRays_);
+    compute->setBytes(&push, sizeof(push), mtlMarchPush_);
+    compute->dispatchThreadgroups(
+        MTL::Size::Make((w + kMarchGroup - 1) / kMarchGroup, (h + kMarchGroup - 1) / kMarchGroup, 1),
+        MTL::Size::Make(kMarchGroup, kMarchGroup, 1));
+    compute->endEncoding();
+    mtlRaysThisFrame_ = rays;
+    return true;
+}
+
+void SunShafts::compositeMetal(MTL::CommandBuffer* commandBuffer, MTL::Texture* target) {
+    if (!metal_ || !mtlComposite_ || !commandBuffer || !target || !mtlRaysThisFrame_) return;
+    auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    auto* color = pass->colorAttachments()->object(0);
+    color->setTexture(target);
+    color->setLoadAction(MTL::LoadActionLoad);
+    color->setStoreAction(MTL::StoreActionStore);
+    MTL::RenderCommandEncoder* encoder = commandBuffer->renderCommandEncoder(pass);
+    encoder->setLabel(NS::String::string("sun shafts composite", NS::UTF8StringEncoding));
+    encoder->setRenderPipelineState(mtlComposite_);
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setFragmentTexture(mtlRaysThisFrame_, mtlCompositeRays_);
+    encoder->setFragmentSamplerState(
+        metal_->sampler(MetalContext::Filter::Linear, MetalContext::Address::ClampToEdge),
+        mtlCompositeSampler_);
+    encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+    encoder->endEncoding();
+    mtlRaysThisFrame_ = nullptr;
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

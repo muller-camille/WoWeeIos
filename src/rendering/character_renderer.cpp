@@ -4673,7 +4673,7 @@ void CharacterRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buf
     encoder->setFragmentTexture(metalPreview_ ? metal_->neutralDepthTexture()
                                               : metal_->shadowMap(), slot.fragShadow);
     encoder->setFragmentSamplerState(metal_->shadowSampler(), slot.fragShadowSampler);
-    encoder->setFragmentTexture(metal_->neutralVolumeTexture(), slot.fragFog);
+    encoder->setFragmentTexture(metal_->fogVolume(), slot.fragFog);
     encoder->setFragmentSamplerState(clampLinear, slot.fragFogSampler);
     encoder->setFragmentTexture(metal_->whiteTexture(), slot.fragRtA);
     encoder->setFragmentSamplerState(clampLinear, slot.fragRtASampler);

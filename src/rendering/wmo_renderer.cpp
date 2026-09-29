@@ -4775,7 +4775,7 @@ void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* p
             // Stand-ins for the shadow map, the fog volume and the ray traced light.
             encoder->setFragmentTexture(m.shadowMap(), s.fragShadow);
             encoder->setFragmentSamplerState(m.shadowSampler(), s.fragShadowSampler);
-            encoder->setFragmentTexture(m.neutralVolumeTexture(), s.fragFog);
+            encoder->setFragmentTexture(m.fogVolume(), s.fragFog);
             encoder->setFragmentSamplerState(clampLinear, s.fragFogSampler);
             encoder->setFragmentTexture(m.whiteTexture(), s.fragRtA);
             encoder->setFragmentSamplerState(clampLinear, s.fragRtASampler);
