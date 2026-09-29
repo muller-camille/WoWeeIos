@@ -58,14 +58,18 @@ float shadowTexel() {
     return shadowParams.z > 0.0 ? shadowParams.z : 1.0 / 4096.0;
 }
 
+// Four compare taps half a texel off, where there were nine a whole texel
+// apart. The sampler filters, so each tap already weighs a 2x2 block of the
+// map, and the four together cover a 3x3 one as a tent; the nine covered 4x4,
+// an edge one texel softer, for more than twice the taps on every lit pixel of
+// the terrain, buildings, doodads and characters - the four surfaces with this
+// same function, changed together so their shadows keep meeting cleanly.
 float sampleShadowPCF(sampler2DShadow smap, vec3 coords) {
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
-            shadow += texture(smap, vec3(coords.xy + vec2(x, y) * shadowTexel(), coords.z));
-        }
-    }
-    return shadow / 9.0;
+    float h = 0.5 * shadowTexel();
+    return 0.25 * (texture(smap, vec3(coords.xy + vec2(-h, -h), coords.z))
+                 + texture(smap, vec3(coords.xy + vec2( h, -h), coords.z))
+                 + texture(smap, vec3(coords.xy + vec2(-h,  h), coords.z))
+                 + texture(smap, vec3(coords.xy + vec2( h,  h), coords.z)));
 }
 
 vec3 localLightContribution(vec3 pos, vec3 normal, vec3 albedo) {
