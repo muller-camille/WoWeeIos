@@ -6,6 +6,7 @@
 #include "rendering/wmo_vertex.hpp"
 #include "rendering/shadow_params.hpp"
 #include "rendering/wmo_renderer.hpp"
+#include "core/config_paths.hpp"
 #ifdef WOWEE_METAL
 #include <Metal/Metal.hpp>
 #include "rendering/metal/metal_context.hpp"
@@ -1471,13 +1472,30 @@ void WMORenderer::resetQueryStats() {
     // Note: precomputedFloorGrid is persistent and not cleared per-frame
 }
 
+namespace {
+/// Where a map's precomputed floor heights are kept between runs.
+///
+/// Beside the executable on a desktop, as it always was. On a phone or a
+/// tablet the working directory is the app bundle, which cannot be written:
+/// every quit on the iPad failed to save it and every start recomputed it.
+/// There it goes under the config root, which the app owns.
+std::string floorCachePath(const std::string& mapName) {
+    const std::string name = "cache/wmo_floor_" + mapName + ".bin";
+#ifdef WOWEE_MOBILE
+    return core::getConfigRoot() + "/" + name;
+#else
+    return name;
+#endif
+}
+}  // namespace
+
 bool WMORenderer::saveFloorCache() const {
     if (mapName_.empty()) {
         core::Logger::getInstance().warning("Cannot save floor cache: no map name set");
         return false;
     }
 
-    std::string filepath = "cache/wmo_floor_" + mapName_ + ".bin";
+    const std::string filepath = floorCachePath(mapName_);
 
     // Create directory if needed
     std::filesystem::path path(filepath);
@@ -1523,7 +1541,7 @@ bool WMORenderer::loadFloorCache() {
         return false;
     }
 
-    std::string filepath = "cache/wmo_floor_" + mapName_ + ".bin";
+    const std::string filepath = floorCachePath(mapName_);
 
     std::ifstream file(filepath, std::ios::binary);
     if (!file) {
