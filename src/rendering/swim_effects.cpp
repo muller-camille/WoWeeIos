@@ -9,6 +9,10 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -239,6 +243,15 @@ bool SwimEffects::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayou
 }
 
 void SwimEffects::shutdown() {
+#ifdef WOWEE_METAL
+    for (auto** pipeline : {&mtlRipplePipeline_, &mtlBubblePipeline_, &mtlInsectPipeline_}) {
+        if (*pipeline) { (*pipeline)->release(); *pipeline = nullptr; }
+    }
+    mtlRippleVerts_.release();
+    mtlBubbleVerts_.release();
+    mtlInsectVerts_.release();
+    metal_ = nullptr;
+#endif
     if (vkCtx) {
         VkDevice device = vkCtx->getDevice();
         VmaAllocator allocator = vkCtx->getAllocator();
@@ -703,6 +716,82 @@ void SwimEffects::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
         vkCmdDraw(cmd, static_cast<uint32_t>(insectVertexData.size() / 5), 1, 0, 0);
     }
 }
+
+#ifdef WOWEE_METAL
+bool SwimEffects::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                  uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings rippleVert("swim_ripple_vert");
+    const MetalBindings bubbleVert("swim_bubble_vert");
+    mtlRipplePerFrame_ = rippleVert.buffer(0, 0);
+    mtlBubblePerFrame_ = bubbleVert.buffer(0, 0);
+    if (!rippleVert.valid() || !bubbleVert.valid()) return false;
+
+    // All three are points of pos(vec3) + size + alpha, blended.
+    MTL::VertexDescriptor* vd = newPackedFloatVertexDescriptor(2);
+    MetalPipelineDesc desc;
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.vertexFunction = "swim_ripple_vert";
+    desc.fragmentFunction = "swim_ripple_frag";
+    desc.label = "swim ripples";
+    mtlRipplePipeline_ = buildMetalPipeline(*ctx, desc);
+    desc.vertexFunction = "swim_bubble_vert";
+    desc.fragmentFunction = "swim_bubble_frag";
+    desc.label = "swim bubbles";
+    mtlBubblePipeline_ = buildMetalPipeline(*ctx, desc);
+    // The midges take the ripples' vertex stage, as on Vulkan.
+    desc.vertexFunction = "swim_ripple_vert";
+    desc.fragmentFunction = "swim_insect_frag";
+    desc.label = "water insects";
+    mtlInsectPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlRipplePipeline_ || !mtlBubblePipeline_ || !mtlInsectPipeline_) return false;
+
+    if (!mtlRippleVerts_.create(*ctx, MAX_RIPPLE_PARTICLES * 5 * sizeof(float)) ||
+        !mtlBubbleVerts_.create(*ctx, MAX_BUBBLE_PARTICLES * 5 * sizeof(float)) ||
+        !mtlInsectVerts_.create(*ctx, MAX_INSECT_PARTICLES * 5 * sizeof(float))) {
+        return false;
+    }
+    ripples.reserve(MAX_RIPPLE_PARTICLES);
+    bubbles.reserve(MAX_BUBBLE_PARTICLES);
+    insects.reserve(MAX_INSECT_PARTICLES);
+    rippleVertexData.reserve(MAX_RIPPLE_PARTICLES * 5);
+    bubbleVertexData.reserve(MAX_BUBBLE_PARTICLES * 5);
+    insectVertexData.reserve(MAX_INSECT_PARTICLES * 5);
+    metal_ = ctx;
+    LOG_INFO("Swim effects initialized (Metal)");
+    return true;
+}
+
+void SwimEffects::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                              size_t offset) {
+    if (!encoder || !metal_) return;
+    // update() has already laid each out as the Vulkan draw uploads it.
+    const auto draw = [&](MTL::RenderPipelineState* pipeline, MetalVertexRing& ring,
+                          const std::vector<float>& data, int perFrameIndex, bool depthTest) {
+        if (!pipeline || data.empty()) return;
+        size_t written = 0;
+        MTL::Buffer* vertices = ring.write(*metal_, data.data(), data.size() * sizeof(float),
+                                           &written);
+        const NS::UInteger count = written / (5 * sizeof(float));
+        if (!vertices || count == 0) return;
+        encoder->setRenderPipelineState(pipeline);
+        encoder->setDepthStencilState(metal_->depthState(depthTest, false));
+        encoder->setCullMode(MTL::CullModeNone);
+        encoder->setVertexBuffer(perFrame, offset, perFrameIndex);
+        encoder->setVertexBuffer(vertices, 0, kMetalVertexBufferIndex);
+        encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0), count);
+    };
+    draw(mtlRipplePipeline_, mtlRippleVerts_, rippleVertexData, mtlRipplePerFrame_, true);
+    draw(mtlBubblePipeline_, mtlBubbleVerts_, bubbleVertexData, mtlBubblePerFrame_, true);
+    // Over everything, as the insect pipeline has no depth test on Vulkan.
+    draw(mtlInsectPipeline_, mtlInsectVerts_, insectVertexData, mtlRipplePerFrame_, false);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

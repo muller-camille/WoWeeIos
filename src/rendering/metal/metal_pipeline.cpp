@@ -4,6 +4,8 @@
 #include <Metal/Metal.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 
@@ -164,6 +166,54 @@ MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx, const MetalPipel
     if (fragmentFn) fragmentFn->release();
     pool->release();
     return state;
+}
+
+MTL::VertexDescriptor* newPackedFloatVertexDescriptor(uint32_t extraFloats) {
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    for (uint32_t i = 0; i < extraFloats; ++i) {
+        auto* attr = vd->attributes()->object(1 + i);
+        attr->setFormat(MTL::VertexFormatFloat);
+        attr->setOffset((3 + i) * sizeof(float));
+        attr->setBufferIndex(kMetalVertexBufferIndex);
+    }
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride((3 + extraFloats) * sizeof(float));
+    return vd;
+}
+
+bool MetalVertexRing::create(MetalContext& ctx, size_t capacityBytes) {
+    release();
+    static_assert(sizeof(buffers_) / sizeof(buffers_[0]) == MetalContext::kRingSize,
+                  "one buffer per frame the ring spans");
+    for (auto*& buffer : buffers_) {
+        buffer = ctx.newBuffer(nullptr, capacityBytes);
+        if (!buffer) {
+            release();
+            return false;
+        }
+    }
+    capacity_ = capacityBytes;
+    return true;
+}
+
+void MetalVertexRing::release() {
+    for (auto*& buffer : buffers_) {
+        if (buffer) { buffer->release(); buffer = nullptr; }
+    }
+    capacity_ = 0;
+}
+
+MTL::Buffer* MetalVertexRing::write(const MetalContext& ctx, const void* data, size_t bytes,
+                                    size_t* written) {
+    if (written) *written = 0;
+    if (!buffers_[0]) return nullptr;
+    MTL::Buffer* buffer = buffers_[ctx.frameNumber() % MetalContext::kRingSize];
+    const size_t n = std::min(bytes, capacity_);
+    if (n && data) std::memcpy(buffer->contents(), data, n);
+    if (written) *written = n;
+    return buffer;
 }
 
 bool MetalShadowSlots::load() {

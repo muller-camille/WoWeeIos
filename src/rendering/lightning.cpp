@@ -7,6 +7,10 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <random>
 #include <cmath>
 #include <cstring>
@@ -215,6 +219,13 @@ bool Lightning::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayout)
 }
 
 void Lightning::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlBoltPipeline_) { mtlBoltPipeline_->release(); mtlBoltPipeline_ = nullptr; }
+    if (mtlFlashPipeline_) { mtlFlashPipeline_->release(); mtlFlashPipeline_ = nullptr; }
+    if (mtlFlashQuad_) { mtlFlashQuad_->release(); mtlFlashQuad_ = nullptr; }
+    mtlBoltVerts_.release();
+    metal_ = nullptr;
+#endif
     if (vkCtx) {
         VkDevice device = vkCtx->getDevice();
         VmaAllocator allocator = vkCtx->getAllocator();
@@ -486,6 +497,113 @@ void Lightning::renderFlash(VkCommandBuffer cmd) {
     vkCmdBindVertexBuffers(cmd, 0, 1, &flashQuadVB, &offset);
     vkCmdDraw(cmd, 4, 1, 0, 0);
 }
+
+#ifdef WOWEE_METAL
+bool Lightning::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings boltVert("lightning_bolt_vert");
+    const MetalBindings flashFrag("lightning_flash_frag");
+    mtlBoltPerFrame_ = boltVert.buffer(0, 0);
+    mtlBoltPush_ = boltVert.pushConstants();
+    mtlFlashPush_ = flashFrag.pushConstants();
+    if (!boltVert.valid() || !flashFrag.valid()) return false;
+
+    MetalPipelineDesc desc;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+
+    // The bolt: positions only, a line strip, added on - and drawn over
+    // everything, as the Vulkan pipeline has no depth test.
+    auto* vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat3);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(sizeof(glm::vec3));
+    desc.vertexFunction = "lightning_bolt_vert";
+    desc.fragmentFunction = "lightning_bolt_frag";
+    desc.vertexDescriptor = vd;
+    desc.blend = MetalBlend::Additive;
+    desc.label = "lightning bolt";
+    mtlBoltPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    // The flash: a quad over the screen in clip space, blended.
+    vd = MTL::VertexDescriptor::alloc()->init();
+    vd->attributes()->object(0)->setFormat(MTL::VertexFormatFloat2);
+    vd->attributes()->object(0)->setOffset(0);
+    vd->attributes()->object(0)->setBufferIndex(kMetalVertexBufferIndex);
+    vd->layouts()->object(kMetalVertexBufferIndex)->setStride(2 * sizeof(float));
+    desc.vertexFunction = "lightning_flash_vert";
+    desc.fragmentFunction = "lightning_flash_frag";
+    desc.vertexDescriptor = vd;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "lightning flash";
+    mtlFlashPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlBoltPipeline_ || !mtlFlashPipeline_) return false;
+
+    // As many segments a bolt as the Vulkan buffer holds, for each of them.
+    if (!mtlBoltVerts_.create(*ctx, MAX_BOLTS * MAX_SEGMENTS * 4 * sizeof(glm::vec3))) {
+        return false;
+    }
+    const float flashQuad[] = {-1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f};
+    mtlFlashQuad_ = ctx->newBuffer(flashQuad, sizeof(flashQuad));
+    if (!mtlFlashQuad_) return false;
+    mtlBoltScratch_.reserve(MAX_BOLTS * MAX_SEGMENTS * 4);
+    metal_ = ctx;
+    LOG_INFO("Lightning system initialized (Metal)");
+    return true;
+}
+
+void Lightning::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset) {
+    if (!enabled || !encoder || !metal_) return;
+
+    if (mtlBoltPipeline_) {
+        constexpr size_t kPerBolt = MAX_SEGMENTS * 4;
+        mtlBoltScratch_.clear();
+        struct Draw { NS::UInteger start, count; float brightness; };
+        Draw draws[MAX_BOLTS];
+        int drawCount = 0;
+        for (const auto& bolt : bolts) {
+            if (!bolt.active || bolt.segments.empty() || drawCount == MAX_BOLTS) continue;
+            const size_t n = std::min(bolt.segments.size(), kPerBolt);
+            draws[drawCount++] = {NS::UInteger(mtlBoltScratch_.size()), NS::UInteger(n),
+                                  bolt.brightness};
+            mtlBoltScratch_.insert(mtlBoltScratch_.end(), bolt.segments.begin(),
+                                   bolt.segments.begin() + static_cast<std::ptrdiff_t>(n));
+        }
+        MTL::Buffer* vertices =
+            drawCount ? mtlBoltVerts_.write(*metal_, mtlBoltScratch_.data(),
+                                            mtlBoltScratch_.size() * sizeof(glm::vec3))
+                      : nullptr;
+        if (vertices) {
+            encoder->setRenderPipelineState(mtlBoltPipeline_);
+            encoder->setDepthStencilState(metal_->depthState(false, false));
+            encoder->setCullMode(MTL::CullModeNone);
+            encoder->setVertexBuffer(perFrame, offset, mtlBoltPerFrame_);
+            encoder->setVertexBuffer(vertices, 0, kMetalVertexBufferIndex);
+            for (int i = 0; i < drawCount; ++i) {
+                encoder->setVertexBytes(&draws[i].brightness, sizeof(float), mtlBoltPush_);
+                encoder->drawPrimitives(MTL::PrimitiveTypeLineStrip, draws[i].start,
+                                        draws[i].count);
+            }
+        }
+    }
+
+    if (flash.active && flash.intensity > 0.01f && mtlFlashPipeline_) {
+        encoder->setRenderPipelineState(mtlFlashPipeline_);
+        encoder->setDepthStencilState(metal_->depthState(false, false));
+        encoder->setCullMode(MTL::CullModeNone);
+        encoder->setFragmentBytes(&flash.intensity, sizeof(float), mtlFlashPush_);
+        encoder->setVertexBuffer(mtlFlashQuad_, 0, kMetalVertexBufferIndex);
+        encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0),
+                                NS::UInteger(4));
+    }
+}
+#endif
 
 void Lightning::setEnabled(bool enabled) {
     this->enabled = enabled;

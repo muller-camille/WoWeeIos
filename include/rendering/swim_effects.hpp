@@ -4,6 +4,9 @@
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 #include <vector>
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 namespace wowee {
 namespace rendering {
@@ -13,6 +16,7 @@ class CameraController;
 class WaterRenderer;
 class M2Renderer;
 class VkContext;
+class MetalContext;
 
 class SwimEffects {
 public:
@@ -127,6 +131,26 @@ private:
     void spawnRipple(const glm::vec3& pos, const glm::vec3& moveDir, float waterH);
     void spawnBubble(const glm::vec3& pos, float waterH);
     void spawnInsect(const glm::vec3& vegPos);
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md): drawn after the
+    /// water, over the surface the spray is thrown off, as Vulkan draws it in
+    /// the water's continuation pass.
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlRipplePipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlBubblePipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlInsectPipeline_ = nullptr;
+    MetalVertexRing mtlRippleVerts_;
+    MetalVertexRing mtlBubbleVerts_;
+    MetalVertexRing mtlInsectVerts_;
+    int mtlRipplePerFrame_ = -1, mtlBubblePerFrame_ = -1;
+#endif
 };
 
 } // namespace rendering

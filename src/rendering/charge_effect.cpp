@@ -9,6 +9,10 @@
 #include "pipeline/m2_loader.hpp"
 #include "pipeline/asset_manager.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -195,6 +199,13 @@ bool ChargeEffect::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayo
 }
 
 void ChargeEffect::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlRibbonPipeline_) { mtlRibbonPipeline_->release(); mtlRibbonPipeline_ = nullptr; }
+    if (mtlDustPipeline_) { mtlDustPipeline_->release(); mtlDustPipeline_ = nullptr; }
+    mtlRibbonVerts_.release();
+    mtlDustVerts_.release();
+    metal_ = nullptr;
+#endif
     if (vkCtx_) {
         VkDevice device = vkCtx_->getDevice();
         VmaAllocator allocator = vkCtx_->getAllocator();
@@ -410,47 +421,64 @@ void ChargeEffect::update(float deltaTime) {
     }
 }
 
+void ChargeEffect::fillRibbonVerts() {
+    ribbonVerts_.clear();
+    if (trail_.size() < 2) return;
+
+    int n = static_cast<int>(trail_.size());
+    for (int i = 0; i < n; i++) {
+        const auto& tp = trail_[i];
+        float ageFrac = tp.age / TRAIL_LIFETIME;      // 0 = fresh, 1 = about to expire
+        float positionFrac = static_cast<float>(i) / static_cast<float>(n - 1);  // 0 = tail, 1 = head
+
+        // Alpha: fade out by age and also taper toward the tail end
+        float alpha = (1.0f - ageFrac) * std::min(positionFrac * 3.0f, 1.0f);
+        // Heat: hotter near the head (character), cooler at the tail
+        float heat = positionFrac;
+
+        // Width tapers: thin at tail, full at head
+        float width = TRAIL_HALF_WIDTH * std::min(positionFrac * 2.0f, 1.0f);
+
+        // Two vertices: bottom (center - up*width) and top (center + up*width)
+        glm::vec3 bottom = tp.center - tp.side * width;
+        glm::vec3 top    = tp.center + tp.side * width;
+
+        // Bottom vertex (height=0, more transparent)
+        ribbonVerts_.push_back(bottom.x);
+        ribbonVerts_.push_back(bottom.y);
+        ribbonVerts_.push_back(bottom.z);
+        ribbonVerts_.push_back(alpha);
+        ribbonVerts_.push_back(heat);
+        ribbonVerts_.push_back(0.0f);  // height = bottom
+
+        // Top vertex (height=1, redder and more opaque)
+        ribbonVerts_.push_back(top.x);
+        ribbonVerts_.push_back(top.y);
+        ribbonVerts_.push_back(top.z);
+        ribbonVerts_.push_back(alpha);
+        ribbonVerts_.push_back(heat);
+        ribbonVerts_.push_back(1.0f);  // height = top
+    }
+}
+
+void ChargeEffect::fillDustVerts() {
+    dustVerts_.clear();
+    for (const auto& d : dustPuffs_) {
+        dustVerts_.push_back(d.position.x);
+        dustVerts_.push_back(d.position.y);
+        dustVerts_.push_back(d.position.z);
+        dustVerts_.push_back(d.size);
+        dustVerts_.push_back(d.alpha);
+    }
+}
+
 void ChargeEffect::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     VkDeviceSize offset = 0;
 
     // ---- Render ribbon trail as triangle strip ----
     if (trail_.size() >= 2 && ribbonPipeline_ != VK_NULL_HANDLE) {
-        ribbonVerts_.clear();
-
+        fillRibbonVerts();
         int n = static_cast<int>(trail_.size());
-        for (int i = 0; i < n; i++) {
-            const auto& tp = trail_[i];
-            float ageFrac = tp.age / TRAIL_LIFETIME;      // 0 = fresh, 1 = about to expire
-            float positionFrac = static_cast<float>(i) / static_cast<float>(n - 1);  // 0 = tail, 1 = head
-
-            // Alpha: fade out by age and also taper toward the tail end
-            float alpha = (1.0f - ageFrac) * std::min(positionFrac * 3.0f, 1.0f);
-            // Heat: hotter near the head (character), cooler at the tail
-            float heat = positionFrac;
-
-            // Width tapers: thin at tail, full at head
-            float width = TRAIL_HALF_WIDTH * std::min(positionFrac * 2.0f, 1.0f);
-
-            // Two vertices: bottom (center - up*width) and top (center + up*width)
-            glm::vec3 bottom = tp.center - tp.side * width;
-            glm::vec3 top    = tp.center + tp.side * width;
-
-            // Bottom vertex (height=0, more transparent)
-            ribbonVerts_.push_back(bottom.x);
-            ribbonVerts_.push_back(bottom.y);
-            ribbonVerts_.push_back(bottom.z);
-            ribbonVerts_.push_back(alpha);
-            ribbonVerts_.push_back(heat);
-            ribbonVerts_.push_back(0.0f);  // height = bottom
-
-            // Top vertex (height=1, redder and more opaque)
-            ribbonVerts_.push_back(top.x);
-            ribbonVerts_.push_back(top.y);
-            ribbonVerts_.push_back(top.z);
-            ribbonVerts_.push_back(alpha);
-            ribbonVerts_.push_back(heat);
-            ribbonVerts_.push_back(1.0f);  // height = top
-        }
 
         // Upload to mapped buffer
         VkDeviceSize uploadSize = ribbonVerts_.size() * sizeof(float);
@@ -467,14 +495,7 @@ void ChargeEffect::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
 
     // ---- Render dust puffs ----
     if (!dustPuffs_.empty() && dustPipeline_ != VK_NULL_HANDLE) {
-        dustVerts_.clear();
-        for (const auto& d : dustPuffs_) {
-            dustVerts_.push_back(d.position.x);
-            dustVerts_.push_back(d.position.y);
-            dustVerts_.push_back(d.position.z);
-            dustVerts_.push_back(d.size);
-            dustVerts_.push_back(d.alpha);
-        }
+        fillDustVerts();
 
         // Upload to mapped buffer
         VkDeviceSize uploadSize = dustVerts_.size() * sizeof(float);
@@ -489,6 +510,90 @@ void ChargeEffect::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
         vkCmdDraw(cmd, static_cast<uint32_t>(dustPuffs_.size()), 1, 0, 0);
     }
 }
+
+#ifdef WOWEE_METAL
+bool ChargeEffect::initializeMetal(MetalContext* ctx, uint32_t colorFormat,
+                                   uint32_t depthFormat, uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings ribbonVert("charge_ribbon_vert");
+    const MetalBindings dustVert("charge_dust_vert");
+    mtlRibbonPerFrame_ = ribbonVert.buffer(0, 0);
+    mtlDustPerFrame_ = dustVert.buffer(0, 0);
+    if (!ribbonVert.valid() || !dustVert.valid()) return false;
+
+    MetalPipelineDesc desc;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+
+    // The ribbon: pos(vec3) + alpha + heat + height, a strip, added on.
+    MTL::VertexDescriptor* vd = newPackedFloatVertexDescriptor(3);
+    desc.vertexFunction = "charge_ribbon_vert";
+    desc.fragmentFunction = "charge_ribbon_frag";
+    desc.vertexDescriptor = vd;
+    desc.blend = MetalBlend::Additive;
+    desc.label = "charge ribbon";
+    mtlRibbonPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+
+    // The dust: pos(vec3) + size + alpha, points, blended.
+    vd = newPackedFloatVertexDescriptor(2);
+    desc.vertexFunction = "charge_dust_vert";
+    desc.fragmentFunction = "charge_dust_frag";
+    desc.vertexDescriptor = vd;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "charge dust";
+    mtlDustPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlRibbonPipeline_ || !mtlDustPipeline_) return false;
+
+    if (!mtlRibbonVerts_.create(*ctx, MAX_TRAIL_POINTS * 2 * 6 * sizeof(float)) ||
+        !mtlDustVerts_.create(*ctx, MAX_DUST * 5 * sizeof(float))) {
+        return false;
+    }
+    ribbonVerts_.reserve(MAX_TRAIL_POINTS * 2 * 6);
+    dustVerts_.reserve(MAX_DUST * 5);
+    dustPuffs_.reserve(MAX_DUST);
+    metal_ = ctx;
+    return true;
+}
+
+void ChargeEffect::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                               size_t offset) {
+    if (!encoder || !metal_) return;
+    // Both tested against the scene and neither written into it.
+    if (trail_.size() >= 2 && mtlRibbonPipeline_) {
+        fillRibbonVerts();
+        size_t written = 0;
+        MTL::Buffer* vertices = mtlRibbonVerts_.write(
+            *metal_, ribbonVerts_.data(), ribbonVerts_.size() * sizeof(float), &written);
+        const NS::UInteger count = written / (6 * sizeof(float));
+        if (vertices && count >= 3) {
+            encoder->setRenderPipelineState(mtlRibbonPipeline_);
+            encoder->setDepthStencilState(metal_->depthState(true, false));
+            encoder->setCullMode(MTL::CullModeNone);
+            encoder->setVertexBuffer(perFrame, offset, mtlRibbonPerFrame_);
+            encoder->setVertexBuffer(vertices, 0, kMetalVertexBufferIndex);
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), count);
+        }
+    }
+    if (!dustPuffs_.empty() && mtlDustPipeline_) {
+        fillDustVerts();
+        size_t written = 0;
+        MTL::Buffer* vertices = mtlDustVerts_.write(
+            *metal_, dustVerts_.data(), dustVerts_.size() * sizeof(float), &written);
+        const NS::UInteger count = written / (5 * sizeof(float));
+        if (vertices && count > 0) {
+            encoder->setRenderPipelineState(mtlDustPipeline_);
+            encoder->setDepthStencilState(metal_->depthState(true, false));
+            encoder->setCullMode(MTL::CullModeNone);
+            encoder->setVertexBuffer(perFrame, offset, mtlDustPerFrame_);
+            encoder->setVertexBuffer(vertices, 0, kMetalVertexBufferIndex);
+            encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0), count);
+        }
+    }
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

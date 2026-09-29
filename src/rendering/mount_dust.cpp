@@ -6,6 +6,10 @@
 #include "rendering/vk_frame_data.hpp"
 #include "rendering/vk_utils.hpp"
 #include "core/logger.hpp"
+#ifdef WOWEE_METAL
+#include <Metal/Metal.hpp>
+#include "rendering/metal/metal_context.hpp"
+#endif
 #include <glm/gtc/matrix_transform.hpp>
 #include <random>
 #include <cmath>
@@ -102,6 +106,11 @@ bool MountDust::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayout)
 }
 
 void MountDust::shutdown() {
+#ifdef WOWEE_METAL
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    mtlVertices_.release();
+    metal_ = nullptr;
+#endif
     if (vkCtx) {
         destroyParticleResources(vkCtx->getDevice(), vkCtx->getAllocator(),
                                  pipeline, pipelineLayout, dynamicVB,
@@ -198,10 +207,7 @@ void MountDust::update(float deltaTime) {
     }
 }
 
-void MountDust::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
-    if (particles.empty() || pipeline == VK_NULL_HANDLE) return;
-
-    // Build vertex data
+void MountDust::fillVertexData() {
     vertexData.clear();
     for (const auto& p : particles) {
         vertexData.push_back(p.position.x);
@@ -210,6 +216,12 @@ void MountDust::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
         vertexData.push_back(p.size);
         vertexData.push_back(p.alpha);
     }
+}
+
+void MountDust::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
+    if (particles.empty() || pipeline == VK_NULL_HANDLE) return;
+
+    fillVertexData();
 
     // Upload to mapped buffer
     VkDeviceSize uploadSize = vertexData.size() * sizeof(float);
@@ -231,6 +243,56 @@ void MountDust::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     // Draw particles as points
     vkCmdDraw(cmd, static_cast<uint32_t>(particles.size()), 1, 0, 0);
 }
+
+#ifdef WOWEE_METAL
+bool MountDust::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                                uint32_t sampleCount) {
+    if (!ctx) return false;
+    const MetalBindings vert("mount_dust_vert");
+    mtlVertPerFrame_ = vert.buffer(0, 0);
+    if (!vert.valid()) return false;
+
+    // pos(vec3) + size + alpha, as points, blended over the scene and tested
+    // against it without writing it.
+    MTL::VertexDescriptor* vd = newPackedFloatVertexDescriptor(2);
+    MetalPipelineDesc desc;
+    desc.vertexFunction = "mount_dust_vert";
+    desc.fragmentFunction = "mount_dust_frag";
+    desc.vertexDescriptor = vd;
+    desc.colorFormat = colorFormat;
+    desc.depthFormat = depthFormat;
+    desc.sampleCount = sampleCount;
+    desc.blend = MetalBlend::Alpha;
+    desc.label = "mount dust";
+    mtlPipeline_ = buildMetalPipeline(*ctx, desc);
+    vd->release();
+    if (!mtlPipeline_) return false;
+    if (!mtlVertices_.create(*ctx, MAX_DUST_PARTICLES * 5 * sizeof(float))) return false;
+
+    particles.reserve(MAX_DUST_PARTICLES);
+    vertexData.reserve(MAX_DUST_PARTICLES * 5);
+    metal_ = ctx;
+    LOG_INFO("Mount dust effects initialized (Metal)");
+    return true;
+}
+
+void MountDust::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset) {
+    if (particles.empty() || !mtlPipeline_ || !encoder) return;
+    fillVertexData();
+    size_t written = 0;
+    MTL::Buffer* vertices = mtlVertices_.write(*metal_, vertexData.data(),
+                                               vertexData.size() * sizeof(float), &written);
+    const NS::UInteger count = written / (5 * sizeof(float));
+    if (!vertices || count == 0) return;
+    encoder->setRenderPipelineState(mtlPipeline_);
+    encoder->setDepthStencilState(metal_->depthState(true, false));
+    encoder->setCullMode(MTL::CullModeNone);
+    encoder->setVertexBuffer(perFrame, offset, mtlVertPerFrame_);
+    encoder->setVertexBuffer(vertices, 0, kMetalVertexBufferIndex);
+    encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0), count);
+}
+#endif
 
 } // namespace rendering
 } // namespace wowee

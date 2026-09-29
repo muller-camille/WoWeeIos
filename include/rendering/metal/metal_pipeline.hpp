@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace MTL {
+class Buffer;
 class RenderCommandEncoder;
 class RenderPipelineState;
 class VertexDescriptor;
@@ -70,6 +72,35 @@ struct MetalPipelineDesc {
 /// is missing or Metal refuses the combination. The caller releases it.
 [[nodiscard]] MTL::RenderPipelineState* buildMetalPipeline(MetalContext& ctx,
                                                            const MetalPipelineDesc& desc);
+
+/// Packed floats in one buffer at kMetalVertexBufferIndex: a vec3 position at
+/// location 0, then one float at each location from 1 - the particle
+/// effects' layout (position, size, alpha and the like). The caller releases
+/// it.
+[[nodiscard]] MTL::VertexDescriptor* newPackedFloatVertexDescriptor(uint32_t extraFloats);
+
+/// Vertices the CPU writes every frame and the GPU draws: a ring of
+/// MetalContext::kRingSize shared buffers, one per frame that can be in
+/// flight, so writing this frame's never touches what an earlier one reads.
+class MetalVertexRing {
+public:
+    MetalVertexRing() = default;
+    ~MetalVertexRing() { release(); }
+    MetalVertexRing(const MetalVertexRing&) = delete;
+    MetalVertexRing& operator=(const MetalVertexRing&) = delete;
+
+    [[nodiscard]] bool create(MetalContext& ctx, size_t capacityBytes);
+    void release();
+    /// This frame's buffer, bytes of data at its start - no more than the
+    /// capacity; how many were written goes to written. Null before create.
+    MTL::Buffer* write(const MetalContext& ctx, const void* data, size_t bytes,
+                       size_t* written = nullptr);
+    [[nodiscard]] bool valid() const { return buffers_[0] != nullptr; }
+
+private:
+    MTL::Buffer* buffers_[3] = {};
+    size_t capacity_ = 0;
+};
 
 /// The shadow map's format: depth alone, 32-bit float.
 inline constexpr uint32_t kMetalShadowDepthFormat = 252;  // MTL::PixelFormatDepth32Float

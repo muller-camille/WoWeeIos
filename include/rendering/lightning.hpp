@@ -4,12 +4,16 @@
 #include <vk_mem_alloc.h>
 #include <glm/glm.hpp>
 #include <vector>
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 namespace wowee {
 namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 
 /**
  * Lightning system for thunder storm effects
@@ -116,6 +120,26 @@ private:
     static constexpr float STRIKE_DISTANCE = 200.0f;  // From camera
     static constexpr int MAX_SEGMENTS = 64;
     static constexpr float BRANCH_PROBABILITY = 0.3f;
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlBoltPipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlFlashPipeline_ = nullptr;
+    /// Every bolt's segments one after another, each drawn from its own
+    /// start: Vulkan's single buffer is rewritten per bolt before any of them
+    /// is drawn, so all three draw the last.
+    MetalVertexRing mtlBoltVerts_;
+    MTL::Buffer* mtlFlashQuad_ = nullptr;
+    int mtlBoltPerFrame_ = -1, mtlBoltPush_ = -1, mtlFlashPush_ = -1;
+    std::vector<glm::vec3> mtlBoltScratch_;
+#endif
 };
 
 } // namespace rendering

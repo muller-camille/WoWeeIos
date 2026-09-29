@@ -3751,6 +3751,8 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             m2Renderer.reset();
         } else {
             setViewDistance(viewDistance_);
+            // The midges hover over the water plants it knows of.
+            if (swimEffects) swimEffects->setM2Renderer(m2Renderer.get());
             // Spell visuals are M2 instances spawned into it: nothing of their
             // own to port.
             if (!spellVisualSystem_) {
@@ -5106,6 +5108,28 @@ bool Renderer::initializeMetal() {
         LOG_WARNING("Weather (Metal) initialization failed - no rain or snow");
         weather.reset();
     }
+    // The storm's bolts and flash, the swimmer's spray, bubbles and midges,
+    // the dust a mount kicks up and the charge's trail. update() drives them
+    // as on Vulkan; renderFrameMetal draws them over the water.
+    const auto metalEffect = [this](auto& effect, const char* what) {
+        if (!effect->initializeMetal(metal_, MTL::PixelFormatBGRA8Unorm,
+                                     MTL::PixelFormatDepth32Float, 1)) {
+            LOG_WARNING(what, " (Metal) initialization failed (non-fatal)");
+            effect.reset();
+        }
+    };
+    lightning = std::make_unique<Lightning>();
+    metalEffect(lightning, "Lightning");
+    swimEffects = std::make_unique<SwimEffects>();
+    metalEffect(swimEffects, "Swim effects");
+    mountDust = std::make_unique<MountDust>();
+    metalEffect(mountDust, "Mount dust");
+    chargeEffect = std::make_unique<ChargeEffect>();
+    metalEffect(chargeEffect, "Charge effect");
+    // The level-up column and the sparkle over lootable corpses are M2 models
+    // the M2 renderer draws: nothing of their own to port.
+    levelUpEffect = std::make_unique<LevelUpEffect>();
+    lootSparkles_ = std::make_unique<LootSparkles>();
 
     lightingManager = std::make_unique<LightingManager>();
     auto* assetManager = core::Application::getInstance().getAssetManager();
@@ -5587,8 +5611,18 @@ void Renderer::renderFrameMetal() {
         if (waterRenderer && !metalSkips("water")) {
             waterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera, w, h);
         }
-        // Over the water as on Vulkan: the weather, then the quest givers' marks.
+        // The swimmer's spray over the surface it is thrown off, as Vulkan's
+        // continuation pass draws it.
+        if (swimEffects) swimEffects->renderMetal(encoder, mtlFrameData_, offset);
+        // Over the water as on Vulkan: the weather and the storm's lightning,
+        // the dust a mount kicks up, the charge's trail, then the quest
+        // givers' marks.
         if (weather) weather->renderMetal(encoder, mtlFrameData_, offset);
+        if (lightning && lightning->isEnabled()) {
+            lightning->renderMetal(encoder, mtlFrameData_, offset);
+        }
+        if (mountDust) mountDust->renderMetal(encoder, mtlFrameData_, offset);
+        if (chargeEffect) chargeEffect->renderMetal(encoder, mtlFrameData_, offset);
         if (footprintRenderer) {
             footprintRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
         }

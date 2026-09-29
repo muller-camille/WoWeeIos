@@ -6,6 +6,9 @@
 #include <vector>
 #include <deque>
 #include <cstdint>
+#ifdef WOWEE_METAL
+#include "rendering/metal/metal_pipeline.hpp"
+#endif
 
 namespace wowee {
 namespace pipeline { class AssetManager; }
@@ -13,6 +16,7 @@ namespace rendering {
 
 class Camera;
 class VkContext;
+class MetalContext;
 class M2Renderer;
 
 /// Renders a red-orange ribbon streak trailing behind the warrior during Charge,
@@ -117,6 +121,28 @@ private:
         float elapsed;
     };
     std::vector<ActiveM2> activeImpacts_;
+
+    /// ribbonVerts_ from the trail, two per point: position, alpha, heat and
+    /// height. Nothing when there are fewer than two points.
+    void fillRibbonVerts();
+    /// dustVerts_ from the puffs: position, size, alpha.
+    void fillDustVerts();
+
+#ifdef WOWEE_METAL
+public:
+    /// The same on the Metal renderer (docs/plan-metal.md).
+    bool initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
+                         uint32_t sampleCount);
+    void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset);
+
+private:
+    MetalContext* metal_ = nullptr;
+    MTL::RenderPipelineState* mtlRibbonPipeline_ = nullptr;
+    MTL::RenderPipelineState* mtlDustPipeline_ = nullptr;
+    MetalVertexRing mtlRibbonVerts_;
+    MetalVertexRing mtlDustVerts_;
+    int mtlRibbonPerFrame_ = -1, mtlDustPerFrame_ = -1;
+#endif
 };
 
 } // namespace rendering
