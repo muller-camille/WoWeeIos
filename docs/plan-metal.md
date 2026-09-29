@@ -61,8 +61,12 @@ In order. What each one needs is noted, because the device work needs the Mac.
    is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
 4. Close M4: fps and memory at Goldshire and a capital, then the branch merges. The Linux
    client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
-   `CharacterRenderer`'s Vulkan sink was fixed on the way); run its whole test suite before the
-   merge.
+   `CharacterRenderer`'s Vulkan sink was fixed on the way). Of its 217 tests on 2026-09-29, in a
+   Debug build, 214 passed. `shared_rules` and `settings_schema_consistency` fail only in Debug,
+   where the `#ifndef NDEBUG` FSR 3 tuning entries split the Upscaling category; CI builds
+   Release. `sweep_guard` fails on two findings older than that evening, which master's CI
+   would stop the merge on: `MetalContext::frameGpuStart_` is stored and never read, and
+   `Celestial::shutdown` and `Clouds::shutdown` are one function written twice.
 
 Not in M4, as decided or found: ray traced lighting is not ported (3.11). The Hi-Z pyramid is
 never created on either backend, and the M2 GPU cull stays Vulkan's - the Metal M2 path culls on
