@@ -11,17 +11,43 @@ What is left is in **Next steps** just below. On 2026-09-28 the Mac build compil
 translated shaders into `default.metallib` with no error or warning, the library in the app holds
 exactly the 80 functions the manifest lists, and the MoltenVK build still played on the iPad.
 
-## Next steps (handoff, 2026-09-29)
+Later on 2026-09-29 a cloud session wrote the terrain's cheaper alpha masks, FSR 1 where MetalFX
+is missing, FXAA, MSAA, and every effect M4 still lacked (listed under **Next steps**, 1). None of
+it has been built by Xcode or seen on the iPad yet. What was checked: the regenerated MSL and
+manifest (`convert_shaders.py --check`), the Linux build and the alpha-map test, and every
+source with a Metal path parsed against metal-cpp by `tools/metal/syntax_check/check.sh`.
+
+## Next steps (handoff, 2026-09-29, evening)
 
 In order. What each one needs is noted, because the device work needs the Mac.
 
-1. **Terrain fragment cost** (~6 ms of the ~37 ms frame). `terrain.frag.glsl` takes about 30
-   samples a pixel: four layers, three alpha masks each smoothed with five taps
-   (`sampleAlphaSmooth`-style code around line 110), nine PCF taps. One bilinear tap per mask is
-   the likely win. This is a shader change, so the SPIR-V and the Metal translation are
-   regenerated: `glslc`/`glslangValidator` and `spirv-cross`, then
-   `tools/metal/convert_shaders.py`. The Mac has none of them (no Homebrew); a Linux cloud
-   session can `apt install glslang-tools spirv-cross`. Both backends take the change.
+1. **Build and look at what the cloud session wrote.** First the build itself: the Metal compiler
+   takes the regenerated `terrain.frag.metal`, and Xcode the new sources. Then each on the iPad:
+   - *Terrain alpha masks.* The seam blur near a chunk's edge is baked into each map as it is
+     uploaded (`pipeline::featherAlphaEdges`, tested by `test_adt_alpha`), and `terrain.frag`
+     takes one bilinear tap per layer instead of five. Both backends. Look at chunk edges up close
+     for seams, and take `WOWEE_FRAME_PROFILE` at the Shadowglen pond against the ~37 ms frame.
+   - *FSR 1* (`MetalPostProcess::encodeUpscale`, `fsr_easu` as `renderFSRUpscale` draws it)
+     where `MTLFX::SpatialScalerDescriptor::supportsDevice` says no. `WOWEE_METAL_FSR1=1` takes it
+     on the A14. The menu's sharpening drives it.
+   - *FXAA* (`MetalPostProcess::encodeFxaa`), from the menu's switch or while drunk. It runs at
+     the world's size, ahead of the upscaler: MetalFX wants anti-aliased input.
+   - *MSAA*, from the menu's choice as the settings file holds it at launch
+     (`metalSampleCount`), or `WOWEE_METAL_MSAA=4`. Every world pipeline is built for it, so a
+     new choice applies at the next launch; the menu says so on Metal. The water's split resolves
+     into `mtlSceneColor_`/`mtlSceneDepth_` instead of copying. Look at the water (its refraction
+     reads the resolved depth) and at foliage, where alpha-to-coverage now has samples to use.
+   - *Effects:* swim ripples, bubbles and midges (swim, and stand by water plants); mount dust
+     (ride); the charge trail (a warrior's Charge); the level-up column and the loot sparkle over
+     lootable corpses (M2 models that only needed creating). Lightning is ported but
+     `Renderer::update` turns it off whenever there is a game handler, on both backends.
+   - *Grass* (the Graphics page's "Grass (experimental)"): cull as a compute pass, indexed
+     indirect draw. Its 76 MB of buffers exist only while it is on.
+   - *Volumetric fog* ("Light shafts and mist") and *sun shafts* ("Sun shafts"). The fog's two
+     compute passes run after the shadow map; the world's shaders take the volume from
+     `MetalContext::fogVolume()`. The shafts march the finished picture itself, not a
+     quarter-size copy (a Metal blit does not scale).
+   `WOWEE_METAL_SKIP` takes `grass`, `fog` and `sunshafts` to tell their cost apart.
 2. **Black foliage (open bug).** The nearest tree's canopy draws solid black at night in
    Tirisfal (Tusa's spot) while distant canopies are fine. Ruled out: shadows (black with
    `WOWEE_METAL_SKIP=shadow`), the cutout (the leaf shapes are cut; only their colour is black),
@@ -30,15 +56,24 @@ In order. What each one needs is noted, because the device work needs the Mac.
    GPU has it), or a foliage-only term in `m2.frag.glsl` (fringe fix at `textureLod(..., 4.0)`,
    mip-alpha boost, canopy AO). Compare against the MoltenVK build (`-DWOWEE_METAL=OFF` in a
    separate build directory) at the same spot to know whether it is Metal's at all.
-3. **FSR 1 fallback** where MetalFX is unsupported: `fsr_easu`/`fsr_rcas` are already translated.
-   Today those devices draw at full size.
-4. **The rest of M4's list:** lightning, swim ripples, mount dust, charge trail; anti-aliasing
-   (MSAA/FXAA choices do nothing on Metal); volumetric fog, sun shafts, grass and RT lighting
-   (all off by default on iOS, so last).
-5. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
+3. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
    answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
    is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
-6. Close M4: fps and memory at Goldshire and a capital, then the branch merges.
+4. Close M4: fps and memory at Goldshire and a capital, then the branch merges. The Linux
+   client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
+   `CharacterRenderer`'s Vulkan sink was fixed on the way); run its whole test suite before the
+   merge.
+
+Not in M4, as decided or found: ray traced lighting is not ported (3.11). The Hi-Z pyramid is
+never created on either backend, and the M2 GPU cull stays Vulkan's - the Metal M2 path culls on
+the CPU; both are M5 material if the doodads' CPU time shows. The terrain's nine PCF taps are the
+other half of its fragment cost; the models share the same filter, so changing it is one change
+for every surface.
+
+A cloud session can do the shader half of a change: `apt install glslc spirv-cross` gives the
+tools, and on 2026-09-29 Ubuntu's spirv-cross reproduced every tracked MSL file exactly. Note
+that building the Linux tree recompiles `.spv` files whose GLSL looks newer, in place: check
+`git status` for `.spv` changes you did not make before committing.
 
 Device testing, from the Mac with the iPad unlocked (see the memory notes for the commands):
 `WOWEE_AUTO_ENTER=1` (with `WOWEE_AUTO_CHARACTER=<name>`) enters the world, 
@@ -79,12 +114,13 @@ world pass stops before it, the drawable's colour and the depth so far are copie
 pass is taken up again with its attachments loaded, as Vulkan's scene continuation pass does.
 The world's depth is stored rather than memoryless for it, and drawables are readable. The
 reflection draws the sky, terrain and buildings from the mirrored camera into a 512 target;
-the Detail page's "Water reflections" (Metal only) turns it off.
+the Detail page's "Water reflections" (Metal only) turns it off. With MSAA the split resolves
+colour and depth into the copies' textures instead, and the reflection is multisampled too.
 
 Performance, iPad Air 4 (A14), Shadowglen pond, 2026-09-29: about 8 fps with the world at full
 resolution; about 25 fps (a frame every ~40 ms, GPU-bound) once it is drawn at 0.67 and
 upscaled by MetalFX's spatial scaler, which the menu's upscaling and render-quality choices now
-drive on Metal (full size where the device has no MetalFX). Measured with WOWEE_FRAME_PROFILE,
+drive on Metal (FSR 1 where the device has no MetalFX, since the evening of 2026-09-29). Measured with WOWEE_FRAME_PROFILE,
 which splits the frame into command buffers and times each by how much later it ends than the
 one before, and WOWEE_METAL_SKIP_CYCLE, which steps through sets of skipped passes in one
 session - launches compared against each other are too noisy, each facing somewhere else. The
@@ -93,7 +129,8 @@ report's interval over its 120 frames. Shadows move the total but not the frame 
 frame is spent on is the opaque world pass, about 28 ms of the 40: the sky and the terrain about
 6 ms each. The sky is now drawn after the terrain and buildings with the viewport's depth range
 pinned to the far plane, so covered pixels are never shaded: the opaque pass came down to ~23 ms
-and the frame to ~37 ms (~27 fps). The terrain is next.
+and the frame to ~37 ms (~27 fps). The terrain was next: its alpha masks now take one tap each
+(Next steps, 1), not yet measured.
 
 Also from M4, done and seen on the iPad (2026-09-29): the minimap (its 3x3 tile composite, then the
 disc over the world) and the world map (its tile and explored-overlay composite, the zone
@@ -108,8 +145,9 @@ in zones whose sky is a model, as Teldrassil's, the model supplies them and thes
 on Vulkan. The selection circle, the underwater and ghost tints (OverlaySystem, which records into
 the world pass's encoder while one is set) and the quest markers are ported as well. So are the
 weather (rain, snow, storms) and the footprints, the latter seen on the iPad (a dwarf's trail in
-the Dun Morogh snow). Still Vulkan-only from the frame's effects:
-lightning, swim ripples, mount dust and the charge trail.
+the Dun Morogh snow). The frame's last Vulkan-only effects - lightning, swim ripples, mount dust
+and the charge trail - were ported on the evening of 2026-09-29, with grass, volumetric fog and
+sun shafts, and wait to be seen (Next steps, 1).
 
 `WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config root.
 
@@ -293,7 +331,10 @@ The same steps for each of `terrain_renderer`, `wmo_renderer`, `m2_renderer`, an
 
 - **Only a Mac builds and runs this.** The cloud sessions cannot compile Metal or reach the device.
   They can write code, translate shaders and check the manifest, as they did for M0, but every
-  milestone is built and run by the session on the Mac, with the iPad attached.
+  milestone is built and run by the session on the Mac, with the iPad attached. What they can
+  also do is parse the Metal build's C++: `tools/metal/syntax_check/check.sh` runs clang over it
+  with metal-cpp and stand-ins for Apple's system headers, which catches what does not compile
+  before the Mac does - not what does not work.
 - **The branch is the Metal work.** `master` stays on the MoltenVK build, which plays, until M4
   merges.
 - **A shader change** is made in the GLSL, compiled to `.spv` as now, then
