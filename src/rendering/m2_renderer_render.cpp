@@ -2170,25 +2170,31 @@ void M2Renderer::renderGlowSpritesVulkan(VkCommandBuffer cmd, VkDescriptorSet pe
                            sizeof(particlePush), &particlePush);
 
         // Write glow vertex data directly to mapped buffer (no temp vector)
-        size_t uploadCount = std::min(glowSprites_.size(), MAX_GLOW_SPRITES);
-        float* dst = static_cast<float*>(glowVBMapped_);
-        for (size_t gi = 0; gi < uploadCount; gi++) {
-            const auto& gs = glowSprites_[gi];
-            *dst++ = gs.worldPos.x;
-            *dst++ = gs.worldPos.y;
-            *dst++ = gs.worldPos.z;
-            *dst++ = gs.color.r;
-            *dst++ = gs.color.g;
-            *dst++ = gs.color.b;
-            *dst++ = gs.color.a;
-            *dst++ = gs.size;
-            *dst++ = 0.0f;
-        }
+        const size_t uploadCount = writeGlowVertices(static_cast<float*>(glowVBMapped_));
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &glowVB_, &offset);
         vkCmdDraw(cmd, static_cast<uint32_t>(uploadCount), 1, 0, 0);
     }
+}
+
+size_t M2Renderer::writeGlowVertices(float* dst) const {
+    // The particle layout: pos3 + color4 + size1 + tile1.
+    if (!dst) return 0;
+    size_t count = std::min(glowSprites_.size(), MAX_GLOW_SPRITES);
+    for (size_t gi = 0; gi < count; gi++) {
+        const auto& gs = glowSprites_[gi];
+        *dst++ = gs.worldPos.x;
+        *dst++ = gs.worldPos.y;
+        *dst++ = gs.worldPos.z;
+        *dst++ = gs.color.r;
+        *dst++ = gs.color.g;
+        *dst++ = gs.color.b;
+        *dst++ = gs.color.a;
+        *dst++ = gs.size;
+        *dst++ = 0.0f;
+    }
+    return count;
 }
 
 void M2Renderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const Camera& camera) {
@@ -2668,6 +2674,113 @@ void M2Renderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* pe
     };
     MetalSink sink{*this, encoder, perFrame, offset, slot};
     renderImpl(sink, camera);
+}
+
+void M2Renderer::renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                                    size_t offset, uint32_t screenHeight) {
+    if (!metal_ || !encoder || !mtlParticlePipelines_[0]) return;
+    const uint32_t slot = static_cast<uint32_t>(metal_->frameNumber() % MetalContext::kRingSize);
+    MetalContext& m = *metal_;
+    MTL::SamplerState* clampLinear = m.sampler(MetalContext::Filter::Linear,
+                                               MetalContext::Address::ClampToEdge);
+    // Tested against the scene, never written: they are all see-through.
+    encoder->setDepthStencilState(m.depthState(true, false, /*lessEqual=*/true));
+    encoder->setCullMode(MTL::CullModeNone);
+
+    // Push constants of m2_particle_frag: the tile grid and the alpha key,
+    // padded as Metal lays the struct out.
+    struct ParticlePush { float tileX, tileY; int32_t alphaKey; int32_t pad; };
+    const auto bindParticles = [&](MTL::RenderPipelineState* pipeline, MTL::Buffer* vb) {
+        encoder->setRenderPipelineState(pipeline);
+        encoder->setVertexBuffer(perFrame, offset, mtlFx_.particleVertPerFrame);
+        // No fog volume on Metal yet: the neutral one lets everything through.
+        encoder->setVertexTexture(m.neutralVolumeTexture(), mtlFx_.particleVertFog);
+        encoder->setVertexSamplerState(clampLinear, mtlFx_.particleVertFogSampler);
+        encoder->setVertexBuffer(vb, 0, kMetalVertexBufferIndex);
+    };
+    const auto bindTexture = [&](VkTexture* texture, int textureSlot, int samplerSlot) {
+        VkTexture* tex = (texture && texture->isValid()) ? texture : whiteTexture_.get();
+        if (!tex || !tex->isValid()) return false;
+        encoder->setFragmentTexture(tex->metalTexture(), textureSlot);
+        encoder->setFragmentSamplerState(tex->metalSampler(), samplerSlot);
+        return true;
+    };
+
+    // Smoke first, as on Vulkan.
+    if (mtlSmokePipeline_) {
+        const size_t count = writeSmokeVertices(static_cast<float*>(mtlSmokeVB_[slot]->contents()));
+        if (count > 0) {
+            const float height = static_cast<float>(screenHeight);
+            encoder->setRenderPipelineState(mtlSmokePipeline_);
+            encoder->setVertexBuffer(perFrame, offset, mtlFx_.smokeVertPerFrame);
+            encoder->setVertexBytes(&height, sizeof(height), mtlFx_.smokeVertPush);
+            encoder->setVertexBuffer(mtlSmokeVB_[slot], 0, kMetalVertexBufferIndex);
+            encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0),
+                                    NS::UInteger(count));
+        }
+    }
+
+    // The particles, a draw per run of one texture and blend.
+    if (writeParticleVertices(static_cast<float*>(mtlParticleVB_[slot]->contents())) > 0) {
+        MTL::RenderPipelineState* bound = nullptr;
+        for (const ParticleRun& run : particleRuns_) {
+            if (run.count == 0 || !run.group) continue;
+            const ParticleGroup& group = *run.group;
+            const bool additive = group.blendType == 3 || group.blendType == 4;
+            MTL::RenderPipelineState* pipeline = mtlParticlePipelines_[additive ? 1 : 0];
+            if (pipeline != bound) {
+                bindParticles(pipeline, mtlParticleVB_[slot]);
+                bound = pipeline;
+            }
+            if (!bindTexture(group.texture, mtlFx_.particleFragTexture,
+                             mtlFx_.particleFragSampler)) {
+                continue;
+            }
+            const ParticlePush push{static_cast<float>(group.tilesX),
+                                    static_cast<float>(group.tilesY),
+                                    group.blendType == 1 ? 1 : 0, 0};
+            encoder->setFragmentBytes(&push, sizeof(push), mtlFx_.particleFragPush);
+            encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(run.first),
+                                    NS::UInteger(run.count));
+        }
+    }
+
+    // The ribbons: a triangle strip each.
+    if (mtlRibbonPipelines_[0] &&
+        writeRibbonVertices(static_cast<float*>(mtlRibbonVB_[slot]->contents())) > 0) {
+        MTL::RenderPipelineState* bound = nullptr;
+        for (const RibbonDrawCall& draw : ribbonDraws_) {
+            MTL::RenderPipelineState* pipeline = mtlRibbonPipelines_[draw.additive ? 1 : 0];
+            if (pipeline != bound) {
+                encoder->setRenderPipelineState(pipeline);
+                encoder->setVertexBuffer(perFrame, offset, mtlFx_.ribbonVertPerFrame);
+                encoder->setVertexTexture(m.neutralVolumeTexture(), mtlFx_.ribbonVertFog);
+                encoder->setVertexSamplerState(clampLinear, mtlFx_.ribbonVertFogSampler);
+                encoder->setVertexBuffer(mtlRibbonVB_[slot], 0, kMetalVertexBufferIndex);
+                bound = pipeline;
+            }
+            if (!bindTexture(draw.texture, mtlFx_.ribbonFragTexture, mtlFx_.ribbonFragSampler)) {
+                continue;
+            }
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip,
+                                    NS::UInteger(draw.firstVertex),
+                                    NS::UInteger(draw.vertexCount));
+        }
+    }
+
+    // Last, the glow sprites renderMetal collected: additive points.
+    if (glowTexture_ && glowTexture_->isValid()) {
+        const size_t count = writeGlowVertices(static_cast<float*>(mtlGlowVB_[slot]->contents()));
+        if (count > 0) {
+            bindParticles(mtlParticlePipelines_[1], mtlGlowVB_[slot]);
+            bindTexture(glowTexture_.get(), mtlFx_.particleFragTexture,
+                        mtlFx_.particleFragSampler);
+            const ParticlePush push{1.0f, 1.0f, 0, 0};
+            encoder->setFragmentBytes(&push, sizeof(push), mtlFx_.particleFragPush);
+            encoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0),
+                                    NS::UInteger(count));
+        }
+    }
 }
 #endif
 

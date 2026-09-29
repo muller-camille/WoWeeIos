@@ -498,6 +498,10 @@ public:
     /// formats initializeMetal was given. perFrame holds a GPUPerFrameData.
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera);
+    /// The smoke, particles, ribbons and glow sprites, after renderMetal as
+    /// the Vulkan frame draws them after the models. screenHeight in pixels.
+    void renderEffectsMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame,
+                            size_t offset, uint32_t screenHeight);
 #endif
 
     /** Gather the nearest authored glow cards as inexpensive scene point lights. */
@@ -775,6 +779,13 @@ private:
     template <typename Sink>
     void renderImpl(Sink& sink, const Camera& camera);
     void renderGlowSpritesVulkan(VkCommandBuffer cmd, VkDescriptorSet perFrameSet);
+    /// The effects' vertices, written into dst for either backend: how many
+    /// were written. The particles and ribbons also fill particleRuns_ and
+    /// ribbonDraws_, the draws that go with them.
+    size_t writeSmokeVertices(float* dst) const;
+    size_t writeParticleVertices(float* dst);
+    size_t writeRibbonVertices(float* dst);
+    size_t writeGlowVertices(float* dst) const;
 #ifdef WOWEE_METAL
     void shutdownMetal();
     MetalContext* metal_ = nullptr;
@@ -793,6 +804,22 @@ private:
         int fragShadow = -1, fragShadowSampler = -1, fragFog = -1, fragFogSampler = -1;
         int fragRtA = -1, fragRtASampler = -1, fragRtB = -1, fragRtBSampler = -1;
     } mtlSlots_;
+    /// The effects: alpha then additive, where there are two.
+    MTL::RenderPipelineState* mtlParticlePipelines_[2] = {};
+    MTL::RenderPipelineState* mtlRibbonPipelines_[2] = {};
+    MTL::RenderPipelineState* mtlSmokePipeline_ = nullptr;
+    MTL::Buffer* mtlParticleVB_[3] = {};
+    MTL::Buffer* mtlRibbonVB_[3] = {};
+    MTL::Buffer* mtlGlowVB_[3] = {};
+    MTL::Buffer* mtlSmokeVB_[3] = {};
+    struct MetalEffectSlots {
+        int particleVertPerFrame = -1, particleVertFog = -1, particleVertFogSampler = -1;
+        int particleFragPush = -1, particleFragTexture = -1, particleFragSampler = -1;
+        int ribbonVertPerFrame = -1, ribbonVertFog = -1, ribbonVertFogSampler = -1;
+        int ribbonFragTexture = -1, ribbonFragSampler = -1;
+        int smokeVertPerFrame = -1, smokeVertPush = -1;
+    } mtlFx_;
+    bool initializeEffectsMetal(uint32_t colorFormat, uint32_t depthFormat, uint32_t sampleCount);
 #endif
     bool initialized_ = false;
     bool insideInterior = false;
@@ -1127,6 +1154,8 @@ private:
         VkPipeline      pipeline;
         uint32_t        firstVertex;
         uint32_t        vertexCount;
+        VkTexture*      texture = nullptr;  // what Metal binds in place of texSet
+        bool            additive = false;
     };
     std::vector<RibbonDrawCall> ribbonDraws_;
 

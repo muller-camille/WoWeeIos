@@ -408,9 +408,43 @@ void M2Renderer::updateRibbons(M2Instance& inst, const M2ModelGPU& gpu, float dt
 // ---------------------------------------------------------------------------
 void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     if (!ribbonPipeline_ || !ribbonAdditivePipeline_ || !ribbonVB_ || !ribbonVBMapped_) return;
+    const size_t written = writeRibbonVertices(static_cast<float*>(ribbonVBMapped_));
+    const auto& draws = ribbonDraws_;
+    if (draws.empty() || written == 0) return;
+
+    VkExtent2D ext = vkCtx_->getSwapchainExtent();
+    VkViewport vp{};
+    vp.x = 0; vp.y = 0;
+    vp.width  = static_cast<float>(ext.width);
+    vp.height = static_cast<float>(ext.height);
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    VkRect2D sc{};
+    sc.offset = {.x = 0, .y = 0};
+    sc.extent = ext;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    VkPipeline lastPipe = VK_NULL_HANDLE;
+    for (const auto& dc : draws) {
+        if (dc.pipeline != lastPipe) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dc.pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    ribbonPipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
+            lastPipe = dc.pipeline;
+        }
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                ribbonPipelineLayout_, 1, 1, &dc.texSet, 0, nullptr);
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &ribbonVB_, &offset);
+        vkCmdDraw(cmd, dc.vertexCount, 1, dc.firstVertex, 0);
+    }
+}
+
+size_t M2Renderer::writeRibbonVertices(float* dst) {
+    ribbonDraws_.clear();
     // Diagnostic: WOWEE_M2_NO_RIBBONS=1 drops every M2 ribbon trail draw.
     static const bool kNoRibbons = envFlagEnabled("WOWEE_M2_NO_RIBBONS");
-    if (kNoRibbons) return;
+    if (kNoRibbons || !dst) return 0;
 
     // A ribbon's width runs across the trail and across the view, and it has to
     // be computed per edge from the direction the trail is actually going.
@@ -425,10 +459,7 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
     const glm::vec3 camPos = cachedCamPos_;
     const glm::vec3 upWorld(0.0f, 0.0f, 1.0f);
 
-    float* dst     = static_cast<float*>(ribbonVBMapped_);
     size_t written = 0;
-
-    ribbonDraws_.clear();
     auto& draws = ribbonDraws_;
 
     for (const auto& inst : instances) {
@@ -454,7 +485,12 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
             // Descriptor set for texture
             VkDescriptorSet texSet = (ri < gpu.ribbonTexSets.size())
                                      ? gpu.ribbonTexSets[ri] : VK_NULL_HANDLE;
-            if (!texSet) {
+            // Metal has no sets: it binds the texture the set would hold.
+            VkTexture* texture = (ri < gpu.ribbonTextures.size())
+                                 ? gpu.ribbonTextures[ri] : nullptr;
+            const bool bindable = vkCtx_ ? texSet != VK_NULL_HANDLE
+                                         : (texture && texture->isValid());
+            if (!bindable) {
                 if (gpu.isSpellEffect) {
                     static bool ribbonTexWarn = false;
                     if (!ribbonTexWarn) {
@@ -523,7 +559,9 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
 
             uint32_t vertCount = static_cast<uint32_t>(written) - firstVert;
             if (vertCount >= 4) {
-                draws.push_back({.texSet = texSet, .pipeline = pipe, .firstVertex = firstVert, .vertexCount = vertCount});
+                draws.push_back({.texSet = texSet, .pipeline = pipe, .firstVertex = firstVert,
+                                 .vertexCount = vertCount, .texture = texture,
+                                 .additive = additive});
             } else {
                 // Rollback if too few verts
                 written = firstVert;
@@ -554,42 +592,87 @@ void M2Renderer::renderM2Ribbons(VkCommandBuffer cmd, VkDescriptorSet perFrameSe
         }
     }
 
-    if (draws.empty() || written == 0) return;
-
-    VkExtent2D ext = vkCtx_->getSwapchainExtent();
-    VkViewport vp{};
-    vp.x = 0; vp.y = 0;
-    vp.width  = static_cast<float>(ext.width);
-    vp.height = static_cast<float>(ext.height);
-    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
-    VkRect2D sc{};
-    sc.offset = {.x = 0, .y = 0};
-    sc.extent = ext;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    vkCmdSetScissor(cmd, 0, 1, &sc);
-
-    VkPipeline lastPipe = VK_NULL_HANDLE;
-    for (const auto& dc : draws) {
-        if (dc.pipeline != lastPipe) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dc.pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    ribbonPipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
-            lastPipe = dc.pipeline;
-        }
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                ribbonPipelineLayout_, 1, 1, &dc.texSet, 0, nullptr);
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &ribbonVB_, &offset);
-        vkCmdDraw(cmd, dc.vertexCount, 1, dc.firstVertex, 0);
-    }
+    return written;
 }
 
 void M2Renderer::renderM2Particles(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     if (!particlePipeline_ || !m2ParticleVB_) return;
+    // Written straight into the mapped buffer rather than accumulated into a
+    // vector per group and copied in afterwards; see ParticleRun.
+    if (!m2ParticleVBMapped_) return;
+    const size_t totalParticles = writeParticleVertices(static_cast<float*>(m2ParticleVBMapped_));
+    if (totalParticles == 0) return;
+
+    // Bind per-frame set (set 0) for particle pipeline
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            particlePipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
+
+    VkDeviceSize vbOffset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &m2ParticleVB_, &vbOffset);
+
+    VkPipeline currentPipeline = VK_NULL_HANDLE;
+
+    for (auto& run : particleRuns_) {
+        if (run.count == 0 || !run.group) continue;
+        ParticleGroup& group = *run.group;
+
+        uint8_t blendType = group.blendType;
+        VkPipeline desiredPipeline = (blendType == 3 || blendType == 4)
+            ? particleAdditivePipeline_ : particlePipeline_;
+        if (desiredPipeline != currentPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
+            currentPipeline = desiredPipeline;
+        }
+
+        // Use pre-allocated stable descriptor set; fall back to per-frame alloc only if unavailable
+        VkDescriptorSet texSet = group.preAllocSet;
+        if (texSet == VK_NULL_HANDLE) {
+            // Fallback: allocate per-frame (pool exhaustion risk - should not happen in practice)
+            VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            ai.descriptorPool = materialDescPool_;
+            ai.descriptorSetCount = 1;
+            ai.pSetLayouts = &particleTexLayout_;
+            if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &texSet) == VK_SUCCESS) {
+                VkTexture* tex = (group.texture && group.texture->isValid())
+                    ? group.texture : whiteTexture_.get();
+                if (!tex || !tex->isValid()) continue;
+                VkDescriptorImageInfo imgInfo = tex->descriptorInfo();
+                VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = texSet;
+                write.dstBinding = 0;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &imgInfo;
+                vkUpdateDescriptorSets(vkCtx_->getDevice(), 1, &write, 0, nullptr);
+            }
+        }
+        if (texSet != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    particlePipelineLayout_, 1, 1, &texSet, 0, nullptr);
+        }
+
+        // Push constants: tileCount + alphaKey
+        struct { float tileX, tileY; int alphaKey; } pc = {
+            .tileX = static_cast<float>(group.tilesX), .tileY = static_cast<float>(group.tilesY),
+            .alphaKey = (blendType == 1) ? 1 : 0
+        };
+        vkCmdPushConstants(cmd, particlePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(pc), &pc);
+
+        // The vertices are already in the buffer, at this run's own offset.
+        // Both used to be wrong: every group copied to offset zero and drew
+        // from vertex zero, so with more than one group up they all drew
+        // whatever had been copied last.
+        vkCmdDraw(cmd, run.count, 1, run.first, 0);
+    }
+}
+
+size_t M2Renderer::writeParticleVertices(float* vbBase) {
+    particleRuns_.clear();
     // Diagnostic: WOWEE_M2_NO_PARTICLES=1 drops every M2 particle draw, which
     // tells a particle artifact apart from a skinned-geometry one.
     static const bool kNoParticles = envFlagEnabled("WOWEE_M2_NO_PARTICLES");
-    if (kNoParticles) return;
+    if (kNoParticles || !vbBase) return 0;
 
     // Collect all particles from all instances, grouped by texture+blend.
     // Reuse persistent map - keep the bucket structure, drop last frame's set.
@@ -598,12 +681,7 @@ void M2Renderer::renderM2Particles(VkCommandBuffer cmd, VkDescriptorSet perFrame
     }
     auto& groups = particleGroups_;
 
-    // Written straight into the mapped buffer rather than accumulated into a
-    // vector per group and copied in afterwards; see ParticleRun.
-    if (!m2ParticleVBMapped_) return;
-    float* const vbBase = static_cast<float*>(m2ParticleVBMapped_);
     uint32_t vbWritten = 0;
-    particleRuns_.clear();
     ParticleGroup* runGroup = nullptr;
 
     size_t totalParticles = 0;
@@ -801,87 +879,13 @@ void M2Renderer::renderM2Particles(VkCommandBuffer cmd, VkDescriptorSet perFrame
         }
     }
 
-    if (totalParticles == 0) return;
-
-    // Bind per-frame set (set 0) for particle pipeline
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            particlePipelineLayout_, 0, 1, &perFrameSet, 0, nullptr);
-
-    VkDeviceSize vbOffset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &m2ParticleVB_, &vbOffset);
-
-    VkPipeline currentPipeline = VK_NULL_HANDLE;
-
-    for (auto& run : particleRuns_) {
-        if (run.count == 0 || !run.group) continue;
-        ParticleGroup& group = *run.group;
-
-        uint8_t blendType = group.blendType;
-        VkPipeline desiredPipeline = (blendType == 3 || blendType == 4)
-            ? particleAdditivePipeline_ : particlePipeline_;
-        if (desiredPipeline != currentPipeline) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desiredPipeline);
-            currentPipeline = desiredPipeline;
-        }
-
-        // Use pre-allocated stable descriptor set; fall back to per-frame alloc only if unavailable
-        VkDescriptorSet texSet = group.preAllocSet;
-        if (texSet == VK_NULL_HANDLE) {
-            // Fallback: allocate per-frame (pool exhaustion risk - should not happen in practice)
-            VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-            ai.descriptorPool = materialDescPool_;
-            ai.descriptorSetCount = 1;
-            ai.pSetLayouts = &particleTexLayout_;
-            if (vkAllocateDescriptorSets(vkCtx_->getDevice(), &ai, &texSet) == VK_SUCCESS) {
-                VkTexture* tex = (group.texture && group.texture->isValid())
-                    ? group.texture : whiteTexture_.get();
-                if (!tex || !tex->isValid()) continue;
-                VkDescriptorImageInfo imgInfo = tex->descriptorInfo();
-                VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                write.dstSet = texSet;
-                write.dstBinding = 0;
-                write.descriptorCount = 1;
-                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                write.pImageInfo = &imgInfo;
-                vkUpdateDescriptorSets(vkCtx_->getDevice(), 1, &write, 0, nullptr);
-            }
-        }
-        if (texSet != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    particlePipelineLayout_, 1, 1, &texSet, 0, nullptr);
-        }
-
-        // Push constants: tileCount + alphaKey
-        struct { float tileX, tileY; int alphaKey; } pc = {
-            .tileX = static_cast<float>(group.tilesX), .tileY = static_cast<float>(group.tilesY),
-            .alphaKey = (blendType == 1) ? 1 : 0
-        };
-        vkCmdPushConstants(cmd, particlePipelineLayout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                           sizeof(pc), &pc);
-
-        // The vertices are already in the buffer, at this run's own offset.
-        // Both used to be wrong: every group copied to offset zero and drew
-        // from vertex zero, so with more than one group up they all drew
-        // whatever had been copied last.
-        vkCmdDraw(cmd, run.count, 1, run.first, 0);
-    }
+    return totalParticles;
 }
 
 void M2Renderer::renderSmokeParticles(VkCommandBuffer cmd, VkDescriptorSet perFrameSet) {
     if (smokeParticles.empty() || !smokePipeline_ || !smokeVB_) return;
 
-    // Build vertex data: pos(3) + lifeRatio(1) + size(1) + isSpark(1) per particle
-    size_t count = std::min(smokeParticles.size(), static_cast<size_t>(MAX_SMOKE_PARTICLES));
-    float* dst = static_cast<float*>(smokeVBMapped_);
-    for (size_t i = 0; i < count; i++) {
-        const auto& p = smokeParticles[i];
-        *dst++ = p.position.x;
-        *dst++ = p.position.y;
-        *dst++ = p.position.z;
-        *dst++ = p.life / p.maxLife;
-        *dst++ = p.size;
-        *dst++ = p.isSpark;
-    }
+    const size_t count = writeSmokeVertices(static_cast<float*>(smokeVBMapped_));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, smokePipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -895,6 +899,22 @@ void M2Renderer::renderSmokeParticles(VkCommandBuffer cmd, VkDescriptorSet perFr
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &smokeVB_, &offset);
     vkCmdDraw(cmd, static_cast<uint32_t>(count), 1, 0, 0);
+}
+
+size_t M2Renderer::writeSmokeVertices(float* dst) const {
+    // pos(3) + lifeRatio(1) + size(1) + isSpark(1) per particle
+    if (!dst) return 0;
+    size_t count = std::min(smokeParticles.size(), static_cast<size_t>(MAX_SMOKE_PARTICLES));
+    for (size_t i = 0; i < count; i++) {
+        const auto& p = smokeParticles[i];
+        *dst++ = p.position.x;
+        *dst++ = p.position.y;
+        *dst++ = p.position.z;
+        *dst++ = p.life / p.maxLife;
+        *dst++ = p.size;
+        *dst++ = p.isSpark;
+    }
+    return count;
 }
 
 } // namespace rendering

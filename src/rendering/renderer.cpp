@@ -3750,6 +3750,12 @@ bool Renderer::initializeRenderers(pipeline::AssetManager* assetManager, const s
             m2Renderer.reset();
         } else {
             setViewDistance(viewDistance_);
+            // Spell visuals are M2 instances spawned into it: nothing of their
+            // own to port.
+            if (!spellVisualSystem_) {
+                spellVisualSystem_ = std::make_unique<SpellVisualSystem>();
+                spellVisualSystem_->initialize(m2Renderer.get(), this);
+            }
         }
     }
     if (metal_ && !characterRenderer) {
@@ -5114,6 +5120,9 @@ void Renderer::renderFrameMetal() {
         }
         if (m2Renderer) {
             m2Renderer->renderMetal(encoder, mtlFrameData_, offset, *camera);
+            // Their smoke, particles, ribbons and glow, after the models as on
+            // Vulkan.
+            m2Renderer->renderEffectsMetal(encoder, mtlFrameData_, offset, h);
         }
         if (characterRenderer) {
             characterRenderer->renderMetal(encoder, mtlFrameData_, offset, *camera);

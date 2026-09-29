@@ -59,6 +59,33 @@ namespace wowee {
 namespace rendering {
 
 namespace {
+/// The glow sprites' texture: a soft white disc, alpha falling off with the
+/// square of the distance from its centre.
+constexpr int kGlowTextureSize = 64;
+std::vector<uint8_t> glowGradientPixels() {
+    constexpr int SZ = kGlowTextureSize;
+    std::vector<uint8_t> px(SZ * SZ * 4);
+    float half = SZ / 2.0f;
+    for (int y = 0; y < SZ; y++) {
+        for (int x = 0; x < SZ; x++) {
+            float dx = (x + 0.5f - half) / half;
+            float dy = (y + 0.5f - half) / half;
+            float r = std::sqrt(dx * dx + dy * dy);
+            float a = std::max(0.0f, 1.0f - r);
+            a = a * a; // Quadratic falloff
+            int idx = (y * SZ + x) * 4;
+            px[idx + 0] = 255;
+            px[idx + 1] = 255;
+            px[idx + 2] = 255;
+            px[idx + 3] = static_cast<uint8_t>(a * 255);
+        }
+    }
+    return px;
+}
+}  // namespace
+
+
+namespace {
 
 
 } // namespace
@@ -1027,23 +1054,8 @@ bool M2Renderer::initialize(VkContext* ctx, VkDescriptorSetLayout perFrameLayout
 
     // --- Generate soft radial gradient glow texture ---
     {
-        static constexpr int SZ = 64;
-        std::vector<uint8_t> px(SZ * SZ * 4);
-        float half = SZ / 2.0f;
-        for (int y = 0; y < SZ; y++) {
-            for (int x = 0; x < SZ; x++) {
-                float dx = (x + 0.5f - half) / half;
-                float dy = (y + 0.5f - half) / half;
-                float r = std::sqrt(dx * dx + dy * dy);
-                float a = std::max(0.0f, 1.0f - r);
-                a = a * a; // Quadratic falloff
-                int idx = (y * SZ + x) * 4;
-                px[idx + 0] = 255;
-                px[idx + 1] = 255;
-                px[idx + 2] = 255;
-                px[idx + 3] = static_cast<uint8_t>(a * 255);
-            }
-        }
+        static constexpr int SZ = kGlowTextureSize;
+        const std::vector<uint8_t> px = glowGradientPixels();
         glowTexture_ = std::make_unique<VkTexture>();
         glowTexture_->upload(*vkCtx_, px.data(), SZ, SZ, VK_FORMAT_R8G8B8A8_UNORM);
         glowTexture_->createSampler(device, VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -2881,6 +2893,12 @@ bool M2Renderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* asse
     whiteTexture_->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
                                                    MetalContext::Address::Repeat));
 
+    // The effects are not worth failing the models over: without them the
+    // world still draws, only without its fires and trails.
+    if (built && !skyMode_ && !initializeEffectsMetal(colorFormat, depthFormat, sampleCount)) {
+        LOG_WARNING("M2 (Metal): no particles, ribbons or glow sprites");
+    }
+
     if (!built) {
         LOG_ERROR("M2 (Metal): pipelines or buffers could not be made");
         shutdownMetal();
@@ -2894,6 +2912,105 @@ bool M2Renderer::initializeMetal(MetalContext* ctx, pipeline::AssetManager* asse
     initialized_ = true;
     LOG_INFO("M2 renderer initialized (Metal)");
     return true;
+}
+
+bool M2Renderer::initializeEffectsMetal(uint32_t colorFormat, uint32_t depthFormat,
+                                        uint32_t sampleCount) {
+    const MetalBindings particleVert("m2_particle_vert");
+    const MetalBindings particleFrag("m2_particle_frag");
+    const MetalBindings ribbonVert("m2_ribbon_vert");
+    const MetalBindings ribbonFrag("m2_ribbon_frag");
+    const MetalBindings smokeVert("m2_smoke_vert");
+    mtlFx_.particleVertPerFrame = particleVert.buffer(0, 0);
+    mtlFx_.particleVertFog = particleVert.texture(0, 2);
+    mtlFx_.particleVertFogSampler = particleVert.sampler(0, 2);
+    mtlFx_.particleFragPush = particleFrag.pushConstants();
+    mtlFx_.particleFragTexture = particleFrag.texture(1, 0);
+    mtlFx_.particleFragSampler = particleFrag.sampler(1, 0);
+    mtlFx_.ribbonVertPerFrame = ribbonVert.buffer(0, 0);
+    mtlFx_.ribbonVertFog = ribbonVert.texture(0, 2);
+    mtlFx_.ribbonVertFogSampler = ribbonVert.sampler(0, 2);
+    mtlFx_.ribbonFragTexture = ribbonFrag.texture(1, 0);
+    mtlFx_.ribbonFragSampler = ribbonFrag.sampler(1, 0);
+    mtlFx_.smokeVertPerFrame = smokeVert.buffer(0, 0);
+    mtlFx_.smokeVertPush = smokeVert.pushConstants();
+    if (!particleVert.valid() || !particleFrag.valid() || !ribbonVert.valid() ||
+        !ribbonFrag.valid() || !smokeVert.valid()) {
+        return false;
+    }
+
+    // The vertex layouts the Vulkan pipelines describe, in floats.
+    struct Attr { uint32_t location; MTL::VertexFormat format; uint32_t floatOffset; };
+    const auto layout = [](std::initializer_list<Attr> attrs, uint32_t strideFloats) {
+        auto* vd = MTL::VertexDescriptor::alloc()->init();
+        for (const Attr& a : attrs) {
+            auto* attr = vd->attributes()->object(a.location);
+            attr->setFormat(a.format);
+            attr->setOffset(a.floatOffset * sizeof(float));
+            attr->setBufferIndex(kMetalVertexBufferIndex);
+        }
+        vd->layouts()->object(kMetalVertexBufferIndex)->setStride(strideFloats * sizeof(float));
+        return vd;
+    };
+    // pos3 + color4 + size1 + tile1
+    MTL::VertexDescriptor* particleLayout = layout(
+        {{0, MTL::VertexFormatFloat3, 0}, {1, MTL::VertexFormatFloat4, 3},
+         {2, MTL::VertexFormatFloat, 7}, {3, MTL::VertexFormatFloat, 8}}, 9);
+    // pos3 + color3 + alpha1 + uv2
+    MTL::VertexDescriptor* ribbonLayout = layout(
+        {{0, MTL::VertexFormatFloat3, 0}, {1, MTL::VertexFormatFloat3, 3},
+         {2, MTL::VertexFormatFloat, 6}, {3, MTL::VertexFormatFloat2, 7}}, 9);
+    // pos3 + lifeRatio1 + size1 + isSpark1
+    MTL::VertexDescriptor* smokeLayout = layout(
+        {{0, MTL::VertexFormatFloat3, 0}, {1, MTL::VertexFormatFloat, 3},
+         {2, MTL::VertexFormatFloat, 4}, {3, MTL::VertexFormatFloat, 5}}, 6);
+
+    bool built = true;
+    const auto build = [&](const char* vert, const char* frag, MTL::VertexDescriptor* vd,
+                           MetalBlend blend, const char* label) {
+        MetalPipelineDesc desc;
+        desc.vertexFunction = vert;
+        desc.fragmentFunction = frag;
+        desc.vertexDescriptor = vd;
+        desc.colorFormat = colorFormat;
+        desc.depthFormat = depthFormat;
+        desc.sampleCount = sampleCount;
+        desc.blend = blend;
+        desc.label = label;
+        MTL::RenderPipelineState* pipeline = buildMetalPipeline(*metal_, desc);
+        built = built && pipeline != nullptr;
+        return pipeline;
+    };
+    mtlParticlePipelines_[0] = build("m2_particle_vert", "m2_particle_frag", particleLayout,
+                                     MetalBlend::Alpha, "m2 particles");
+    mtlParticlePipelines_[1] = build("m2_particle_vert", "m2_particle_frag", particleLayout,
+                                     MetalBlend::Additive, "m2 particles additive");
+    mtlRibbonPipelines_[0] = build("m2_ribbon_vert", "m2_ribbon_frag", ribbonLayout,
+                                   MetalBlend::Alpha, "m2 ribbons");
+    mtlRibbonPipelines_[1] = build("m2_ribbon_vert", "m2_ribbon_frag", ribbonLayout,
+                                   MetalBlend::Additive, "m2 ribbons additive");
+    mtlSmokePipeline_ = build("m2_smoke_vert", "m2_smoke_frag", smokeLayout,
+                              MetalBlend::Alpha, "m2 smoke");
+    particleLayout->release();
+    ribbonLayout->release();
+    smokeLayout->release();
+
+    for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
+        mtlParticleVB_[i] = metal_->newBuffer(nullptr, MAX_M2_PARTICLE_VERTS * 9 * sizeof(float));
+        mtlRibbonVB_[i] = metal_->newBuffer(nullptr, MAX_RIBBON_VERTS * 9 * sizeof(float));
+        mtlGlowVB_[i] = metal_->newBuffer(nullptr, MAX_GLOW_SPRITES * 9 * sizeof(float));
+        mtlSmokeVB_[i] = metal_->newBuffer(nullptr, MAX_SMOKE_PARTICLES * 6 * sizeof(float));
+        built = built && mtlParticleVB_[i] && mtlRibbonVB_[i] && mtlGlowVB_[i] && mtlSmokeVB_[i];
+    }
+
+    const std::vector<uint8_t> glow = glowGradientPixels();
+    glowTexture_ = std::make_unique<VkTexture>();
+    if (glowTexture_->uploadMetal(*metal_, glow.data(), kGlowTextureSize, kGlowTextureSize,
+                                  false)) {
+        glowTexture_->setMetalSampler(metal_->sampler(MetalContext::Filter::Linear,
+                                                      MetalContext::Address::ClampToEdge));
+    }
+    return built;
 }
 
 void M2Renderer::shutdownMetal() {
@@ -2916,12 +3033,20 @@ void M2Renderer::shutdownMetal() {
     loggedTextureLoadFails_.clear();
     textureLookupSerial_ = 0;
     smokeParticles.clear();
-    for (auto*& pipeline : metalPipelines_) {
-        if (pipeline) { pipeline->release(); pipeline = nullptr; }
-    }
+    const auto release = [](auto*& object) {
+        if (object) { object->release(); object = nullptr; }
+    };
+    for (auto*& pipeline : metalPipelines_) release(pipeline);
+    for (auto*& pipeline : mtlParticlePipelines_) release(pipeline);
+    for (auto*& pipeline : mtlRibbonPipelines_) release(pipeline);
+    release(mtlSmokePipeline_);
     for (uint32_t i = 0; i < MetalContext::kRingSize; ++i) {
-        if (mtlBones_[i]) { mtlBones_[i]->release(); mtlBones_[i] = nullptr; }
-        if (mtlInstances_[i]) { mtlInstances_[i]->release(); mtlInstances_[i] = nullptr; }
+        release(mtlBones_[i]);
+        release(mtlInstances_[i]);
+        release(mtlParticleVB_[i]);
+        release(mtlRibbonVB_[i]);
+        release(mtlGlowVB_[i]);
+        release(mtlSmokeVB_[i]);
     }
     metal_ = nullptr;
     initialized_ = false;

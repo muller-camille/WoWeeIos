@@ -5120,11 +5120,14 @@ void Application::render() {
             const char* delayEnv = std::getenv("WOWEE_WORLD_SCREENSHOT_DELAY");
             const double delay = (delayEnv && *delayEnv) ? std::atof(delayEnv) : 20.0;
             const double elapsed = std::chrono::duration<double>(now - inWorldSince).count();
-            // WOWEE_WORLD_SCREENSHOT_LUA: run in the interface five seconds
-            // before the picture, e.g. "ToggleWorldMap()" to see the map.
+            // WOWEE_WORLD_SCREENSHOT_LUA: run in the interface
+            // WOWEE_WORLD_SCREENSHOT_LUA_LEAD seconds (5 by default) before
+            // the picture, e.g. "ShowUIPanel(WorldMapFrame)" to see the map.
             static bool luaRun = false;
+            const char* leadEnv = std::getenv("WOWEE_WORLD_SCREENSHOT_LUA_LEAD");
+            const double lead = (leadEnv && *leadEnv) ? std::atof(leadEnv) : 5.0;
             if (const char* lua = std::getenv("WOWEE_WORLD_SCREENSHOT_LUA");
-                lua && *lua && !luaRun && elapsed >= delay - 5.0 && addonManager_) {
+                lua && *lua && !luaRun && elapsed >= delay - lead && addonManager_) {
                 luaRun = true;
                 if (!addonManager_->runScript(lua)) {
                     LOG_WARNING("WOWEE_WORLD_SCREENSHOT_LUA failed: ", lua);

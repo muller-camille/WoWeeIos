@@ -31,6 +31,10 @@ disc over the world) and the world map (its tile and explored-overlay composite,
 highlights and the player and corpse markers). Each composite is a pass of its own recorded before
 the world's, from a draw list both backends share.
 
+From M3, done and seen on the iPad (2026-09-29): the M2 effects - smoke, particles, ribbons and
+glow sprites, whose vertices both backends write through the same functions - and the spell
+visuals, which are M2 instances and only needed their system created.
+
 Entering the world is refused in the Metal build until M3. Left for M2: `M2Renderer`, BC
 textures where the GPU has them, and checking the character list's preview and the equipment on
 the device. `WOWEE_SCREENSHOT=<file.png>` works in the Metal build and writes under the config
