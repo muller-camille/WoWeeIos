@@ -312,7 +312,7 @@ fragment m2_frag_out m2_frag(m2_frag_in in [[stage_in]], constant _85& _87 [[buf
         float _3933;
         if (_914)
         {
-            _3933 = abs(_1168);
+            _3933 = fma(abs(_1168), 0.60000002384185791015625, 0.4000000059604644775390625);
         }
         else
         {
@@ -580,7 +580,7 @@ fragment m2_frag_out m2_frag(m2_frag_in in [[stage_in]], constant _85& _87 [[buf
             float3 _4022;
             if (_914)
             {
-                _4022 = _4008 * fma(0.300000011920928955078125, fast::clamp(_3932.z, 0.0, 1.0), 0.819999992847442626953125);
+                _4022 = _4008 * fma(0.20000000298023223876953125, fast::clamp(_3932.z, 0.0, 1.0), 1.0);
             }
             else
             {
@@ -601,7 +601,7 @@ fragment m2_frag_out m2_frag(m2_frag_in in [[stage_in]], constant _85& _87 [[buf
         float3 _4084;
         if (_914)
         {
-            _4084 = _4069 * mix(0.550000011920928955078125, 1.0, smoothstep(0.0, 0.60000002384185791015625, in.m_1445));
+            _4084 = _4069 * mix(0.75, 1.0, smoothstep(0.0, 0.60000002384185791015625, in.m_1445));
         }
         else
         {

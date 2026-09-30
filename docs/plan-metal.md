@@ -74,14 +74,17 @@ In order. What each one needs is noted, because the device work needs the Mac.
      tile memory on frames the water does not split (compare `WOWEE_MEMORY_REPORT` somewhere dry
      with MSAA on); MetalFX writes straight onto the drawable where the drawable allows it (the
      log says once which way it went; the other is the copy as before).
-2. **Black foliage (open bug).** The nearest tree's canopy draws solid black at night in
-   Tirisfal (Tusa's spot) while distant canopies are fine. Ruled out: shadows (black with
-   `WOWEE_METAL_SKIP=shadow`), the cutout (the leaf shapes are cut; only their colour is black),
-   and alpha-to-coverage (now on at one sample, as Vulkan has it - correct, not the cause).
-   Suspects: the leaf texture's high mips as Metal uploads them (`uploadBLPMetal`, BC where the
-   GPU has it), or a foliage-only term in `m2.frag.glsl` (fringe fix at `textureLod(..., 4.0)`,
-   mip-alpha boost, canopy AO). Compare against the MoltenVK build (`-DWOWEE_METAL=OFF` in a
-   separate build directory) at the same spot to know whether it is Metal's at all.
+2. **Black foliage (lifted 2026-09-30, both backends; night canopies still dark).** Found by
+   debug outputs on the iPad at the Deathknell graveyard (WOWEE_TIME_OF_DAY=23, the test
+   server): the leaf texture is fine (raw colour green), the lamps and fog change nothing, and
+   the "black" cards are the lighting's own result - about 3% brightness where lit cards reach
+   15%. A two-sided leaf card lit edge-on got abs(nDotL) = 0 and only the ambient, cut by 0.82
+   underneath and 0.55 at the crown's foot, on a dark pine texture. `m2.frag` now wraps the
+   leaves' diffuse (0.4 + 0.6 * abs(nDotL)), keeps the underside at the full ambient and the
+   crown's foot at 0.75: the darkest cards measured 2-8 before, 5-18 after, lit ones about the
+   same. What is left is how little ambient the night has for M2s against the terrain beside
+   them - to compare with the original client before going further. The Metal shader was edited
+   by hand to match.
 3. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
    answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
    is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).

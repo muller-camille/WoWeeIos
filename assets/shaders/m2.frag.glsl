@@ -289,7 +289,11 @@ void main() {
 
     vec3 ldir = normalize(-lightDir.xyz);
         float nDotL = dot(norm, ldir);
-        float diff = foliageTwoSided ? abs(nDotL) : max(nDotL, 0.0);
+        // A leaf card lit edge-on still passes light through and round it.
+        // Bare abs(nDotL) gave such a card nothing but the ambient, and at
+        // night in Tirisfal the nearest canopy came out as black cut-outs among
+        // lit ones - the same wrap the local lights use, a little wider.
+        float diff = foliageTwoSided ? 0.4 + 0.6 * abs(nDotL) : max(nDotL, 0.0);
 
     vec3 result;
     if (unlit != 0) {
@@ -345,7 +349,10 @@ void main() {
         shadow = rtShadow(rt, shadow);
         vec3 ambientTerm = rtAmbient(rt, ambientColor.rgb);
         if (isFoliage) {
-            ambientTerm *= 0.82 + 0.30 * clamp(norm.z, 0.0, 1.0);
+            // Never below the ambient itself: the underside is what is seen
+            // from under a tree, and taking a fifth of the night's light off
+            // it is what left it black.
+            ambientTerm *= 1.0 + 0.20 * clamp(norm.z, 0.0, 1.0);
         }
         result = ambientTerm * texColor.rgb
                + shadow * (diff * lightColor.rgb * texColor.rgb + spec * lightColor.rgb)
@@ -362,7 +369,7 @@ void main() {
     // model-space z against a hardcoded eighteen, which put the darkening on
     // the trunk of anything tall and over the whole of anything short.
     if (isFoliage) {
-        float aoFactor = mix(0.55, 1.0, smoothstep(0.0, 0.6, ModelHeight));
+        float aoFactor = mix(0.75, 1.0, smoothstep(0.0, 0.6, ModelHeight));
         result *= aoFactor;
     }
 
