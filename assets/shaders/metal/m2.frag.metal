@@ -103,6 +103,7 @@ struct m2_frag_in
     float m_903 [[user(locn5)]];
     int m_827 [[user(locn6)]];
     float m_1555 [[user(locn7), flat]];
+    uint m_lightMask [[user(locn8), flat]];
 };
 
 fragment m2_frag_out m2_frag(m2_frag_in in [[stage_in]], constant _85& _87 [[buffer(0)]], constant _790& _792 [[buffer(1)]], texture2d<float> _151 [[texture(0)]], texture2d<float> _284 [[texture(1)]], texture3d<float> _727 [[texture(2)]], texture2d<float> _799 [[texture(3)]], depth2d<float> _1330 [[texture(4)]], sampler _151Smplr [[sampler(0)]], sampler _284Smplr [[sampler(1)]], sampler _727Smplr [[sampler(2)]], sampler _799Smplr [[sampler(3)]], sampler _1330Smplr [[sampler(4)]], bool gl_FrontFacing [[front_facing]], float4 gl_FragCoord [[position]])
@@ -615,6 +616,13 @@ fragment m2_frag_out m2_frag(m2_frag_in in [[stage_in]], constant _85& _87 [[buf
             float3 _4149;
             for (int _4081 = 0; _4081 < min(_87._m14.x, 64); _4082 = _4149, _4081++)
             {
+                // Not a light the CPU found reaching this instance: skipped
+                // before its data is read, alike across the draw.
+                if (_4081 < 32 && ((in.m_lightMask >> uint(_4081)) & 1u) == 0u)
+                {
+                    _4149 = _4082;
+                    continue;
+                }
                 float3 _2139 = _87._m12[_4081].xyz - in.m_859;
                 float _2145 = dot(_2139, _2139);
                 bool _2147 = _87._m12[_4081].w <= 0.0;

@@ -22,7 +22,7 @@ struct _26
     int _m4;
     int _m5;
     float _m6;
-    char _m0_final_padding[4];
+    uint _m7; // which local lights reach the instance (local_light_mask.hpp)
 };
 
 struct _28
@@ -61,6 +61,7 @@ struct m2_vert_out
     float m_749 [[user(locn5)]];
     int m_752 [[user(locn6)]];
     float m_757 [[user(locn7)]];
+    uint m_lightMask [[user(locn8)]];
     float4 gl_Position [[position]];
 };
 
@@ -256,6 +257,7 @@ vertex m2_vert_out m2_vert(m2_vert_in in [[stage_in]], constant _10& _12 [[buffe
     bool _755 = _12._m1 < 0;
     out.m_752 = int(_755);
     out.m_757 = _30._m0[_20]._m6;
+    out.m_lightMask = _30._m0[_20]._m7;
     out.gl_Position = (_221._m1 * _221._m0) * _846;
     if (_755)
     {

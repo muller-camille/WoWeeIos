@@ -1922,6 +1922,13 @@ void WMORenderer::renderImpl(Sink& sink, const Camera& camera, const glm::vec3* 
 
             // Bind vertex + index buffers
             sink.bindGeometry(group);
+            if (gi < instance.worldGroupBounds.size()) {
+                const auto& [lo, hi] = instance.worldGroupBounds[gi];
+                sink.setLightMask(localLights_.maskFor((lo + hi) * 0.5f,
+                                                       glm::length(hi - lo) * 0.5f));
+            } else {
+                sink.setLightMask(0xFFFFFFFFu);
+            }
 
             // Render each merged batch
             for (const auto& mb : group.mergedBatches) {
@@ -2014,6 +2021,8 @@ void WMORenderer::render(VkCommandBuffer cmd, VkDescriptorSet perFrameSet, const
         bool hasGeometry(const GroupResources& group) const {
             return group.vertexBuffer != VK_NULL_HANDLE && group.indexBuffer != VK_NULL_HANDLE;
         }
+        // Metal's alone reads a light mask; the Vulkan shader walks every light.
+        void setLightMask(uint32_t) {}
         void bindGeometry(const GroupResources& group) {
             VkDeviceSize offset = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &group.vertexBuffer, &offset);
@@ -4795,6 +4804,10 @@ void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* p
         bool hasGeometry(const GroupResources& group) const {
             return group.mtlVertexBuffer && group.mtlIndexBuffer;
         }
+        // Which local lights reach the group being drawn, written into each
+        // batch's material below (the field Vulkan leaves as padding).
+        uint32_t lightMask = 0xFFFFFFFFu;
+        void setLightMask(uint32_t mask) { lightMask = mask; }
         void bindGeometry(const GroupResources& group) {
             encoder->setVertexBuffer(group.mtlVertexBuffer, 0, kMetalVertexBufferIndex);
             indexBuffer = group.mtlIndexBuffer;
@@ -4813,7 +4826,9 @@ void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* p
             encoder->setFragmentSamplerState(tex->metalSampler(), s.fragTexSampler);
             encoder->setFragmentTexture(normal->metalTexture(), s.fragNormal);
             encoder->setFragmentSamplerState(normal->metalSampler(), s.fragNormalSampler);
-            encoder->setFragmentBytes(&mb.mtlMaterial, sizeof(WMOMaterialUBO), s.fragMaterial);
+            WMOMaterialUBO material = mb.mtlMaterial;
+            material.lightMask = lightMask;
+            encoder->setFragmentBytes(&material, sizeof(WMOMaterialUBO), s.fragMaterial);
         }
         void draw(uint32_t indexCount, uint32_t firstIndex) {
             if (!indexBuffer) return;

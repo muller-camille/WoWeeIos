@@ -655,6 +655,13 @@ void Renderer::updatePerFrameUBO() {
     }
 #ifdef WOWEE_METAL
     if (metalSkips("locallights")) localLightCount = 0;
+    // Narrowed per draw by each renderer that lights with them.
+    {
+        const LocalLightList lights{currentFrameData.localLightPosRadius, localLightCount};
+        if (terrainRenderer) terrainRenderer->setLocalLights(lights);
+        if (m2Renderer) m2Renderer->setLocalLights(lights);
+        if (wmoRenderer) wmoRenderer->setLocalLights(lights);
+    }
 #endif
     currentFrameData.localLightMeta = glm::ivec4(static_cast<int32_t>(localLightCount), 0, 0, 0);
 

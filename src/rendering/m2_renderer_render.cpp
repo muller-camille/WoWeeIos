@@ -1486,7 +1486,7 @@ void M2Renderer::renderImpl(Sink& sink, const Camera& camera) {
                 e.boneBase = p.useBones ? static_cast<int32_t>(inst.megaBoneOffset) : 0;
                 e.boneCount = static_cast<int32_t>(inst.boneMatrices.size());
                 e.highlight = inst.highlight;
-                e._pad = 0;
+                e.lightMask = localLights_.maskFor(inst.cachedCullCenter, std::max(inst.cachedVisualRadius, inst.cachedBoundRadius));
                 instanceDataCount_++;
                 ++writtenInstances;
             }
@@ -1771,7 +1771,7 @@ void M2Renderer::renderImpl(Sink& sink, const Camera& camera) {
                             e.boneBase = p.useBones ? static_cast<int32_t>(inst.megaBoneOffset) : 0;
                             e.boneCount = static_cast<int32_t>(inst.boneMatrices.size());
                             e.highlight = inst.highlight;
-                            e._pad = 0;
+                            e.lightMask = localLights_.maskFor(inst.cachedCullCenter, std::max(inst.cachedVisualRadius, inst.cachedBoundRadius));
                             instanceDataCount_++;
                         }
                     }
@@ -2068,7 +2068,7 @@ void M2Renderer::renderImpl(Sink& sink, const Camera& camera) {
             e.boneBase = needsBones ? static_cast<int32_t>(instance.megaBoneOffset) : 0;
             e.boneCount = static_cast<int32_t>(instance.boneMatrices.size());
             e.highlight = instance.highlight;
-            e._pad = 0;
+            e.lightMask = localLights_.maskFor(instance.cachedCullCenter, std::max(instance.cachedVisualRadius, instance.cachedBoundRadius));
             instanceDataCount_++;
 
             // Pipeline selection

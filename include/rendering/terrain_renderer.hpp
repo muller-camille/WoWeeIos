@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rendering/local_light_mask.hpp"
 #include <cmath>
 
 #include "rendering/vk_shader.hpp"
@@ -145,6 +146,8 @@ public:
     [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* assetManager,
                                        uint32_t colorFormat, uint32_t depthFormat,
                                        uint32_t sampleCount);
+    /// The frame's local lights, which renderMetal narrows to each chunk.
+    void setLocalLights(const LocalLightList& lights) { localLights_ = lights; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera);
     /// The chunks near the light's view into the shadow map's pass.
@@ -201,6 +204,7 @@ public:
     void setRtScene(RtScene* scene) { rtScene_ = scene; }
 
 private:
+    LocalLightList localLights_;
     TerrainChunkGPU uploadChunk(const pipeline::ChunkMesh& chunk);
     VkTexture* loadTexture(const std::string& path);
     VkTexture* createAlphaTexture(const std::vector<uint8_t>& alphaData);

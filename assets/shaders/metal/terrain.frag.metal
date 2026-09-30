@@ -32,6 +32,7 @@ struct _657
     int _m1;
     int _m2;
     int _m3;
+    uint _m4; // which local lights reach this chunk (local_light_mask.hpp)
 };
 
 struct terrain_frag_out
@@ -392,6 +393,13 @@ fragment terrain_frag_out terrain_frag(terrain_frag_in in [[stage_in]], constant
     float3 _1828;
     for (int _1794 = 0; _1794 < min(_78._m14.x, 64); _1795 = _1828, _1794++)
     {
+        // Not a light the CPU found reaching this chunk: skipped before its
+        // data is read. The same for every pixel of the draw.
+        if (_1794 < 32 && ((_659._m4 >> uint(_1794)) & 1u) == 0u)
+        {
+            _1828 = _1795;
+            continue;
+        }
         float3 _1445 = _78._m12[_1794].xyz - in.m_644;
         float _1451 = dot(_1445, _1445);
         bool _1453 = _78._m12[_1794].w <= 0.0;

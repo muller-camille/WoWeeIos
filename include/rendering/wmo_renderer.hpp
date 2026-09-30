@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rendering/local_light_mask.hpp"
 #include "rendering/collision_geometry.hpp"
 #include "rendering/vk_shader.hpp"
 #include "rendering/spatial_grid.hpp"
@@ -237,6 +238,8 @@ public:
     [[nodiscard]] bool initializeMetal(MetalContext* ctx, pipeline::AssetManager* assets,
                                        uint32_t colorFormat, uint32_t depthFormat,
                                        uint32_t sampleCount);
+    /// The frame's local lights, narrowed to each group as it is drawn.
+    void setLocalLights(const LocalLightList& lights) { localLights_ = lights; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera, const glm::vec3* viewerPos = nullptr);
     /// The buildings near the light's view into the shadow map's pass.
@@ -479,6 +482,7 @@ public:
     void setDeferNormalMaps(bool defer) { deferNormalMaps_ = defer; }
 
 private:
+    LocalLightList localLights_;
     // WMO material UBO - matches WMOMaterial in wmo.frag.glsl
     struct WMOMaterialUBO {
         int32_t hasTexture;        // 0
@@ -498,7 +502,7 @@ private:
         float wmoAmbientG;         // 56 (interior ambient color G)
         float wmoAmbientB;         // 60 (interior ambient color B)
         int32_t emissive;           // 64 (0 none, 1 lamp glass, 2 firelit)
-        int32_t padding0;           // 68
+        uint32_t lightMask = 0xFFFFFFFFu; // 68 which local lights reach the group (Metal only; Vulkan padding)
         int32_t padding1;           // 72
         int32_t padding2;           // 76
     };  // 80 bytes total

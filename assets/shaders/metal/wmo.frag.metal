@@ -45,7 +45,7 @@ struct _578
     float _m14;
     float _m15;
     int _m16;
-    int _m17;
+    uint _m17; // which local lights reach the group (local_light_mask.hpp)
     int _m18;
     int _m19;
 };
@@ -500,6 +500,13 @@ fragment wmo_frag_out wmo_frag(wmo_frag_in in [[stage_in]], constant _76& _78 [[
         float3 _2572;
         for (int _2524 = 0; _2524 < min(_78._m14.x, 64); _2525 = _2572, _2524++)
         {
+            // Not a light the CPU found reaching this group: skipped before
+            // its data is read, alike across the draw.
+            if (_2524 < 32 && ((_580._m17 >> uint(_2524)) & 1u) == 0u)
+            {
+                _2572 = _2525;
+                continue;
+            }
             float3 _2169 = _78._m12[_2524].xyz - in.m_915;
             float _2175 = dot(_2169, _2169);
             bool _2177 = _78._m12[_2524].w <= 0.0;

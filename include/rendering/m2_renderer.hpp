@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rendering/local_light_mask.hpp"
 #include "rendering/collision_geometry.hpp"
 #include "rendering/spatial_grid.hpp"
 #include "rendering/shadow_params.hpp"
@@ -510,6 +511,8 @@ public:
                                        uint32_t sampleCount);
     /// Copies this frame's bones, then draws into an encoder whose pass has the
     /// formats initializeMetal was given. perFrame holds a GPUPerFrameData.
+    /// The frame's local lights, narrowed to each instance as it is drawn.
+    void setLocalLights(const LocalLightList& lights) { localLights_ = lights; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera);
     /// The smoke, particles, ribbons and glow sprites, after renderMetal as
@@ -788,6 +791,7 @@ public:
     void setPredecodedBLPCache(std::unordered_map<std::string, pipeline::BLPImage>* cache) { predecodedBLPCache_ = cache; }
 
 private:
+    LocalLightList localLights_;
     /// The main pass's pipelines, named rather than held, so the draw loop
     /// that picks one is the same for both backends.
     enum class PipelineKind : uint8_t { Opaque, AlphaTest, Cutout, Alpha, Additive };
@@ -941,7 +945,7 @@ private:
         int32_t boneBase;          //  4 bytes @ offset 80
         int32_t boneCount;         //  4 bytes @ offset 84 - clamps skinning reads
         float highlight = 0.0f;    //  4 bytes @ offset 88 - pressed-on lift
-        int32_t _pad = {};         //  4 bytes @ offset 92 - align to 96 (std430)
+        uint32_t lightMask = 0xFFFFFFFFu; // 4 bytes @ offset 92 - which local lights reach it (local_light_mask.hpp; Metal only reads it)
     };
     // How many instances one frame may hand the GPU, not how many exist. Ground
     // clutter is what fills it: it is drawn by the thousand and every tuft
