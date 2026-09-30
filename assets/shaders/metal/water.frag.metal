@@ -683,7 +683,9 @@ fragment water_frag_out water_frag(water_frag_in in [[stage_in]], constant _678&
             _6295 = _6036;
         }
         float _alphaLit = fast::max(fast::max(fast::max(fast::clamp(mix(_2233, fast::min(1.0, _2233 * 1.2999999523162841796875), _1081) * _1190._m3, 0.1500000059604644775390625, 0.920000016689300537109375), (_1375 * 0.4199999868869781494140625) * smoothstep(0.0, 0.0500000007450580596923828125, _1168)), _6279 * 0.579999983310699462890625), _6290 * 0.550000011920928955078125);
-        out.m_933 = float4(_6295, _alphaLit * smoothstep(2400.0, 600.0, _958));
+        float _alphaOut = _alphaLit * smoothstep(2400.0, 600.0, _958);
+        out.m_933 = (_788._m7 > 0.5) ? float4(mix(_1104.xyz, _6295, float3(_alphaOut)), 1.0)
+                                     : float4(_6295, _alphaOut);
         break;
     } while(false);
     return out;

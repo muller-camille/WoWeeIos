@@ -737,5 +737,15 @@ void main() {
 
     color = applyFog(color, FragPos, dist);
 
-    outColor = vec4(color, alpha);
+    // With the scene captured, what shows through the water is the refracted
+    // copy of it, blended here, and the water is opaque over the real one.
+    // Blended over the real scene as well, whatever stood in the water showed
+    // twice - rippled in the refraction and straight through the rest, a
+    // swimmer as two bodies. Opaque with no blend of its own took the see-
+    // through away and left a dark blue sheet; this keeps both.
+    if (hasSceneData) {
+        outColor = vec4(mix(sceneRefract, color, alpha), 1.0);
+    } else {
+        outColor = vec4(color, alpha);
+    }
 }
