@@ -343,6 +343,8 @@ TEST_CASE("the wooden parts of a tree do not sway", "[m2][classifier][foliage]")
                               "DuskwoodTreeStump01", "TreeStumpSmall",
                               "ElwynnLog01", "FallenTreeLog02",
                               "ElwynnTreeTrunk01", "TeldrassilTreeTrunk03",
+                              "KalidarRoots01", "KalidarRoots02",
+                              "WORLD\\KALIMDOR\\KALIDAR\\PASSIVEDOODADS\\KALIDARROOTS\\KALIDARROOTS02.M2",
                               "WORLD\\AZEROTH\\ELWYNN\\PASSIVEDOODADS\\TREES\\ELWYNNTREESTUMP01.M2"}) {
             INFO(n);
             CHECK_FALSE(classify(n, 2.0f, 1.5f).shadowWindFoliage);

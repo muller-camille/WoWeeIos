@@ -110,10 +110,7 @@ void Celestial::recreatePipelines() {
 
 void Celestial::shutdown() {
 #ifdef WOWEE_METAL
-    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
-    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
-    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
-    metal_ = nullptr;
+    releaseMetal();
 #endif
     destroyQuad();
 
@@ -430,6 +427,13 @@ void Celestial::destroyQuad() {
 }
 
 #ifdef WOWEE_METAL
+void Celestial::releaseMetal() {
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
+    metal_ = nullptr;
+}
+
 bool Celestial::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
                                 uint32_t sampleCount) {
     if (!ctx) return false;

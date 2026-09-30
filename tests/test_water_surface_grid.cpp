@@ -13,6 +13,7 @@
 
 #include "rendering/water_surface_grid.hpp"
 
+using wowee::rendering::liquidCornerHeights;
 using wowee::rendering::sampleGridHeight;
 using wowee::rendering::surfaceGridPosition;
 
@@ -185,4 +186,27 @@ TEST_CASE("a non-square surface indexes by its own width", "[watergrid]") {
     const auto heights = corners(4, 8, [](int, int y) { return static_cast<float>(y); });
     CHECK(*sampleGridHeight(heights, 4, 8, 0.0f, 3.0f) == Catch::Approx(3.0f));
     CHECK(*sampleGridHeight(heights, 4, 8, 4.0f, 6.0f) == Catch::Approx(6.0f));
+}
+
+TEST_CASE("an unused zero corner does not flatten a two-level layer",
+          "[watergrid]") {
+    // Shadowglen's pond: one chunk's layer runs from 1306.97 to 1308.36, and
+    // the corners no cell uses are zero. Flattening the whole layer to its
+    // minimum on seeing them sank the upper cells under the pond bed.
+    std::vector<float> heights(3 * 3, 1308.36f);
+    heights[0] = 1306.97f;
+    heights[8] = 0.0f;
+    const auto out = liquidCornerHeights(heights, 2, 2, 1306.97f, 1308.36f);
+    REQUIRE(out.size() == 9);
+    CHECK(out[0] == Catch::Approx(1306.97f));
+    CHECK(out[4] == Catch::Approx(1308.36f));
+    // The zero borrows from its neighbours rather than sitting at zero.
+    CHECK(out[8] == Catch::Approx(1308.36f));
+}
+
+TEST_CASE("corner heights of the wrong count are the flat minimum",
+          "[watergrid]") {
+    const auto out = liquidCornerHeights(std::vector<float>(4, 7.0f), 2, 2, 5.0f, 9.0f);
+    REQUIRE(out.size() == 9);
+    for (float h : out) CHECK(h == Catch::Approx(5.0f));
 }

@@ -194,7 +194,6 @@ bool MetalContext::beginFrame() {
 
     ++frameNumber_;
     commandBuffer_ = queue_->commandBuffer();
-    frameGpuStart_ = 0.0;
     gpuSegmentCount_ = 0;
 
     renderPass_ = MTL::RenderPassDescriptor::renderPassDescriptor();

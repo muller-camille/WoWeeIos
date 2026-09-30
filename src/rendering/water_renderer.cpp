@@ -774,17 +774,8 @@ void WaterRenderer::loadFromTerrain(const pipeline::ADTTerrain& terrain, bool ap
                 surface.width = layer.width;
                 surface.height = layer.height;
 
-                size_t numVertices = (layer.width + 1) * (layer.height + 1);
-                bool useFlat = true;
-                if (layer.heights.size() == numVertices) {
-                    bool sane = true;
-                    for (float h : layer.heights) {
-                        if (!std::isfinite(h) || std::abs(h) > 50000.0f) { sane = false; break; }
-                        if (h < layer.minHeight - 8.0f || h > layer.maxHeight + 8.0f) { sane = false; break; }
-                    }
-                    if (sane) { useFlat = false; surface.heights = layer.heights; }
-                }
-                if (useFlat) surface.heights.resize(numVertices, layer.minHeight);
+                surface.heights = liquidCornerHeights(layer.heights, layer.width, layer.height,
+                                                      layer.minHeight, layer.maxHeight);
 
                 if (isStormwindArea && layer.minHeight > 94.0f) {
                     float distToMoonwell = glm::distance(glm::vec2(tileWorldX, tileWorldY), moonwellPos2D);
@@ -868,16 +859,8 @@ void WaterRenderer::loadFromTerrain(const pipeline::ADTTerrain& terrain, bool ap
 
             // Copy heights
             int layerGridW = layer.width + 1;
-            size_t numVertices = static_cast<size_t>(layerGridW) * (layer.height + 1);
-            bool useFlat = true;
-            if (layer.heights.size() == numVertices) {
-                bool sane = true;
-                for (float h : layer.heights) {
-                    if (!std::isfinite(h) || std::abs(h) > 50000.0f) { sane = false; break; }
-                    if (h < layer.minHeight - 8.0f || h > layer.maxHeight + 8.0f) { sane = false; break; }
-                }
-                if (sane) useFlat = false;
-            }
+            const std::vector<float> corners = liquidCornerHeights(
+                layer.heights, layer.width, layer.height, layer.minHeight, layer.maxHeight);
 
             for (int ly = 0; ly <= layer.height; ly++) {
                 for (int lx = 0; lx <= layer.width; lx++) {
@@ -885,13 +868,7 @@ void WaterRenderer::loadFromTerrain(const pipeline::ADTTerrain& terrain, bool ap
                     int mgy = baseGy + layer.x + lx;
                     if (mgx >= gridW || mgy >= gridH) continue;
 
-                    float h;
-                    if (!useFlat) {
-                        int layerIdx = ly * layerGridW + lx;
-                        h = layer.heights[layerIdx];
-                    } else {
-                        h = layer.minHeight;
-                    }
+                    const float h = corners[static_cast<size_t>(ly) * layerGridW + lx];
 
                     surface.heights[mgy * gridW + mgx] = h;
                     if (h < surface.minHeight) surface.minHeight = h;

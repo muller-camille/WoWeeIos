@@ -73,14 +73,39 @@ In order. What each one needs is noted, because the device work needs the Mac.
 3. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
    answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
    is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
-4. Close M4: fps and memory at Goldshire and a capital, then the branch merges. The Linux
+4. **Spell missiles do not fly (both backends, found 2026-09-29).** A Wrath bolt appears on the
+   target instead of travelling to it: `SpellVisualSystem` has precast, cast and impact, and
+   uses a visual's MissileModel only as a fallback effect in place. Wanted: on the cast going
+   off, the missile M2 at the caster's hand, moved to the target at Spell.dbc's speed (the
+   `playPhysicalProjectile` start/end/elapsed machinery does the moving for arrows already),
+   and the impact kit played on arrival rather than at once.
+5. **Tree roots swayed in the wind (both backends, fixed 2026-09-29):** "root" is a foliage
+   token, so KalidarRoots01/02 bent like saplings; the plural is now a hard tree part
+   (`m2_model_classifier.cpp`), with `test_m2_classifier_foliage` extended - to be run on Linux.
+   **Swimmers doubled in the water (both backends, still open, left for later on 2026-09-29):**
+   the refraction offset sampled the swimmer's own head and arms above the surface.
+   `water.frag.glsl` now falls back to the unshifted sample when the shifted one is nearer than
+   the water by more than 0.1 yard. A screenshot in the pond looked single, but swimming in
+   play the body still shows twice. Making the water opaque as well was tried and dropped:
+   the pond went solid dark blue. Still to look at: the blend of the refraction over the real
+   scene (the part under the surface seen both straight and rippled), and the swimmer's
+   own depth near the surface. The Metal
+   `water.frag.metal` was edited by hand (the Mac has no glslc or spirv-cross): a session with
+   the shader tools must rebuild `water.frag.spv` and rerun `tools/metal/convert_shaders.py`,
+   then check on the iPad that the pond looks the same.
+   **A dry strip across Shadowglen's pond (both backends, fixed 2026-09-29):** the pond steps
+   down 1.4 yards inside one chunk, and that layer's unused corners are zero in MH2O. Seeing
+   them, the renderer threw the whole layer's heights away and laid it flat at the lower level,
+   under the pond bed. `liquidCornerHeights` (`water_surface_grid.hpp`) now replaces only the
+   bad corners; `test_water_surface_grid` has two cases for it, to be run on Linux.
+6. Close M4: fps and memory at Goldshire and a capital, then the branch merges. The Linux
    client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
    `CharacterRenderer`'s Vulkan sink was fixed on the way). Of its 217 tests on 2026-09-29, in a
    Debug build, 214 passed. `shared_rules` and `settings_schema_consistency` fail only in Debug,
    where the `#ifndef NDEBUG` FSR 3 tuning entries split the Upscaling category; CI builds
-   Release. `sweep_guard` fails on two findings older than that evening, which master's CI
-   would stop the merge on: `MetalContext::frameGpuStart_` is stored and never read, and
-   `Celestial::shutdown` and `Clouds::shutdown` are one function written twice.
+   Release. `sweep_guard` failed on two findings, both fixed on the Mac and to be rerun on
+   Linux: `MetalContext::frameGpuStart_` is gone, and `Celestial` and `Clouds` each keep their
+   Metal releases in a `releaseMetal()` that `shutdown()` calls.
 
 Not in M4, as decided or found: ray traced lighting is not ported (3.11). The Hi-Z pyramid is
 never created on either backend, and the M2 GPU cull stays Vulkan's - the Metal M2 path culls on

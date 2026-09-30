@@ -363,8 +363,19 @@ void main() {
     // triangle edges, which is where the hard lines came from.
     float near = push.depthRange.x;
     float far = push.depthRange.y;
-    float sceneLinDepth = linearizeDepth(sceneDepth, near, far);
     float waterLinDepth = linearizeDepth(gl_FragCoord.z, near, far);
+    // What the offset lands on has to be under the water to be seen through
+    // it. Beside anything standing in the water - a swimmer's head and arms,
+    // a post - the offset reached the part above the surface and drew a
+    // rippled copy of it into the water next to itself: the body seen twice.
+    // Where the sample is clearly nearer than the surface, the straight-down
+    // one is used. Clearly: a tenth of a yard, in linear depth, so the bed
+    // lying right at the surface along the shore does not flip it.
+    if (linearizeDepth(sceneDepth, near, far) < waterLinDepth - 0.1) {
+        sceneRefract = texture(SceneColor, screenUV).rgb;
+        sceneDepth = texture(SceneDepth, screenUV).r;
+    }
+    float sceneLinDepth = linearizeDepth(sceneDepth, near, far);
     float depthDiff = max(sceneLinDepth - waterLinDepth, 0.0);
 
     // Convert screen-space depth difference to approximate vertical water depth.

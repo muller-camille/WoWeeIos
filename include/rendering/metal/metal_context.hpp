@@ -223,7 +223,6 @@ private:
         int count = 0;
     } gpuSegments_;
     int gpuSegmentCount_ = 0;
-    double frameGpuStart_ = 0.0;
     std::atomic<double> frameGpuStartShared_{0.0};
     double lastSlotWaitMs_ = 0.0;
     std::vector<MTL::Texture*> interfaceTextures_;

@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -94,6 +95,54 @@ inline std::optional<float> sampleGridHeight(const std::vector<float>& heights,
     const float h11 = heights[static_cast<size_t>(idx11)];
     return h00 * (1 - fx) * (1 - fy) + h10 * fx * (1 - fy) +
            h01 * (1 - fx) * fy + h11 * fx * fy;
+}
+
+/// The corner heights a liquid layer is drawn at, with the ones that cannot
+/// be real replaced rather than the layer's.
+///
+/// MH2O stores a height for every corner of a layer's rect, including the
+/// corners no existing cell touches, and those are often left at zero. The
+/// renderer used to see one such corner, call the whole array insane and lay
+/// the layer flat at its minimum. That is harmless on a flat sheet and wrong
+/// on a layer spanning two levels: in Shadowglen a pond steps down 1.4 yards
+/// inside one chunk, and flattened to the lower level its upper cells went
+/// under the pond bed, a dry strip straight across the water.
+///
+/// A corner is taken when it is finite and within eight yards of the layer's
+/// own range; otherwise it borrows the mean of its valid neighbours along the
+/// grid, and failing those the minimum. Every corner of an existing cell is
+/// real in the data seen so far, so the borrowing only decides where unused
+/// corners sit, and keeps them near their neighbours if one is ever shared.
+inline std::vector<float> liquidCornerHeights(const std::vector<float>& heights,
+                                              int width, int height,
+                                              float minHeight, float maxHeight) {
+    const int gridW = width + 1;
+    const int gridH = height + 1;
+    const size_t count = static_cast<size_t>(gridW) * static_cast<size_t>(gridH);
+    std::vector<float> out(count, minHeight);
+    if (heights.size() != count) return out;
+
+    const auto valid = [&](float h) {
+        return std::isfinite(h) && std::abs(h) <= 50000.0f &&
+               h >= minHeight - 8.0f && h <= maxHeight + 8.0f;
+    };
+    for (int y = 0; y < gridH; ++y) {
+        for (int x = 0; x < gridW; ++x) {
+            const size_t i = static_cast<size_t>(y) * gridW + x;
+            if (valid(heights[i])) { out[i] = heights[i]; continue; }
+            float sum = 0.0f;
+            int n = 0;
+            const int nx[4] = {x - 1, x + 1, x, x};
+            const int ny[4] = {y, y, y - 1, y + 1};
+            for (int k = 0; k < 4; ++k) {
+                if (nx[k] < 0 || nx[k] >= gridW || ny[k] < 0 || ny[k] >= gridH) continue;
+                const float h = heights[static_cast<size_t>(ny[k]) * gridW + nx[k]];
+                if (valid(h)) { sum += h; ++n; }
+            }
+            if (n > 0) out[i] = sum / static_cast<float>(n);
+        }
+    }
+    return out;
 }
 
 }  // namespace rendering

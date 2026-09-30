@@ -162,6 +162,7 @@ public:
                      float gameTime, float nightFactor);
 
 private:
+    void releaseMetal();
     MetalContext* metal_ = nullptr;
     MTL::RenderPipelineState* mtlPipeline_ = nullptr;
     MTL::Buffer* mtlVertices_ = nullptr;

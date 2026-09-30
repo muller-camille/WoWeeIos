@@ -444,7 +444,12 @@ M2ClassificationResult classifyM2Model(
                             && !furnitureName;
     const bool treeLike     = treeHit.found && !structureHit.outranks(treeHit)
                             && !furnitureName;
-    const bool hardTreePart = has(n, "trunk") || has(n, "stump") || has(n, "log");
+    // And a tree's roots: "root" is a foliage token for the plants named after
+    // theirs, so Teldrassil's great root arches (KalidarRoots01/02) swayed in
+    // the wind like saplings - a curve of wood ten yards long waving in front
+    // of the Shadowglen ponds. The plural is the timber.
+    const bool hardTreePart = has(n, "trunk") || has(n, "stump") || has(n, "log") ||
+                              has(n, "roots");
 
     // A teleport structure is a doorway, not an object: you walk into or onto
     // it. TeleportTree.m2 - the Rut'theran Village portal to Darnassus - is the

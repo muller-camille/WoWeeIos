@@ -119,10 +119,7 @@ void Clouds::recreatePipelines() {
 
 void Clouds::shutdown() {
 #ifdef WOWEE_METAL
-    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
-    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
-    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
-    metal_ = nullptr;
+    releaseMetal();
 #endif
     destroyBuffers();
 
@@ -277,6 +274,13 @@ void Clouds::destroyBuffers() {
 }
 
 #ifdef WOWEE_METAL
+void Clouds::releaseMetal() {
+    if (mtlPipeline_) { mtlPipeline_->release(); mtlPipeline_ = nullptr; }
+    if (mtlVertices_) { mtlVertices_->release(); mtlVertices_ = nullptr; }
+    if (mtlIndices_) { mtlIndices_->release(); mtlIndices_ = nullptr; }
+    metal_ = nullptr;
+}
+
 bool Clouds::initializeMetal(MetalContext* ctx, uint32_t colorFormat, uint32_t depthFormat,
                              uint32_t sampleCount) {
     if (!ctx) return false;
