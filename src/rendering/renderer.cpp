@@ -124,6 +124,13 @@
 namespace wowee {
 namespace rendering {
 
+#ifdef WOWEE_METAL
+namespace {
+// Defined with WOWEE_METAL_SKIP, below; the per-frame data asks it too.
+bool metalSkips(const char* pass);
+}  // namespace
+#endif
+
 
 
 Renderer::Renderer() = default;
@@ -623,18 +630,32 @@ void Renderer::updatePerFrameUBO() {
         currentFrameData.localLightPosRadius[i] = glm::vec4(0.0f);
         currentFrameData.localLightColorIntensity[i] = glm::vec4(0.0f);
     }
+    // Every terrain, building and doodad pixel walks the whole list, so its
+    // length is paid on all of the screen. On a phone or tablet, the nearest
+    // sixteen: Shadowglen's pond, full of lanterns, sends the full sixty-four,
+    // and on the A14 that list held it at 22 fps against 43 at sixteen (the
+    // WOWEE_METAL_SKIP locallights switch: 53 with none). Each lamp reaches three to
+    // twelve yards, so the ones cut are the far ones, lighting a few pixels.
+#ifdef WOWEE_MOBILE
+    constexpr uint32_t kLightBudget = 16;
+#else
+    constexpr uint32_t kLightBudget = MAX_LOCAL_LIGHTS;
+#endif
     uint32_t localLightCount = wmoRenderer
         ? wmoRenderer->gatherLavaLights(camera->getPosition(),
               currentFrameData.localLightPosRadius,
               currentFrameData.localLightColorIntensity,
-              MAX_LOCAL_LIGHTS)
+              kLightBudget)
         : 0;
-    if (m2Renderer && localLightCount < MAX_LOCAL_LIGHTS) {
+    if (m2Renderer && localLightCount < kLightBudget) {
         localLightCount += m2Renderer->gatherLocalLights(camera->getPosition(),
             currentFrameData.localLightPosRadius + localLightCount,
             currentFrameData.localLightColorIntensity + localLightCount,
-            MAX_LOCAL_LIGHTS - localLightCount);
+            kLightBudget - localLightCount);
     }
+#ifdef WOWEE_METAL
+    if (metalSkips("locallights")) localLightCount = 0;
+#endif
     currentFrameData.localLightMeta = glm::ivec4(static_cast<int32_t>(localLightCount), 0, 0, 0);
 
     if (rtLighting_) {
@@ -5303,6 +5324,7 @@ namespace {
 /// shadowchars - to tell what a frame's GPU time is made of. And two that
 /// thin the M2 pass rather than drop it, as the Vulkan ablation's phases do:
 /// clutter (the ground detail) and fardoodads (doodads held to 250 yards).
+/// And locallights: no lamp or lava light reaches any shader.
 ///
 /// WOWEE_METAL_SKIP_CYCLE=<set>;<set>;...: the same, stepping to the next set
 /// every profile report (WOWEE_FRAME_PROFILE's 120 frames), so the sets are

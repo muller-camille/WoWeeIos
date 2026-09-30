@@ -406,7 +406,8 @@ frame in 33 or 50 ms or less, not those exact times. Metal presents as soon as a
 Memory: Metal wins everywhere, by 320-500 MB, graphics about half (e.g. 442 against 947 MB).
 Frame rate: not settled, and the avenue row is not a comparison. The Metal run there was
 teleported mid-session and kept the camera it had; the MoltenVK run logged in with the default
-one. Logged in the same way, Metal draws the avenue at ~35 fps (the skip cycle's "none").
+one. (A skip cycle said to be on the avenue ran at the Shadowglen pond, where the character
+had been left - so no avenue figure logged in the same way exists yet.)
 A fair comparison needs the same fresh login for both builds and MoltenVK unsynced (settings
 `vsync=0` gives IMMEDIATE) so its rate is not held to 60/n. Stopped there, at the user's word,
 on 2026-09-30: M5's work goes on without it.
