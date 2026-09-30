@@ -48,6 +48,10 @@ inline constexpr float kDefaultShadowDistance = 100.0f;
 inline constexpr bool  kDefaultWaterRefraction = false;
 inline constexpr int   kDefaultAntiAliasing = 0;
 inline constexpr int   kDefaultTextureFiltering = 2;
+// Parallax on buildings: about 6 fps of an iPad Air's 28 in Darnassus, and
+// barely less at its lowest quality - the cost is setting it up per pixel,
+// not the steps. The original client has none.
+inline constexpr bool  kDefaultParallax = false;
 #else
 inline constexpr int   kDefaultUpscalingMode = 0;
 inline constexpr int   kDefaultFsrQuality = 3;         // native
@@ -57,6 +61,7 @@ inline constexpr float kDefaultShadowDistance = 300.0f;
 inline constexpr bool  kDefaultWaterRefraction = true;
 inline constexpr int   kDefaultAntiAliasing = 1;
 inline constexpr int   kDefaultTextureFiltering = 4;
+inline constexpr bool  kDefaultParallax = true;
 #endif
 
 }  // namespace wowee::ui

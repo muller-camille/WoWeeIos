@@ -4828,6 +4828,8 @@ void WMORenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* p
             encoder->setFragmentSamplerState(normal->metalSampler(), s.fragNormalSampler);
             WMOMaterialUBO material = mb.mtlMaterial;
             material.lightMask = lightMask;
+            if (r.metalSkipPom_) material.enablePOM = 0;
+            if (r.metalSkipNormal_) material.enableNormalMap = 0;
             encoder->setFragmentBytes(&material, sizeof(WMOMaterialUBO), s.fragMaterial);
         }
         void draw(uint32_t indexCount, uint32_t firstIndex) {

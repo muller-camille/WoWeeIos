@@ -263,7 +263,7 @@ private:
         int  antiAliasing    = 1;   // 0=Off 1=2x 2=4x 3=8x
         bool fxaa            = false;
         bool normalMapping   = true;
-        bool pom             = true;
+        bool pom             = kDefaultParallax;
         int  pomQuality      = 1;   // 0=Low 1=Medium 2=High
         int  upscalingMode   = 0;   // 0=Off 1=FSR1 2=FSR3
         bool waterRefraction = true;

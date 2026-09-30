@@ -148,6 +148,9 @@ public:
                                        uint32_t sampleCount);
     /// The frame's local lights, which renderMetal narrows to each chunk.
     void setLocalLights(const LocalLightList& lights) { localLights_ = lights; }
+    /// Measuring switches, set per frame from WOWEE_METAL_SKIP: draw the base
+    /// layer only, and leave out the derivative detail normal.
+    void setMetalSkips(bool layers, bool detail) { metalSkipLayers_ = layers; metalSkipDetail_ = detail; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera);
     /// The chunks near the light's view into the shadow map's pass.
@@ -205,6 +208,8 @@ public:
 
 private:
     LocalLightList localLights_;
+    bool metalSkipLayers_ = false;
+    bool metalSkipDetail_ = false;
     TerrainChunkGPU uploadChunk(const pipeline::ChunkMesh& chunk);
     VkTexture* loadTexture(const std::string& path);
     VkTexture* createAlphaTexture(const std::vector<uint8_t>& alphaData);

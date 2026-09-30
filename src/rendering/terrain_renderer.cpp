@@ -49,6 +49,8 @@ struct TerrainParamsUBO {
     // Which local lights reach the chunk (local_light_mask.hpp). Metal's
     // terrain.frag reads it; the Vulkan shader does not know the field.
     uint32_t lightMask = 0xFFFFFFFFu;
+    // Metal only, for measuring (WOWEE_METAL_SKIP): 1 = no detail normal.
+    uint32_t debugFlags = 0;
 };
 
 TerrainRenderer::TerrainRenderer() = default;
@@ -1566,6 +1568,8 @@ void TerrainRenderer::renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffe
         params.hasLayer3 = chunk.layerCount >= 3 ? 1 : 0;
         params.lightMask = localLights_.maskFor(chunk.boundingSphereCenter,
                                                 chunk.boundingSphereRadius);
+        if (metalSkipLayers_) params.hasLayer1 = params.hasLayer2 = params.hasLayer3 = 0;
+        params.debugFlags = metalSkipDetail_ ? 1u : 0u;
         encoder->setFragmentBytes(&params, sizeof(params), s.fragParams);
 
         encoder->setVertexBuffer(chunk.mtlVertexBuffer, 0, kMetalVertexBufferIndex);

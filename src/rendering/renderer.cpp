@@ -660,8 +660,10 @@ void Renderer::updatePerFrameUBO() {
     {
         const LocalLightList lights{currentFrameData.localLightPosRadius, localLightCount};
         if (terrainRenderer) terrainRenderer->setLocalLights(lights);
+        if (terrainRenderer) terrainRenderer->setMetalSkips(metalSkips("terrainlayers"), metalSkips("terraindetail"));
         if (m2Renderer) m2Renderer->setLocalLights(lights);
         if (wmoRenderer) wmoRenderer->setLocalLights(lights);
+        if (wmoRenderer) wmoRenderer->setMetalSkips(metalSkips("wmopom"), metalSkips("wmonormal"));
     }
 #endif
     currentFrameData.localLightMeta = glm::ivec4(static_cast<int32_t>(localLightCount), 0, 0, 0);
@@ -5378,6 +5380,8 @@ namespace {
 /// thin the M2 pass rather than drop it, as the Vulkan ablation's phases do:
 /// clutter (the ground detail) and fardoodads (doodads held to 250 yards).
 /// And locallights: no lamp or lava light reaches any shader.
+/// And, to take one surface's cost apart: terrainlayers (the base layer only),
+/// terraindetail (no derivative detail normal), wmopom and wmonormal.
 ///
 /// WOWEE_METAL_SKIP_CYCLE=<set>;<set>;...: the same, stepping to the next set
 /// every profile report (WOWEE_FRAME_PROFILE's 120 frames), so the sets are

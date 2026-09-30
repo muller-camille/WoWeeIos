@@ -240,6 +240,8 @@ public:
                                        uint32_t sampleCount);
     /// The frame's local lights, narrowed to each group as it is drawn.
     void setLocalLights(const LocalLightList& lights) { localLights_ = lights; }
+    /// Measuring switches from WOWEE_METAL_SKIP: no parallax, no normal map.
+    void setMetalSkips(bool pom, bool normal) { metalSkipPom_ = pom; metalSkipNormal_ = normal; }
     void renderMetal(MTL::RenderCommandEncoder* encoder, MTL::Buffer* perFrame, size_t offset,
                      const Camera& camera, const glm::vec3* viewerPos = nullptr);
     /// The buildings near the light's view into the shadow map's pass.
@@ -483,6 +485,8 @@ public:
 
 private:
     LocalLightList localLights_;
+    bool metalSkipPom_ = false;
+    bool metalSkipNormal_ = false;
     // WMO material UBO - matches WMOMaterial in wmo.frag.glsl
     struct WMOMaterialUBO {
         int32_t hasTexture;        // 0

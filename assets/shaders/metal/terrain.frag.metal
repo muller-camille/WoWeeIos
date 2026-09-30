@@ -33,6 +33,7 @@ struct _657
     int _m2;
     int _m3;
     uint _m4; // which local lights reach this chunk (local_light_mask.hpp)
+    uint _m5; // measuring: 1 = no detail normal
 };
 
 struct terrain_frag_out
@@ -116,7 +117,7 @@ fragment terrain_frag_out terrain_frag(terrain_frag_in in [[stage_in]], constant
     float3 _731 = fast::normalize(in.m_729);
     float _757 = (1.0 - smoothstep(50.0, 125.0, _647)) * smoothstep(0.0, 0.0599999986588954925537109375, fast::min(fast::min(in.m_667.x, 1.0 - in.m_667.x), fast::min(in.m_667.y, 1.0 - in.m_667.y)));
     float3 _1704;
-    if (_757 > 0.001000000047497451305389404296875)
+    if (_757 > 0.001000000047497451305389404296875 && (_659._m5 & 1u) == 0u)
     {
         float _769 = dot(_1695.xyz, float3(0.2989999949932098388671875, 0.58700001239776611328125, 0.114000000059604644775390625));
         float _772 = dfdx(_769);

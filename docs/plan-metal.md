@@ -425,6 +425,12 @@ on 2026-09-30: M5's work goes on without it.
   18.6, temporal 0.5 = 23.5. The scaler itself is ~18 ms a frame at 1581x1098 -> 2360x1640.
   Left in for a faster GPU (an M-series iPad) to be measured on; not the A14's lever.
   `WOWEE_METALFX_JITTER_FLIP=1` exists to confirm the jitter's sign by eye there.
+- Where Darnassus's time goes (bank view, A14, skip cycle): buildings, 27.7 -> 45 fps without
+  them. Of that, parallax on the buildings is ~6-7 fps (28.3 -> 35.3), and barely less at its
+  Low quality (29.2 -> 34.8): the cost is the per-pixel setup, not the steps. Parallax now
+  defaults off on iOS (`kDefaultParallax`); a settings file that has it on keeps it on.
+  Terrain, water and their parts (layers, detail normal, shadow taps) are each under 1 fps
+  there. New measuring switches: terrainlayers, terraindetail, wmopom, wmonormal.
 
 ## 6. How one renderer is ported
 
