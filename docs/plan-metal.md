@@ -385,6 +385,31 @@ depends mostly on how fast a build can be run on the device.
 
 ---
 
+### M5 baseline: Metal against MoltenVK on the iPad Air (2026-09-30)
+
+The MoltenVK build is `build-ios-vk` (`-DWOWEE_METAL=OFF`, the same deps and signing as
+`build-ios`). Both measured on the local test server, same character, same spot, one after
+the other, `WOWEE_FRAME_PROFILE=1` and `WOWEE_MEMORY_REPORT=1`, the last three ten-second
+windows after ~100 s. The Metal build does the teleports (its Lua hook is Metal-only) and the
+MoltenVK one logs in where it was left.
+
+| Spot | Metal fps | MoltenVK fps | Metal footprint | MoltenVK footprint |
+|---|---|---|---|---|
+| Shadowglen pond (`.go xyz 10548 842 1310 1`) | 31-33 | 30.0 | 1542 MB | 2048 MB |
+| Darnassus, `.tele Darnassus` (under an overhang) | 23-25 | 20.0 | 1799 MB | 2118 MB |
+| Darnassus avenue (`.go xyz 9946 2510 1330 1`) | 16-17 | 20.0 | 1633 MB | 2003 MB |
+| Goldshire (`.tele Goldshire`) | 18-19 | 19-20 | 2288 MB | 2609 MB |
+
+MoltenVK presents on the display's refresh, so its rate lands on 60/n: 30.0 and 20.0 mean a
+frame in 33 or 50 ms or less, not those exact times. Metal presents as soon as a frame is done.
+
+Memory: Metal wins everywhere, by 320-500 MB, graphics about half (e.g. 442 against 947 MB).
+Frame rate: level, except the Darnassus avenue, where MoltenVK is at least 20 against 16-17 -
+while drawing as many M2 instances (it reports more at the pond, 22696 against 12701). Where
+to look first: the M2 GPU cull and Hi-Z that Vulkan has and Metal does not (section 4), and
+the per-instance cost of Metal's M2 path. M5's exit - beat MoltenVK's frame rate as well as
+its memory - is not met at the avenue.
+
 ## 6. How one renderer is ported
 
 The same steps for each of `terrain_renderer`, `wmo_renderer`, `m2_renderer`, and the rest:
