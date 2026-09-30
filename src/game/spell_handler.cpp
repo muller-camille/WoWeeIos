@@ -2261,7 +2261,37 @@ void SpellHandler::handleSpellGo(network::Packet& packet) {
     // Skip profession spells and melee (schoolMask == 1) abilities.
     if (!owner_.isProfessionSpell(data.spellId) && !rangedWeaponAttack) {
         uint32_t visualId = resolveSpellVisualId(data.spellId);
-        if (visualId != 0) {
+        // A spell that flies (Wrath, Frostbolt, Shadow Bolt): its missile, from
+        // the caster to each target, the impact where it lands. It used to
+        // skip the flight: the missile model stood in for the impact kit and
+        // appeared on the target the moment the spell went off.
+        float missileSpeed = 0.0f;
+        if (auto it = owner_.spellNameCacheRef().find(data.spellId);
+            it != owner_.spellNameCacheRef().end()) {
+            missileSpeed = it->second.missileSpeed;
+        }
+        bool flew = false;
+        glm::vec3 casterAt;
+        if (visualId != 0 && missileSpeed > 0.0f && !data.hitTargets.empty() &&
+            resolveUnitPosition(data.casterUnit, casterAt)) {
+            auto* renderer = owner_.services().renderer;
+            if (auto* svs = renderer ? renderer->getSpellVisualSystem() : nullptr) {
+                std::vector<rendering::SpellVisualSystem::TargetPosition> targets;
+                for (const auto& tgt : data.hitTargets) {
+                    if (tgt == 0) continue;
+                    // At the chest, and wherever the target has got to.
+                    targets.emplace_back([this, tgt](glm::vec3& out) {
+                        if (!resolveUnitPosition(tgt, out)) return false;
+                        out.z += 1.0f;
+                        return true;
+                    });
+                }
+                flew = svs->launchSpellMissiles(visualId, casterAt,
+                                                owner_.resolveUnitRenderInstance(data.casterUnit),
+                                                missileSpeed, targets);
+            }
+        }
+        if (visualId != 0 && !flew) {
             // Cast-complete visual at caster (for instant spells that skip SPELL_START)
             glm::vec3 casterPos;
             if (resolveUnitPosition(data.casterUnit, casterPos)) {
@@ -3273,6 +3303,10 @@ void SpellHandler::loadSpellNameCache() const {
     const uint32_t rangeIdxField = spellL ? spellL->field("RangeIndex") : 0xFFFFFFFF;
     const uint32_t targetAuraStateField = spellL ? spellL->field("TargetAuraState") : 0xFFFFFFFF;
     const uint32_t spellVisualIdField = spellL ? spellL->field("SpellVisualID") : 0xFFFFFFFF;
+    // Speed follows RangeIndex in every client's Spell.dbc. The layouts name
+    // it now, but a data folder copied before they did has not heard of it.
+    uint32_t speedField = spellL ? spellL->field("Speed") : 0xFFFFFFFF;
+    if (speedField == 0xFFFFFFFF && rangeIdxField != 0xFFFFFFFF) speedField = rangeIdxField + 1;
     // Read off the file's own shape. Only TBC's layout named these two, so on
     // WotLK, Classic and Turtle every cooldown this client worked out for itself
     // came back zero - which is most of them, since the server sends a cooldown
@@ -3348,6 +3382,10 @@ void SpellHandler::loadSpellNameCache() const {
             // SpellVisualID: references SpellVisual.dbc for cast/impact M2 effects
             if (spellVisualIdField != 0xFFFFFFFF && spellVisualIdField < dbc->getFieldCount())
                 entry.spellVisualId = dbc->getUInt32(i, spellVisualIdField);
+            if (speedField != 0xFFFFFFFF && speedField < dbc->getFieldCount()) {
+                const float speed = dbc->getFloat(i, speedField);
+                if (std::isfinite(speed) && speed > 0.0f && speed < 1000.0f) entry.missileSpeed = speed;
+            }
             if (recoveryField != 0xFFFFFFFF && recoveryField < fieldCount)
                 entry.recoveryMs = dbc->getUInt32(i, recoveryField);
             if (categoryRecoveryField != 0xFFFFFFFF && categoryRecoveryField < fieldCount)

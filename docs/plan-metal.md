@@ -85,12 +85,13 @@ In order. What each one needs is noted, because the device work needs the Mac.
 3. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
    answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
    is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
-4. **Spell missiles do not fly (both backends, found 2026-09-29).** A Wrath bolt appears on the
-   target instead of travelling to it: `SpellVisualSystem` has precast, cast and impact, and
-   uses a visual's MissileModel only as a fallback effect in place. Wanted: on the cast going
-   off, the missile M2 at the caster's hand, moved to the target at Spell.dbc's speed (the
-   `playPhysicalProjectile` start/end/elapsed machinery does the moving for arrows already),
-   and the impact kit played on arrival rather than at once.
+4. **Spell missiles did not fly (both backends, fixed 2026-09-30).** A Wrath bolt appeared on
+   the target instead of travelling to it: the visual's MissileModel stood in for the impact
+   kit. Spell.dbc's Speed is now read (the layouts name it; RangeIndex + 1 where an older copy
+   does not), and a spell with one launches its missile from the caster's right hand to each
+   hit target, following it, the impact kit played on arrival
+   (`SpellVisualSystem::launchSpellMissiles`). Seen on the iPad: `.cast 9912 triggered` at a
+   Kobold Worker by Echo Ridge Mine, the bolt mid-flight and the kobold still at full health.
 5. **Tree roots swayed in the wind (both backends, fixed 2026-09-29):** "root" is a foliage
    token, so KalidarRoots01/02 bent like saplings; the plural is now a hard tree part
    (`m2_model_classifier.cpp`), with `test_m2_classifier_foliage` extended - to be run on Linux.

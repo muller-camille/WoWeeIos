@@ -147,6 +147,11 @@ void SpellVisualSystem::loadSpellVisualDbc() {
                 path = missilePath(svDbc->getUInt32(i, svMissileField));
             if (!path.empty()) { spellVisualCastPath_[vid] = path; ++loadedCast; }
         }
+        // The missile itself, for a spell that flies (launchSpellMissiles).
+        if (svMissileField < svFc) {
+            const std::string path = missilePath(svDbc->getUInt32(i, svMissileField));
+            if (!path.empty()) spellVisualMissilePath_[vid] = path;
+        }
         // Impact path: ImpactKit → SpecialEffect0/BaseEffect, fallback to MissileModel
         {
             std::string path;
@@ -204,6 +209,63 @@ glm::vec3 SpellVisualSystem::applyEffectHeightOffset(const glm::vec3& basePos, c
     return basePos;
 }
 
+uint32_t SpellVisualSystem::ensureSpellModel(const std::string& modelPath) {
+    // Get or assign a model ID for this path
+    auto midIt = spellVisualModelIds_.find(modelPath);
+    uint32_t modelId = 0;
+    if (midIt != spellVisualModelIds_.end()) {
+        modelId = midIt->second;
+    } else {
+        if (nextSpellVisualModelId_ >= 999800) {
+            LOG_WARNING("SpellVisual: model ID pool exhausted");
+            return 0;
+        }
+        modelId = nextSpellVisualModelId_++;
+        spellVisualModelIds_[modelPath] = modelId;
+    }
+
+    // Skip models that have previously failed to load (avoid repeated I/O)
+    if (spellVisualFailedModels_.count(modelId)) {
+        LOG_WARNING("SpellVisual: model in failed-cache, skipping: ", modelPath);
+        return 0;
+    }
+
+    // Load the M2 model if not already loaded
+    if (!m2Renderer_->hasModel(modelId)) {
+        auto m2Data = cachedAssetManager_->readFile(modelPath);
+        if (m2Data.empty()) {
+            LOG_WARNING("SpellVisual: could not read model: ", modelPath);
+            spellVisualFailedModels_.insert(modelId);
+            return 0;
+        }
+        LOG_INFO("SpellVisual: cast/impact M2 data read OK, size=", m2Data.size(), " bytes");
+        pipeline::M2Model model = pipeline::M2Loader::load(m2Data);
+        if (model.name.empty()) model.name = modelPath;
+        LOG_INFO("SpellVisual: M2 parsed: verts=", model.vertices.size(),
+                 " bones=", model.bones.size(), " particles=", model.particleEmitters.size(),
+                 " ribbons=", model.ribbonEmitters.size());
+        if (model.vertices.empty() && model.particleEmitters.empty()) {
+            LOG_WARNING("SpellVisual: empty model: ", modelPath);
+            spellVisualFailedModels_.insert(modelId);
+            return 0;
+        }
+        // Load skin file for WotLK-format M2s
+        if (model.version >= 264) {
+            std::string skinPath = pipeline::skinPathForM2(modelPath);
+            auto skinData = cachedAssetManager_->readFile(skinPath);
+            if (!skinData.empty()) pipeline::M2Loader::loadSkin(skinData, model);
+        }
+        if (!m2Renderer_->loadModel(model, modelId)) {
+            LOG_WARNING("SpellVisual: failed to load model to GPU: ", modelPath);
+            spellVisualFailedModels_.insert(modelId);
+            return 0;
+        }
+        m2Renderer_->markModelAsSpellEffect(modelId);
+        LOG_INFO("SpellVisual: loaded model id=", modelId, " path=", modelPath);
+    }
+    return modelId;
+}
+
 void SpellVisualSystem::playSpellVisualPrecast(uint32_t visualId, const glm::vec3& worldPosition,
                                                 uint32_t castTimeMs, uint32_t attachInstanceId) {
     LOG_INFO("SpellVisual: playSpellVisualPrecast visualId=", visualId,
@@ -232,64 +294,11 @@ void SpellVisualSystem::playSpellVisualPrecast(uint32_t visualId, const glm::vec
     const std::string& modelPath = pathIt->second;
     LOG_INFO("SpellVisual: precast path resolved to: ", modelPath);
 
-    // Get or assign a model ID for this path
-    auto midIt = spellVisualModelIds_.find(modelPath);
-    uint32_t modelId = 0;
-    if (midIt != spellVisualModelIds_.end()) {
-        modelId = midIt->second;
-    } else {
-        if (nextSpellVisualModelId_ >= 999800) {
-            LOG_WARNING("SpellVisual: model ID pool exhausted");
-            return;
-        }
-        modelId = nextSpellVisualModelId_++;
-        spellVisualModelIds_[modelPath] = modelId;
-    }
-
-    if (spellVisualFailedModels_.count(modelId)) {
-        LOG_WARNING("SpellVisual: precast model in failed-cache, skipping: ", modelPath);
+    // Its model, or the cast kit where it cannot be had.
+    const uint32_t modelId = ensureSpellModel(modelPath);
+    if (modelId == 0) {
+        playSpellVisual(visualId, worldPosition, false, attachInstanceId);
         return;
-    }
-
-    if (!m2Renderer_->hasModel(modelId)) {
-        auto m2Data = cachedAssetManager_->readFile(modelPath);
-        if (m2Data.empty()) {
-            LOG_WARNING("SpellVisual: could not read precast model: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            // Fall back to cast kit
-            playSpellVisual(visualId, worldPosition, false, attachInstanceId);
-            return;
-        }
-        LOG_INFO("SpellVisual: precast M2 data read OK, size=", m2Data.size(), " bytes");
-        pipeline::M2Model model = pipeline::M2Loader::load(m2Data);
-        if (model.name.empty()) model.name = modelPath;
-        LOG_INFO("SpellVisual: precast M2 parsed: verts=", model.vertices.size(),
-                 " bones=", model.bones.size(), " particles=", model.particleEmitters.size(),
-                 " ribbons=", model.ribbonEmitters.size(),
-                 " globalSeqs=", model.globalSequenceDurations.size(),
-                 " sequences=", model.sequences.size());
-        if (model.vertices.empty() && model.particleEmitters.empty()) {
-            LOG_WARNING("SpellVisual: empty precast model: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            playSpellVisual(visualId, worldPosition, false, attachInstanceId);
-            return;
-        }
-        if (model.version >= 264) {
-            std::string skinPath = pipeline::skinPathForM2(modelPath);
-            auto skinData = cachedAssetManager_->readFile(skinPath);
-            if (!skinData.empty()) {
-                pipeline::M2Loader::loadSkin(skinData, model);
-                LOG_INFO("SpellVisual: loaded skin, indices=", model.indices.size());
-            }
-        }
-        if (!m2Renderer_->loadModel(model, modelId)) {
-            LOG_WARNING("SpellVisual: failed to load precast model to GPU: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            playSpellVisual(visualId, worldPosition, false, attachInstanceId);
-            return;
-        }
-        m2Renderer_->markModelAsSpellEffect(modelId);
-        LOG_INFO("SpellVisual: loaded precast model id=", modelId, " path=", modelPath);
     }
 
     // Determine attachment point for bone tracking (hand/chest/head → follow
@@ -388,59 +397,8 @@ void SpellVisualSystem::playSpellVisual(uint32_t visualId, const glm::vec3& worl
     const std::string& modelPath = pathIt->second;
     LOG_INFO("SpellVisual: ", (useImpactKit ? "impact" : "cast"), " path resolved to: ", modelPath);
 
-    // Get or assign a model ID for this path
-    auto midIt = spellVisualModelIds_.find(modelPath);
-    uint32_t modelId = 0;
-    if (midIt != spellVisualModelIds_.end()) {
-        modelId = midIt->second;
-    } else {
-        if (nextSpellVisualModelId_ >= 999800) {
-            LOG_WARNING("SpellVisual: model ID pool exhausted");
-            return;
-        }
-        modelId = nextSpellVisualModelId_++;
-        spellVisualModelIds_[modelPath] = modelId;
-    }
-
-    // Skip models that have previously failed to load (avoid repeated I/O)
-    if (spellVisualFailedModels_.count(modelId)) {
-        LOG_WARNING("SpellVisual: model in failed-cache, skipping: ", modelPath);
-        return;
-    }
-
-    // Load the M2 model if not already loaded
-    if (!m2Renderer_->hasModel(modelId)) {
-        auto m2Data = cachedAssetManager_->readFile(modelPath);
-        if (m2Data.empty()) {
-            LOG_WARNING("SpellVisual: could not read model: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            return;
-        }
-        LOG_INFO("SpellVisual: cast/impact M2 data read OK, size=", m2Data.size(), " bytes");
-        pipeline::M2Model model = pipeline::M2Loader::load(m2Data);
-        if (model.name.empty()) model.name = modelPath;
-        LOG_INFO("SpellVisual: M2 parsed: verts=", model.vertices.size(),
-                 " bones=", model.bones.size(), " particles=", model.particleEmitters.size(),
-                 " ribbons=", model.ribbonEmitters.size());
-        if (model.vertices.empty() && model.particleEmitters.empty()) {
-            LOG_WARNING("SpellVisual: empty model: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            return;
-        }
-        // Load skin file for WotLK-format M2s
-        if (model.version >= 264) {
-            std::string skinPath = pipeline::skinPathForM2(modelPath);
-            auto skinData = cachedAssetManager_->readFile(skinPath);
-            if (!skinData.empty()) pipeline::M2Loader::loadSkin(skinData, model);
-        }
-        if (!m2Renderer_->loadModel(model, modelId)) {
-            LOG_WARNING("SpellVisual: failed to load model to GPU: ", modelPath);
-            spellVisualFailedModels_.insert(modelId);
-            return;
-        }
-        m2Renderer_->markModelAsSpellEffect(modelId);
-        LOG_INFO("SpellVisual: loaded model id=", modelId, " path=", modelPath);
-    }
+    const uint32_t modelId = ensureSpellModel(modelPath);
+    if (modelId == 0) return;
 
     // Determine attachment point for bone tracking on cast effects. Only the
     // caster identified by attachInstanceId may be tracked - never default to
@@ -560,8 +518,79 @@ void SpellVisualSystem::playPhysicalProjectile(const std::string& modelPath,
                                     .duration = std::max(duration, 0.05f), .spin = spin});
 }
 
+bool SpellVisualSystem::launchSpellMissiles(uint32_t visualId, const glm::vec3& casterPosition,
+                                            uint32_t attachInstanceId, float speed,
+                                            const std::vector<TargetPosition>& targets) {
+    if (!m2Renderer_ || visualId == 0 || speed <= 0.0f || targets.empty()) return false;
+    if (!cachedAssetManager_)
+        cachedAssetManager_ = core::Application::getInstance().getAssetManager();
+    if (!cachedAssetManager_) return false;
+    if (!spellVisualDbcLoaded_) loadSpellVisualDbc();
+
+    const auto missileIt = spellVisualMissilePath_.find(visualId);
+    if (missileIt == spellVisualMissilePath_.end()) return false;
+    const std::string& missilePath = missileIt->second;
+    const uint32_t modelId = ensureSpellModel(missilePath);
+    if (modelId == 0) return false;
+
+    // The cast kit, where the visual has one: its fallback is this missile,
+    // which would sit in the caster's hand while its twin flies.
+    const auto castIt = spellVisualCastPath_.find(visualId);
+    if (castIt != spellVisualCastPath_.end() && castIt->second != missilePath)
+        playSpellVisual(visualId, casterPosition, /*useImpactKit=*/false, attachInstanceId);
+
+    // Out of the right hand, where the caster has one to follow.
+    glm::vec3 start = casterPosition + glm::vec3(0.0f, 0.0f, 1.5f);
+    if (attachInstanceId != 0 && renderer_) {
+        if (auto* characters = renderer_->getCharacterRenderer()) {
+            glm::mat4 hand;
+            if (characters->getAttachmentTransform(attachInstanceId, 1, hand))
+                start = glm::vec3(hand[3]);
+        }
+    }
+
+    for (const auto& follow : targets) {
+        glm::vec3 target;
+        if (!follow || !follow(target)) continue;
+        const uint32_t instanceId = m2Renderer_->createInstance(modelId, start, glm::vec3(0.0f), 1.0f);
+        if (instanceId == 0) continue;
+        m2Renderer_->restartInstanceAnimation(instanceId);
+        spellMissiles_.push_back({.instanceId = instanceId, .visualId = visualId, .position = start,
+                                  .target = target, .follow = follow, .speed = speed});
+    }
+    return true;
+}
+
 void SpellVisualSystem::update(float deltaTime) {
-    if (activeSpellVisuals_.empty() && physicalProjectiles_.empty()) return;
+    if (activeSpellVisuals_.empty() && physicalProjectiles_.empty() && spellMissiles_.empty()) return;
+
+    // Missiles: on at their speed toward where the target is now, the impact
+    // kit played where each arrives. Arrived goes before moving, so a missile
+    // the step would carry past its target lands on it.
+    for (auto it = spellMissiles_.begin(); it != spellMissiles_.end(); ) {
+        it->elapsed += deltaTime;
+        glm::vec3 now;
+        if (it->follow && it->follow(now)) it->target = now;
+        const glm::vec3 toTarget = it->target - it->position;
+        const float remaining = glm::length(toTarget);
+        const float step = it->speed * deltaTime;
+        if (remaining <= step || it->elapsed >= SPELL_MISSILE_MAX_FLIGHT) {
+            m2Renderer_->removeInstance(it->instanceId);
+            const auto impactIt = spellVisualImpactPath_.find(it->visualId);
+            const auto missileIt = spellVisualMissilePath_.find(it->visualId);
+            // Not where the impact would be the missile again (its fallback).
+            if (impactIt != spellVisualImpactPath_.end() &&
+                (missileIt == spellVisualMissilePath_.end() || impactIt->second != missileIt->second)) {
+                playSpellVisual(it->visualId, it->target - glm::vec3(0.0f, 0.0f, 1.0f),
+                                /*useImpactKit=*/true);
+            }
+            it = spellMissiles_.erase(it);
+            continue;
+        }
+        it->position += toTarget * (step / remaining);
+        m2Renderer_->setInstancePosition(it->instanceId, it->position);
+        ++it;
+    }
 
     // Get character bone tracking context (once per frame)
     CharacterRenderer* charRenderer = renderer_ ? renderer_->getCharacterRenderer() : nullptr;
@@ -631,6 +660,10 @@ void SpellVisualSystem::reset() {
             renderer_->getCharacterRenderer()->removeInstance(projectile.instanceId);
     }
     physicalProjectiles_.clear();
+    for (const auto& missile : spellMissiles_) {
+        if (m2Renderer_) m2Renderer_->removeInstance(missile.instanceId);
+    }
+    spellMissiles_.clear();
     // Reset the negative cache so models that failed during asset loading can retry.
     spellVisualFailedModels_.clear();
 }

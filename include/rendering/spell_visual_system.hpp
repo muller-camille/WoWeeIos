@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -48,6 +49,21 @@ public:
                                 float duration,
                                 bool spin);
 
+    /// Where a missile's target is now, for a missile that follows it; false
+    /// once it is gone, and the missile finishes at where it was last seen.
+    using TargetPosition = std::function<bool(glm::vec3&)>;
+
+    /// A spell that flies: its visual's missile model, from the caster's hand
+    /// (attachInstanceId's right hand, or casterPosition at chest height) to
+    /// each target at `speed` yards a second, the impact kit played where each
+    /// arrives. The cast kit plays at the caster as playSpellVisual would -
+    /// unless the visual has none of its own, when that would be the missile
+    /// again, sitting in the caster's hand. False when the visual has no
+    /// missile model, and nothing is played: the caller shows it as before.
+    bool launchSpellMissiles(uint32_t visualId, const glm::vec3& casterPosition,
+                             uint32_t attachInstanceId, float speed,
+                             const std::vector<TargetPosition>& targets);
+
     // Advance lifetime timers and remove expired instances.
     void update(float deltaTime);
 
@@ -79,7 +95,20 @@ private:
         bool spin = false;
     };
 
+    struct SpellMissile {
+        uint32_t instanceId = 0;
+        uint32_t visualId = 0;
+        glm::vec3 position{0.0f};
+        glm::vec3 target{0.0f};  // the last place the target was seen
+        TargetPosition follow;
+        float speed = 0.0f;
+        float elapsed = 0.0f;
+    };
+
     void loadSpellVisualDbc();
+    /// The M2Renderer model for a spell effect's path, loaded on first use;
+    /// 0 where it cannot be (and it is not tried again).
+    uint32_t ensureSpellModel(const std::string& modelPath);
 
     M2Renderer* m2Renderer_ = nullptr;
     Renderer* renderer_ = nullptr;
@@ -87,6 +116,8 @@ private:
 
     std::vector<SpellVisualInstance> activeSpellVisuals_;
     std::vector<PhysicalProjectile> physicalProjectiles_;
+    std::vector<SpellMissile> spellMissiles_;
+    std::unordered_map<uint32_t, std::string> spellVisualMissilePath_; // visualId → MissileModel M2 path
     std::unordered_map<uint32_t, std::string> spellVisualPrecastPath_; // visualId → precast M2 path
     std::unordered_map<uint32_t, std::string> spellVisualCastPath_;   // visualId → cast M2 path
     std::unordered_map<uint32_t, std::string> spellVisualImpactPath_; // visualId → impact M2 path
@@ -98,6 +129,8 @@ private:
     bool spellVisualDbcLoaded_ = false;
     static constexpr float SPELL_VISUAL_MAX_DURATION = 5.0f;
     static constexpr float SPELL_VISUAL_DEFAULT_DURATION = 2.0f;
+    // A missile still short of a target that ran off gives up after this.
+    static constexpr float SPELL_MISSILE_MAX_FLIGHT = 6.0f;
 
     // Determine character attachment point from model path keywords
     static uint32_t classifyAttachmentId(const std::string& modelPath);
