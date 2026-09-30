@@ -96,6 +96,12 @@ struct M2ModelGPU {
         bool volumetricBeam = false;
         uint8_t glowTint = 0; // 0=warm, 1=cool, 2=red
         float batchOpacity = 1.0f; // Resolved texture weight opacity (0=transparent, skip batch)
+        // What batchOpacity took from the colour-alpha and transparency
+        // tracks' first keys, and which tracks they were: for a model whose
+        // alpha is animated, a draw scales by the track's value now over this.
+        float restAlpha = 1.0f;
+        uint16_t colorIndex = 0xFFFF;
+        uint16_t weightTrack = 0xFFFF;
         glm::vec3 center = glm::vec3(0.0f); // Center of batch geometry (model space)
         float glowSize = 1.0f;              // Approx radius of batch geometry
 
@@ -183,6 +189,13 @@ struct M2ModelGPU {
     std::vector<pipeline::M2Bone> bones;
     std::vector<pipeline::M2Sequence> sequences;
     std::vector<uint32_t> globalSequenceDurations;  // Loop durations for global sequence tracks
+    /// The colour-alpha and transparency tracks, kept only where one of them
+    /// moves (animatedAlpha): a spell impact fading out, a pulsing glow. Baked
+    /// to their first key, an impact sat at full strength for its whole
+    /// animation - Wrath's green burst for 3.7 seconds on the target.
+    std::vector<pipeline::M2AnimationTrack> colorAlphaTracks;
+    std::vector<pipeline::M2AnimationTrack> textureWeightTracks;
+    bool animatedAlpha = false;
     bool hasAnimation = false;  // True if any bone has keyframes
     uint32_t rtMesh = ~0u;      // RtScene mesh, or ~0u when it does not cast
     bool isSmoke = false;       // True for smoke models (UV scroll animation)

@@ -2279,9 +2279,26 @@ void SpellHandler::handleSpellGo(network::Packet& packet) {
                 std::vector<rendering::SpellVisualSystem::TargetPosition> targets;
                 for (const auto& tgt : data.hitTargets) {
                     if (tgt == 0) continue;
-                    // At the chest, and wherever the target has got to.
+                    // At the chest, wherever the target is drawn now. Not
+                    // resolveUnitPosition: for a unit on the move that is
+                    // where the move ends, and a mob running at the caster
+                    // drew the missile back toward the caster's own feet.
                     targets.emplace_back([this, tgt](glm::vec3& out) {
-                        if (!resolveUnitPosition(tgt, out)) return false;
+                        auto* r = owner_.services().renderer;
+                        auto* characters = r ? r->getCharacterRenderer() : nullptr;
+                        const uint32_t instance = owner_.resolveUnitRenderInstance(tgt);
+                        if (!(characters && instance != 0 &&
+                              characters->getInstancePosition(instance, out))) {
+                            if (tgt == owner_.getPlayerGuid()) {
+                                if (!r) return false;
+                                out = r->getCharacterPosition();
+                            } else {
+                                auto entity = owner_.getEntityManager().getEntity(tgt);
+                                if (!entity) return false;
+                                out = core::coords::canonicalToRender(
+                                    glm::vec3(entity->getX(), entity->getY(), entity->getZ()));
+                            }
+                        }
                         out.z += 1.0f;
                         return true;
                     });

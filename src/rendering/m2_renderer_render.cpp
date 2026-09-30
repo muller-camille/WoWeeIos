@@ -7,6 +7,7 @@
 #endif
 #include "rendering/m2_renderer_internal.h"
 #include "rendering/m2_sway.hpp"
+#include "rendering/m2_track_sampler.hpp"
 #include "rendering/m2_blend_mode.hpp"
 #include "rendering/m2_glow_card.hpp"
 #include "core/thread_pool.hpp"
@@ -2042,7 +2043,27 @@ void M2Renderer::renderImpl(Sink& sink, const Camera& camera) {
             auto& e = instSSBO[instanceDataCount_];
             e.model = instance.modelMatrix;
             e.uvOffset = uvOffset;
-            e.fadeAlpha = instanceFadeAlpha;
+            // The batch's alpha tracks where they move: what they give now,
+            // over what was baked into its material at load.
+            float trackAlpha = 1.0f;
+            if (model.animatedAlpha && batch.restAlpha > 0.001f) {
+                float alpha = 1.0f;
+                if (batch.colorIndex < model.colorAlphaTracks.size()) {
+                    alpha *= m2_track::sampleFloat(model.colorAlphaTracks[batch.colorIndex],
+                                                   instance.currentSequenceIndex, instance.animTime,
+                                                   instance.globalSequenceTime,
+                                                   model.globalSequenceDurations, 1.0f);
+                }
+                if (batch.weightTrack < model.textureWeightTracks.size()) {
+                    alpha *= m2_track::sampleFloat(model.textureWeightTracks[batch.weightTrack],
+                                                   instance.currentSequenceIndex, instance.animTime,
+                                                   instance.globalSequenceTime,
+                                                   model.globalSequenceDurations, 1.0f);
+                }
+                trackAlpha = glm::clamp(alpha, 0.0f, 1.0f) / batch.restAlpha;
+                if (trackAlpha < 0.004f) continue;  // faded out: nothing to draw
+            }
+            e.fadeAlpha = instanceFadeAlpha * trackAlpha;
             e.useBones = (needsBones && !kM2NoSkinning) ? 1 : 0;
             e.boneBase = needsBones ? static_cast<int32_t>(instance.megaBoneOffset) : 0;
             e.boneCount = static_cast<int32_t>(instance.boneMatrices.size());

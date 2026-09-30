@@ -1798,6 +1798,19 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
     gpuModel.bones = model.bones;
     gpuModel.sequences = model.sequences;
     gpuModel.globalSequenceDurations = model.globalSequenceDurations;
+    {
+        const auto moves = [](const std::vector<pipeline::M2AnimationTrack>& tracks) {
+            for (const auto& track : tracks)
+                for (const auto& seq : track.sequences)
+                    if (seq.floatValues.size() > 1) return true;
+            return false;
+        };
+        if (moves(model.colorAlphaTracks) || moves(model.textureWeightTracks)) {
+            gpuModel.colorAlphaTracks = model.colorAlphaTracks;
+            gpuModel.textureWeightTracks = model.textureWeightTracks;
+            gpuModel.animatedAlpha = true;
+        }
+    }
     gpuModel.hasAnimation = false;
     for (const auto& bone : model.bones) {
         if (bone.translation.hasData() || bone.rotation.hasData() || bone.scale.hasData()) {
@@ -2321,12 +2334,21 @@ bool M2Renderer::loadModel(const pipeline::M2Model& model, uint32_t modelId) {
                 if (batch.colorIndex < model.colorAlphas.size()) {
                     float ca = model.colorAlphas[batch.colorIndex];
                     if (ca > 0.001f) animAlpha *= ca;
+                    bgpu.colorIndex = batch.colorIndex;
                 }
-                if (batch.transparencyIndex < model.textureWeights.size()) {
-                    float tw = model.textureWeights[batch.transparencyIndex];
+                // Through the lookup table, as the character renderer reads it:
+                // the batch names a lookup slot, the slot names the track.
+                const uint32_t weightTrack =
+                    batch.transparencyIndex < model.textureWeightLookup.size()
+                        ? model.textureWeightLookup[batch.transparencyIndex]
+                        : batch.transparencyIndex;
+                if (weightTrack < model.textureWeights.size()) {
+                    float tw = model.textureWeights[weightTrack];
                     if (tw > 0.001f) animAlpha *= tw;
+                    bgpu.weightTrack = static_cast<uint16_t>(weightTrack);
                 }
                 bgpu.batchOpacity *= animAlpha;
+                bgpu.restAlpha = animAlpha;
             }
 
             // Compute batch center and radius for glow sprite positioning
