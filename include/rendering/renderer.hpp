@@ -30,8 +30,8 @@
 #include "pipeline/grass_profile.hpp"
 
 #ifdef WOWEE_METAL
-namespace MTL { class Buffer; class Texture; }
-namespace MTLFX { class SpatialScaler; }
+namespace MTL { class Buffer; class Texture; class ComputePipelineState; }
+namespace MTLFX { class SpatialScaler; class TemporalScaler; }
 #endif
 
 namespace wowee {
@@ -527,6 +527,20 @@ private:
     MTL::Texture* mtlAaColor_ = nullptr;
     MTL::Texture* mtlUpscaled_ = nullptr;
     MTLFX::SpatialScaler* mtlScaler_ = nullptr;
+    /// WOWEE_METALFX_TEMPORAL=1, where the device has it and the world is not
+    /// multisampled: MetalFX's temporal scaler in place of the spatial one.
+    /// The world is drawn with a sub-pixel jitter that walks a Halton
+    /// sequence, its depth is kept, and metalfx_motion.comp turns the depth
+    /// into camera motion vectors (mtlMotion_) for the scaler to reproject
+    /// the history with. Reset when the view jumps.
+    MTLFX::TemporalScaler* mtlTemporal_ = nullptr;
+    MTL::Texture* mtlMotion_ = nullptr;
+    MTL::ComputePipelineState* mtlMotionPipeline_ = nullptr;
+    glm::mat4 mtlPrevViewProj_{1.0f};
+    glm::vec3 mtlPrevCameraPos_{0.0f};
+    glm::vec2 mtlJitter_{0.0f};       // this frame's, in input pixels
+    uint32_t mtlJitterIndex_ = 0;
+    bool mtlTemporalReset_ = true;
     bool mtlFsrUpscale_ = false;
     int mtlMetalFxSupport_ = -1;  // unknown until asked, then 0 or 1
     std::unique_ptr<MetalPostProcess> mtlPostProcess_;

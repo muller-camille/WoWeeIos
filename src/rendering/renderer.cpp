@@ -65,6 +65,7 @@
 #include <MetalFX/MetalFX.hpp>
 #include "rendering/metal/metal_context.hpp"
 #include "rendering/metal/metal_post_process.hpp"
+#include "rendering/metal/metal_pipeline.hpp"
 #include "ui/settings_panel.hpp"
 #include "ui/ui_manager.hpp"
 #include <fstream>
@@ -1062,6 +1063,9 @@ void Renderer::shutdown() {
     if (mtlReflMsaaColor_) { mtlReflMsaaColor_->release(); mtlReflMsaaColor_ = nullptr; }
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
+    if (mtlTemporal_) { mtlTemporal_->release(); mtlTemporal_ = nullptr; }
+    if (mtlMotion_) { mtlMotion_->release(); mtlMotion_ = nullptr; }
+    if (mtlMotionPipeline_) { mtlMotionPipeline_->release(); mtlMotionPipeline_ = nullptr; }
     mtlFsrUpscale_ = false;
     mtlPostProcess_.reset();
     if (metal_) metal_->setFogVolume(nullptr);
@@ -5263,11 +5267,14 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
     const uint32_t inH = std::max(1u, static_cast<uint32_t>(outH * mtlRenderScale_));
     // The input's size as well as the output's: MetalFX's scaler is made for
     // one input size, and the menu's render scale changes it.
-    if ((mtlScaler_ || mtlFsrUpscale_) && mtlScalerOutW_ == outW && mtlScalerOutH_ == outH &&
-        mtlScalerInW_ == inW && mtlScalerInH_ == inH) {
+    if ((mtlScaler_ || mtlFsrUpscale_ || mtlTemporal_) && mtlScalerOutW_ == outW &&
+        mtlScalerOutH_ == outH && mtlScalerInW_ == inW && mtlScalerInH_ == inH) {
         return true;
     }
     if (mtlScaler_) { mtlScaler_->release(); mtlScaler_ = nullptr; }
+    if (mtlTemporal_) { mtlTemporal_->release(); mtlTemporal_ = nullptr; }
+    if (mtlMotion_) { mtlMotion_->release(); mtlMotion_ = nullptr; }
+    mtlTemporalReset_ = true;
     if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
     mtlFsrUpscale_ = false;
     mtlScalerOutW_ = mtlScalerOutH_ = mtlScalerInW_ = mtlScalerInH_ = 0;
@@ -5299,6 +5306,45 @@ bool Renderer::ensureMetalScaler(uint32_t outW, uint32_t outH) {
         LOG_WARNING("Metal: the world is drawn at ", inW, "x", inH, " and upscaled to ", outW,
                     "x", outH, " by FSR 1 (no MetalFX on this device)");
         return true;
+    }
+    // Temporal where it was asked for and can run: not over a multisampled
+    // world, which it does not take, and only with its motion kernel built.
+    static const bool temporalWanted = core::envFlagEnabled("WOWEE_METALFX_TEMPORAL", false);
+    if (temporalWanted && mtlSamples_ <= 1 &&
+        MTLFX::TemporalScalerDescriptor::supportsDevice(device)) {
+        if (!mtlMotionPipeline_) mtlMotionPipeline_ = buildMetalComputePipeline(*metal_, "metalfx_motion");
+        if (mtlMotionPipeline_) {
+            auto* t = MTLFX::TemporalScalerDescriptor::alloc()->init();
+            t->setInputWidth(inW);
+            t->setInputHeight(inH);
+            t->setOutputWidth(outW);
+            t->setOutputHeight(outH);
+            t->setColorTextureFormat(MTL::PixelFormatBGRA8Unorm);
+            t->setDepthTextureFormat(MTL::PixelFormatDepth32Float);
+            t->setMotionTextureFormat(MTL::PixelFormatRG16Float);
+            t->setOutputTextureFormat(MTL::PixelFormatBGRA8Unorm);
+            mtlTemporal_ = t->newTemporalScaler(device);
+            t->release();
+        }
+        if (mtlTemporal_) {
+            // Motion in input pixels, from the kernel; depth the usual way.
+            mtlTemporal_->setMotionVectorScaleX(1.0f);
+            mtlTemporal_->setMotionVectorScaleY(1.0f);
+            mtlTemporal_->setDepthReversed(false);
+            auto* md = MTL::TextureDescriptor::texture2DDescriptor(MTL::PixelFormatRG16Float,
+                                                                   inW, inH, false);
+            md->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+            md->setStorageMode(MTL::StorageModePrivate);
+            mtlMotion_ = device->newTexture(md);
+            mtlScalerOutW_ = outW;
+            mtlScalerOutH_ = outH;
+            mtlScalerInW_ = inW;
+            mtlScalerInH_ = inH;
+            LOG_WARNING("Metal: the world is drawn at ", inW, "x", inH, " and upscaled to ", outW,
+                        "x", outH, " by MetalFX temporal");
+            return true;
+        }
+        LOG_WARNING("Metal: MetalFX temporal was asked for and could not be made; spatial");
     }
     auto* desc = MTLFX::SpatialScalerDescriptor::alloc()->init();
     desc->setInputWidth(inW);
@@ -5570,6 +5616,29 @@ void Renderer::renderFrameMetal() {
         // WOWEE_METAL_SKIP=shadowsample: the map is drawn but no surface
         // reads it, to tell the drawing's cost from the sampling's.
         if (metalSkips("shadowsample")) currentFrameData.shadowParams.x = 0.0f;
+        // MetalFX temporal: the world drawn a sub-pixel off each frame, along
+        // an eight-step Halton (2, 3) walk, so the frames between them hold
+        // more detail than any one. The jitter goes into the projection the
+        // world is drawn with and to the scaler, and nowhere else; the motion
+        // vectors are taken without it.
+        const glm::mat4 unjitteredViewProj = currentFrameData.projection * currentFrameData.view;
+        mtlJitter_ = glm::vec2(0.0f);
+        if (mtlTemporal_ && mtlScalerInW_ > 0 && mtlScalerInH_ > 0) {
+            const auto halton = [](uint32_t i, uint32_t base) {
+                float f = 1.0f, r = 0.0f;
+                for (; i > 0; i /= base) { f /= static_cast<float>(base); r += f * static_cast<float>(i % base); }
+                return r;
+            };
+            const uint32_t k = (mtlJitterIndex_++ % 8) + 1;
+            mtlJitter_ = glm::vec2(halton(k, 2) - 0.5f, halton(k, 3) - 0.5f);
+            // Pixels to clip space: x right, and y down in pixels is y down
+            // in Metal's clip space too once negated.
+            const glm::vec3 clipShift(2.0f * mtlJitter_.x / static_cast<float>(mtlScalerInW_),
+                                      -2.0f * mtlJitter_.y / static_cast<float>(mtlScalerInH_), 0.0f);
+            currentFrameData.projection = glm::translate(glm::mat4(1.0f), clipShift) *
+                                          currentFrameData.projection;
+        }
+        const glm::mat4 jitteredViewProj = currentFrameData.projection * currentFrameData.view;
         std::memcpy(static_cast<char*>(mtlFrameData_->contents()) + offset, &currentFrameData,
                     sizeof(GPUPerFrameData));
         // The fog volume, from the shadow map just drawn, before any pass
@@ -5660,8 +5729,12 @@ void Renderer::renderFrameMetal() {
             mtlDepthWidth_ = w;
             mtlDepthHeight_ = h;
         }
-        if (wantSplit && !mtlDepth_) {
-            mtlDepth_ = make(MTL::PixelFormatDepth32Float, MTL::TextureUsageRenderTarget,
+        // MetalFX temporal reads the world's depth after the pass, so it keeps
+        // it as a water split does.
+        const bool temporalFrame = scaled && mtlTemporal_ && mtlMotion_;
+        if ((wantSplit || temporalFrame) && !mtlDepth_) {
+            mtlDepth_ = make(MTL::PixelFormatDepth32Float,
+                             MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead,
                              mtlSamples_);
             if (msaa) {
                 mtlMsaaColor_ = make(MTL::PixelFormatBGRA8Unorm, MTL::TextureUsageRenderTarget,
@@ -5672,7 +5745,8 @@ void Renderer::renderFrameMetal() {
         // unsplit, as it did before there was a refraction.
         const bool splitForWater = wantSplit && mtlDepth_ && (!msaa || mtlMsaaColor_) &&
                                    mtlSceneColor_ && mtlSceneDepth_;
-        MTL::Texture* worldDepth = splitForWater ? mtlDepth_ : mtlDepthTile_;
+        const bool keepDepth = splitForWater || (temporalFrame && mtlDepth_);
+        MTL::Texture* worldDepth = keepDepth ? mtlDepth_ : mtlDepthTile_;
         MTL::Texture* worldSamples = splitForWater ? mtlMsaaColor_ : mtlMsaaColorTile_;
 
         MTL::RenderPassDescriptor* pass = metal_->renderPass();
@@ -5698,8 +5772,8 @@ void Renderer::renderFrameMetal() {
         pass->depthAttachment()->setTexture(worldDepth);
         pass->depthAttachment()->setLoadAction(MTL::LoadActionClear);
         pass->depthAttachment()->setClearDepth(1.0);
-        pass->depthAttachment()->setStoreAction(splitForWater ? MTL::StoreActionStore
-                                                              : MTL::StoreActionDontCare);
+        pass->depthAttachment()->setStoreAction(keepDepth ? MTL::StoreActionStore
+                                                          : MTL::StoreActionDontCare);
         if (msaaPass && splitForWater) {
             pass->depthAttachment()->setResolveTexture(mtlSceneDepth_);
             pass->depthAttachment()->setStoreAction(MTL::StoreActionStoreAndMultisampleResolve);
@@ -5829,7 +5903,8 @@ void Renderer::renderFrameMetal() {
             }
             color->setLoadAction(MTL::LoadActionLoad);
             pass->depthAttachment()->setLoadAction(MTL::LoadActionLoad);
-            pass->depthAttachment()->setStoreAction(MTL::StoreActionDontCare);
+            pass->depthAttachment()->setStoreAction(temporalFrame ? MTL::StoreActionStore
+                                                                  : MTL::StoreActionDontCare);
             encoder = metal_->commandBuffer()->renderCommandEncoder(pass);
             // What draws after this records into the new encoder.
             if (overlaySystem_) overlaySystem_->setMetalEncoder(encoder);
@@ -5897,7 +5972,69 @@ void Renderer::renderFrameMetal() {
                 mtlPostProcess_->encodeFxaa(commandBuffer, world, smoothed, w, h, intoxication);
                 world = smoothed;
             }
-            if (scaled && mtlScaler_) {
+            if (temporalFrame && mtlDepth_) {
+                // Camera motion vectors from the depth just drawn, then the
+                // temporal scaler over this frame and the history it keeps.
+                // History is dropped when the view jumps - a teleport, a
+                // loading screen - rather than smeared across the cut.
+                const glm::vec3 camPos = camera->getPosition();
+                if (glm::distance(camPos, mtlPrevCameraPos_) > 20.0f) mtlTemporalReset_ = true;
+                struct MotionParams {
+                    glm::mat4 invCurrentJittered;
+                    glm::mat4 currentViewProj;
+                    glm::mat4 previousViewProj;
+                    glm::vec2 size;
+                    glm::vec2 pad;
+                } mp{glm::inverse(jitteredViewProj), unjitteredViewProj,
+                     mtlTemporalReset_ ? unjitteredViewProj : mtlPrevViewProj_,
+                     glm::vec2(static_cast<float>(w), static_cast<float>(h)), glm::vec2(0.0f)};
+                MTL::ComputeCommandEncoder* ce = commandBuffer->computeCommandEncoder();
+                ce->setComputePipelineState(mtlMotionPipeline_);
+                ce->setTexture(mtlDepth_, 0);
+                ce->setTexture(mtlMotion_, 1);
+                ce->setBytes(&mp, sizeof(mp), 0);
+                ce->dispatchThreads(MTL::Size::Make(w, h, 1), MTL::Size::Make(8, 8, 1));
+                ce->endEncoding();
+
+                const MTL::TextureUsage needed = mtlTemporal_->outputTextureUsage();
+                const bool direct = drawableTexture->width() == screenW &&
+                                    drawableTexture->height() == screenH &&
+                                    (drawableTexture->usage() & needed) == needed;
+                if (!direct && (!mtlUpscaled_ || mtlUpscaled_->width() != screenW ||
+                                mtlUpscaled_->height() != screenH)) {
+                    if (mtlUpscaled_) { mtlUpscaled_->release(); mtlUpscaled_ = nullptr; }
+                    auto* texDesc = MTL::TextureDescriptor::texture2DDescriptor(
+                        MTL::PixelFormatBGRA8Unorm, screenW, screenH, false);
+                    texDesc->setUsage(needed);
+                    texDesc->setStorageMode(MTL::StorageModePrivate);
+                    mtlUpscaled_ = metal_->getDevice()->newTexture(texDesc);
+                }
+                MTL::Texture* output = direct ? drawableTexture : mtlUpscaled_;
+                if (output) {
+                    // WOWEE_METALFX_JITTER_FLIP=1 hands the scaler the jitter's
+                    // opposite, for telling on the device which sign it takes.
+                    static const float jitterSign =
+                        core::envFlagEnabled("WOWEE_METALFX_JITTER_FLIP", false) ? -1.0f : 1.0f;
+                    mtlTemporal_->setColorTexture(world);
+                    mtlTemporal_->setDepthTexture(mtlDepth_);
+                    mtlTemporal_->setMotionTexture(mtlMotion_);
+                    mtlTemporal_->setOutputTexture(output);
+                    mtlTemporal_->setJitterOffsetX(jitterSign * mtlJitter_.x);
+                    mtlTemporal_->setJitterOffsetY(jitterSign * mtlJitter_.y);
+                    mtlTemporal_->setReset(mtlTemporalReset_);
+                    mtlTemporal_->setInputContentWidth(w);
+                    mtlTemporal_->setInputContentHeight(h);
+                    mtlTemporal_->encodeToCommandBuffer(commandBuffer);
+                    if (!direct) {
+                        MTL::BlitCommandEncoder* blit = commandBuffer->blitCommandEncoder();
+                        blit->copyFromTexture(mtlUpscaled_, drawableTexture);
+                        blit->endEncoding();
+                    }
+                }
+                mtlTemporalReset_ = false;
+                mtlPrevViewProj_ = unjitteredViewProj;
+                mtlPrevCameraPos_ = camPos;
+            } else if (scaled && mtlScaler_) {
                 // Straight onto the drawable when it can take what the scaler
                 // writes - its size and usage: no full-screen copy, and no
                 // texture of the screen's size to hold it. Otherwise into

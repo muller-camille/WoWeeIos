@@ -412,6 +412,20 @@ A fair comparison needs the same fresh login for both builds and MoltenVK unsync
 `vsync=0` gives IMMEDIATE) so its rate is not held to 60/n. Stopped there, at the user's word,
 on 2026-09-30: M5's work goes on without it.
 
+### M5 on 2026-09-30: lights, and MetalFX temporal measured
+
+- Local lights: the nearest sixteen on mobile (8e3bb2e4), then a per-draw mask of the lights
+  that can reach each terrain chunk, M2 instance and WMO group (9d12a13d, Metal shaders only).
+  Darnassus bank: 30.5 fps unmasked, 33.3 masked, 37.5 with no lights. The character shader
+  is not masked yet.
+- MetalFX temporal (`WOWEE_METALFX_TEMPORAL=1`, off by default): the world jittered along a
+  Halton (2,3) walk, depth kept, camera motion vectors from depth (`metalfx_motion.comp`,
+  written for Metal), reset on a jump of 20 yards. It draws correctly, and on the A14 it costs
+  far more than it gives: at the same Darnassus view, spatial 0.67 = 28 fps, temporal 0.67 =
+  18.6, temporal 0.5 = 23.5. The scaler itself is ~18 ms a frame at 1581x1098 -> 2360x1640.
+  Left in for a faster GPU (an M-series iPad) to be measured on; not the A14's lever.
+  `WOWEE_METALFX_JITTER_FLIP=1` exists to confirm the jitter's sign by eye there.
+
 ## 6. How one renderer is ported
 
 The same steps for each of `terrain_renderer`, `wmo_renderer`, `m2_renderer`, and the rest:
