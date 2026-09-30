@@ -1443,14 +1443,9 @@ void GameScreen::renderNameplates(game::GameHandler& gameHandler) {
                 else
                     snprintf(labelBuf, sizeof(labelBuf), "Player");
             }
-        } else if (level > 0) {
-            uint32_t playerLevel = gameHandler.getPlayerLevel();
-            // Show skull for units more than 10 levels above the player
-            if (playerLevel > 0 && level > playerLevel + 10)
-                snprintf(labelBuf, sizeof(labelBuf), "?? %s", unitName.c_str());
-            else
-                snprintf(labelBuf, sizeof(labelBuf), "%u %s", level, unitName.c_str());
         } else {
+            // The name alone, as the 3.3.5 client writes it over a creature:
+            // the level (or the skull's "??") belongs to the target frame.
             snprintf(labelBuf, sizeof(labelBuf), "%s", unitName.c_str());
         }
         ImVec2 textSize = ImGui::CalcTextSize(labelBuf);
