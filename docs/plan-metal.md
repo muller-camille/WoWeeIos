@@ -110,8 +110,12 @@ In order. What each one needs is noted, because the device work needs the Mac.
    Post-process is MetalFX spatial 1581x1098 -> 2360x1640, ~5-6 ms of a ~52 ms Goldshire
    frame. Its copy to the drawable is gone (MetalFX now writes the shared drawable directly,
    -0.8 ms, same picture), but that moves Goldshire's fps within noise: the frame is the sum
-   of a dense scene. Next levers to measure: M2 draw distance for small doodads, and the
-   render scale. The Linux
+   of a dense scene. Measured next (WOWEE_METAL_SKIP_CYCLE, now with `clutter` and
+   `fardoodads`): dropping the ground clutter or holding doodads to 250 yards changes nothing
+   (19.4 -> 20.0 fps, though visible M2s fall from ~890 to ~320), so the M2 cost is not their
+   count. The render scale is the lever: WOWEE_RENDER_SCALE=0.5 (1180x820) gives 22-23 fps
+   against 19 at 0.67, at a visible softening of the ground (cobbles go blocky); the
+   interface stays sharp. 0.4 is not accepted (the floor is 0.5). Left as the menu's choice. The Linux
    client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
    `CharacterRenderer`'s Vulkan sink was fixed on the way). Of its 217 tests on 2026-09-29, in a
    Debug build, 214 passed. `shared_rules` and `settings_schema_consistency` fail only in Debug,

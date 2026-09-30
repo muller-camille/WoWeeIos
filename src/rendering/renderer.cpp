@@ -5300,7 +5300,9 @@ namespace {
 /// WOWEE_METAL_SKIP=<names>: a comma list of Metal passes to leave out -
 /// shadow, reflection, sky, terrain, wmo, m2, effects, characters, water,
 /// refraction, grass, fog, sunshafts, shadowterrain, shadowwmo, shadowm2,
-/// shadowchars - to tell what a frame's GPU time is made of.
+/// shadowchars - to tell what a frame's GPU time is made of. And two that
+/// thin the M2 pass rather than drop it, as the Vulkan ablation's phases do:
+/// clutter (the ground detail) and fardoodads (doodads held to 250 yards).
 ///
 /// WOWEE_METAL_SKIP_CYCLE=<set>;<set>;...: the same, stepping to the next set
 /// every profile report (WOWEE_FRAME_PROFILE's 120 frames), so the sets are
@@ -5512,6 +5514,11 @@ void Renderer::renderFrameMetal() {
         return;
     }
     mark(Acquire);
+
+    if (m2Renderer) {
+        m2Renderer->setSkipGroundDetail(metalSkips("clutter"));
+        m2Renderer->setDoodadDistanceCap(metalSkips("fardoodads") ? 250.0f : 0.0f);
+    }
 
     // The world map's picture, when the interface asked for one this frame:
     // a pass of its own, before any other.
