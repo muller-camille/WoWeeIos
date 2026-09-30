@@ -85,9 +85,11 @@ In order. What each one needs is noted, because the device work needs the Mac.
    same. What is left is how little ambient the night has for M2s against the terrain beside
    them - to compare with the original client before going further. The Metal shader was edited
    by hand to match.
-3. **Undead player model:** no hair (`Player geosets: 0 1 102 ...` - the style scalp lookup
-   answered the bald cap; check `CharHairGeosets` for Scourge male, or whether the style chosen
-   is bald) and a pale slab on the back (geoset 1501, which every in-world character gets).
+3. **Undead player model (hair not a bug, 2026-09-30):** an undead male made on the test server
+   with hair style 3 (`WOWEE_AUTO_CREATE=undead`) draws his hair - `Player geosets: 0 4 ...`.
+   Tusa's `0 1 ...` is the bald cap, which CharHairGeosets gives style 0 of a Scourge male
+   (variation 0: geoset 0, scalp shown) - the style chosen, not the lookup. The pale slab on the
+   back (geoset 1501) did not show in a side view; not looked at from behind yet.
 4. **Spell missiles did not fly (both backends, fixed 2026-09-30).** A Wrath bolt appeared on
    the target instead of travelling to it: the visual's MissileModel stood in for the impact
    kit. Spell.dbc's Speed is now read (the layouts name it; RangeIndex + 1 where an older copy

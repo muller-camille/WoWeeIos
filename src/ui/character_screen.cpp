@@ -388,6 +388,14 @@ void CharacterScreen::requestAutoCreate(game::GameHandler& gameHandler) {
     data.race = game::Race::NIGHT_ELF;
     data.characterClass = game::Class::DRUID;
     data.gender = game::Gender::FEMALE;
+    // WOWEE_AUTO_CREATE=undead: an undead male warrior with hair (style 3 -
+    // style 0 is the bald one), for looking at the Scourge model.
+    if (std::string(std::getenv("WOWEE_AUTO_CREATE")) == "undead") {
+        data.race = game::Race::UNDEAD;
+        data.characterClass = game::Class::WARRIOR;
+        data.gender = game::Gender::MALE;
+        data.hairStyle = 3;
+    }
     LOG_WARNING("WOWEE_AUTO_CREATE: creating ", autoCreatedName_);
     gameHandler.createCharacter(data);
 }
