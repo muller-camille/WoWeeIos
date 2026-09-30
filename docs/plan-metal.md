@@ -98,14 +98,12 @@ In order. What each one needs is noted, because the device work needs the Mac.
 5. **Tree roots swayed in the wind (both backends, fixed 2026-09-29):** "root" is a foliage
    token, so KalidarRoots01/02 bent like saplings; the plural is now a hard tree part
    (`m2_model_classifier.cpp`), with `test_m2_classifier_foliage` extended - to be run on Linux.
-   **Swimmers doubled in the water (both backends, still open, left for later on 2026-09-29):**
-   the refraction offset sampled the swimmer's own head and arms above the surface.
-   `water.frag.glsl` now falls back to the unshifted sample when the shifted one is nearer than
-   the water by more than 0.1 yard. A screenshot in the pond looked single, but swimming in
-   play the body still shows twice. Making the water opaque as well was tried and dropped:
-   the pond went solid dark blue. Still to look at: the blend of the refraction over the real
-   scene (the part under the surface seen both straight and rippled), and the swimmer's
-   own depth near the surface. The Metal
+   **Swimmers doubled in the water (both backends, fixed 2026-09-30):** the water's colour held
+   a rippled copy of what lies under it and was then blended over the real scene as well, so a
+   body in the water showed twice. `water.frag` now does the blend itself - mix(refracted scene,
+   water colour, alpha), written opaque - wherever the scene is captured. (Opaque with no blend,
+   tried first, turned the pond dark blue.) The leak guard stays: a shifted sample that lands
+   above the surface falls back to the straight one. The Metal
    `water.frag.metal` was edited by hand (the Mac has no glslc or spirv-cross): a session with
    the shader tools must rebuild `water.frag.spv` and rerun `tools/metal/convert_shaders.py`,
    then check on the iPad that the pond looks the same.
