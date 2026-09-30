@@ -12,6 +12,7 @@
 #include "game/game_handler.hpp"
 #include "pipeline/asset_manager.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
@@ -130,13 +131,20 @@ void WorldEntryCallbackHandler::forceServerTeleportCommand(const glm::vec3& rend
 static void precacheNearbyTiles(rendering::TerrainManager* terrainMgr,
                                 const glm::vec3& renderPos, int radius) {
     if (!terrainMgr) return;
+    // The tiles the manager itself would stream: no further than its radius,
+    // and a circle as streamTiles() makes, not the square around it. The
+    // square's corners lie inside the unload radius, so nothing ever let them
+    // go; on iOS, where the radius is held down for memory, a same-map GM
+    // teleport in Goldshire added them - ~350 MB in four seconds, 2.8 GB of
+    // the ~2.9 GB allowed - and the app was killed.
+    radius = std::min(radius, terrainMgr->getLoadRadius());
     auto [tileX, tileY] = core::coords::worldToTile(renderPos.x, renderPos.y);
     int side = 2 * radius + 1;
     std::vector<std::pair<int,int>> tiles;
     tiles.reserve(static_cast<size_t>(side) * static_cast<size_t>(side));
     for (int dy = -radius; dy <= radius; dy++)
         for (int dx = -radius; dx <= radius; dx++)
-            tiles.emplace_back(tileX + dx, tileY + dy);
+            if (dx * dx + dy * dy <= radius * radius) tiles.emplace_back(tileX + dx, tileY + dy);
     terrainMgr->precacheTiles(tiles);
 }
 
@@ -218,9 +226,17 @@ void WorldEntryCallbackHandler::setupCallbacks() {
             LOG_INFO("Same-map teleport (map ", mapId, "), skipping full world reload");
             // canonical and renderPos already computed above for distance check
             renderer_.getCharacterPosition() = renderPos;
+            // And the facing the teleport carries, with the camera behind it,
+            // as a full world load takes it (WorldLoader) and as the original
+            // client turns on a .tele or a same-continent summon.
+            const float yawDeg = core::coords::canonicalToCharacterYawDeg(
+                gameHandler_.getMovementInfo().orientation);
+            renderer_.setCharacterYaw(yawDeg);
             if (renderer_.getCameraController()) {
                 auto* ft = renderer_.getCameraController()->getFollowTargetMutable();
                 if (ft) *ft = renderPos;
+                renderer_.getCameraController()->setDefaultSpawn(renderPos, yawDeg, -15.0f);
+                renderer_.getCameraController()->resetAngles();
             }
             worldEntryMovementGraceTimer_ = 2.0f;
             taxiLandingClampTimer_ = 0.0f;
