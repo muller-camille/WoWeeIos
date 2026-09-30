@@ -868,6 +868,7 @@ bool EntityController::applyUnitFieldsOnCreate(const UpdateBlock& block,
             }
             if (block.guid == owner_.getPlayerGuid() && val == 0) {
                 owner_.playerDeadRef() = true;
+                owner_.notifyLocalStandState(7);
                 LOG_INFO("Player logged in dead");
             }
         } else if (key == ufi.maxHealth) {
@@ -975,8 +976,11 @@ bool EntityController::applyUnitFieldsOnCreate(const UpdateBlock& block,
 // Classic WoW does not send SMSG_DEATH_RELEASE_LOC, so this cached position
 // is the primary source for canReclaimCorpse().
 void EntityController::markPlayerDead(const char* source) {
+    const bool wasDead = owner_.playerDeadRef();
     owner_.playerDeadRef() = true;
     owner_.releasedSpiritRef() = false;
+    // Down, not standing at zero health: the death animation, held.
+    if (!wasDead) owner_.notifyLocalStandState(7);
     // owner_.movementInfoRef() is canonical (x=north, y=west); corpseX_/Y_ are
     // raw server coords (x=west, y=north) - swap axes.
     owner_.corpseXRef()     = owner_.movementInfoRef().y;
@@ -1021,6 +1025,8 @@ EntityController::UnitFieldUpdateResult EntityController::applyUnitFieldsOnUpdat
                 if (block.guid == owner_.getPlayerGuid()) {
                     bool wasGhost = owner_.releasedSpiritRef();
                     owner_.playerDeadRef() = false;
+                    // Up again, resurrected or as the spirit.
+                    owner_.notifyLocalStandState(0);
                     if (!wasGhost) {
                         LOG_INFO("Player resurrected!");
                         pendingEvents_.emit("PLAYER_ALIVE", {});
@@ -1149,6 +1155,7 @@ EntityController::UnitFieldUpdateResult EntityController::applyUnitFieldsOnUpdat
                     owner_.playerDeadRef() = false;
                     owner_.releasedSpiritRef() = false;
                     owner_.selfResAvailableRef() = false;
+                    owner_.notifyLocalStandState(0);
                     LOG_INFO("Player resurrected (dynamic flags)");
                     // The other side of the same signal. PLAYER_ALIVE is what
                     // hides the death popup and restores the interface, and
@@ -2065,6 +2072,7 @@ void EntityController::onCreatePlayer(const UpdateBlock& block, std::shared_ptr<
     if (block.guid == owner_.getPlayerGuid() &&
         (unit->getDynamicFlags() & UNIT_DYNFLAG_DEAD) != 0) {
         owner_.playerDeadRef() = true;
+        owner_.notifyLocalStandState(7);
         LOG_INFO("Player logged in dead (dynamic flags)");
     }
     // Detect ghost state on login via PLAYER_FLAGS
@@ -2074,6 +2082,7 @@ void EntityController::onCreatePlayer(const UpdateBlock& block, std::shared_ptr<
         if (pfIt != block.fields.end() && (pfIt->second & PLAYER_FLAGS_GHOST) != 0) {
             owner_.releasedSpiritRef() = true;
             owner_.playerDeadRef() = true;
+            owner_.notifyLocalStandState(0);  // a spirit walks
             LOG_INFO("Player logged in as ghost (PLAYER_FLAGS)");
             if (owner_.ghostStateCallbackRef()) owner_.ghostStateCallbackRef()(true);
             // Query corpse position so minimap marker is accurate on reconnect

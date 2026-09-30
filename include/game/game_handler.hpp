@@ -1353,6 +1353,14 @@ public:
     // standState: 0=stand, 1-6=sit variants, 7=dead, 8=kneel
     using StandStateCallback = std::function<void(uint8_t standState)>;
     void setStandStateCallback(StandStateCallback cb) { standStateCallback_ = std::move(cb); }
+    /// The local player's stand state as the client learns it other than from
+    /// SMSG_STANDSTATE_UPDATE: dead (7) when health reaches zero, standing (0)
+    /// when it comes back. The server does not send a stand state for either,
+    /// and the character stood upright at zero health.
+    void notifyLocalStandState(uint8_t state) {
+        standState_ = state;
+        if (standStateCallback_) standStateCallback_(state);
+    }
 
     // Logout complete callback - fired when SMSG_LOGOUT_COMPLETE says the character
     // is out of the world. exiting is true for /quit and /exit (leave the game),

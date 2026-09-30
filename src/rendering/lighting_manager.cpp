@@ -11,6 +11,7 @@
 #include "core/logger.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 
 namespace wowee {
@@ -279,6 +280,14 @@ void LightingManager::update(const glm::vec3& playerPos, uint32_t mapId, uint32_
                               float gameTime,
                               bool isRaining, bool isUnderwater) {
     if (!initialized_) return;
+
+    // WOWEE_TIME_OF_DAY=<hours>, 0-24: the clock held there, for looking at
+    // the world at night from a device test without waiting for it.
+    static const float envHours = [] {
+        const char* v = std::getenv("WOWEE_TIME_OF_DAY");
+        return (v && *v) ? static_cast<float>(std::atof(v)) : -1.0f;
+    }();
+    if (envHours >= 0.0f) setTimeOfDay(std::fmod(envHours / 24.0f, 1.0f));
 
     // Update time
     if (!manualTime_) {

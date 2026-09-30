@@ -700,17 +700,12 @@ void AnimationCallbackHandler::setupCallbacks() {
         auto* ac = renderer_.getAnimationController();
         if (!ac) return;
 
-        // Death is special - play directly, not through sit state machine
-        if (standState == AC::STAND_STATE_DEAD) {
-            auto* cr = renderer_.getCharacterRenderer();
-            if (!cr) return;
-            uint32_t charInstId = renderer_.getCharacterInstanceId();
-            if (charInstId == 0) return;
-            cr->playAnimation(charInstId, rendering::anim::DEATH, false);
-            return;
-        }
-
+        // Death goes to the animator like any stand state. Played past it
+        // straight onto the model, it lasted one frame: the controller saw the
+        // model drift from the standing loop it had chosen and put it back,
+        // so a dead player stood upright at zero health.
         ac->setStandState(standState);
+        if (standState == AC::STAND_STATE_DEAD) return;
         // Restoration food/water is an aura rather than MSG_CHANNEL_START on
         // supported realms. The aura update starts its loop; standing up ends it.
         // Only stop the cast presentation while restoring - the server also

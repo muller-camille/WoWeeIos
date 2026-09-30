@@ -133,6 +133,9 @@ private:
     bool stealthed_ = false;
     bool sprintAura_ = false;
     bool lowHealth_ = false;
+    /// Stand state 7: the character is dead. Above combat and everything but
+    /// a mount, and held on the death animation's last frame by the renderer.
+    bool dead_ = false;
     bool inCombat_ = false;
     bool rangedWeaponActive_ = false;
 

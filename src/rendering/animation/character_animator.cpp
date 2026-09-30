@@ -87,6 +87,7 @@ void CharacterAnimator::setCharging(bool charging) {
 }
 
 void CharacterAnimator::setStandState(uint8_t state) {
+    dead_ = state == ActivityFSM::STAND_STATE_DEAD;
     activity_.setStandState(state);
 }
 
@@ -128,6 +129,11 @@ AnimOutput CharacterAnimator::resolveAnimation() {
         uint32_t riderAnim = caps_.resolvedMount ? caps_.resolvedMount : anim::MOUNT;
         return AnimOutput::ok(riderAnim, true);
     }
+
+    // ── Dead: down, whatever else is going on ───────────────────────────
+    // Played once; the renderer holds a finished death on its last frame, and
+    // the controller only re-asserts a looping animation.
+    if (dead_) return AnimOutput::ok(anim::DEATH, false);
 
     // ── Build combat input ──────────────────────────────────────────────
     CombatFSM::Input combatIn;
