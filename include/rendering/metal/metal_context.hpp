@@ -115,10 +115,13 @@ public:
     bool uploadToBuffer(MTL::Buffer* target, const void* data, size_t bytes, size_t offset = 0);
 
     /// What a Vulkan sampler asked for, as far as the renderers ask for it.
-    enum class Filter : uint8_t { Nearest, Linear };
+    /// Screen: linear within one level, no mips and no anisotropy - for a
+    /// full-screen pass reading a picture the size of its own target.
+    enum class Filter : uint8_t { Nearest, Linear, Screen };
     enum class Address : uint8_t { Repeat, ClampToEdge };
     /// Made once per combination and kept for the context's life; not the
-    /// caller's to release. Linear samplers filter between mip levels too.
+    /// caller's to release. Linear samplers filter between mip levels too,
+    /// and anisotropically.
     [[nodiscard]] MTL::SamplerState* sampler(Filter filter, Address address);
     /// Compares against the reference, for sampler2DShadow.
     [[nodiscard]] MTL::SamplerState* shadowSampler();

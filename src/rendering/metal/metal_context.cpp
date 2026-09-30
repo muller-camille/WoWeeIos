@@ -462,8 +462,9 @@ MTL::SamplerState* MetalContext::sampler(Filter filter, Address address) {
 
     auto* desc = MTL::SamplerDescriptor::alloc()->init();
     const bool linear = filter == Filter::Linear;
-    desc->setMinFilter(linear ? MTL::SamplerMinMagFilterLinear : MTL::SamplerMinMagFilterNearest);
-    desc->setMagFilter(linear ? MTL::SamplerMinMagFilterLinear : MTL::SamplerMinMagFilterNearest);
+    const bool smooth = linear || filter == Filter::Screen;
+    desc->setMinFilter(smooth ? MTL::SamplerMinMagFilterLinear : MTL::SamplerMinMagFilterNearest);
+    desc->setMagFilter(smooth ? MTL::SamplerMinMagFilterLinear : MTL::SamplerMinMagFilterNearest);
     desc->setMipFilter(linear ? MTL::SamplerMipFilterLinear : MTL::SamplerMipFilterNotMipmapped);
     const auto mode = address == Address::Repeat ? MTL::SamplerAddressModeRepeat
                                                  : MTL::SamplerAddressModeClampToEdge;

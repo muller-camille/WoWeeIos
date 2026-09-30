@@ -102,7 +102,7 @@ void MetalPostProcess::encodeUpscale(MTL::CommandBuffer* commandBuffer, MTL::Tex
     encoder->setRenderPipelineState(easu_);
     encoder->setFragmentTexture(source, easuTexture_);
     encoder->setFragmentSamplerState(
-        metal_->sampler(MetalContext::Filter::Linear, MetalContext::Address::ClampToEdge),
+        metal_->sampler(MetalContext::Filter::Screen, MetalContext::Address::ClampToEdge),
         easuSampler_);
     encoder->setFragmentBytes(&push, sizeof(push), easuPush_);
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
@@ -122,7 +122,7 @@ void MetalPostProcess::encodeFxaa(MTL::CommandBuffer* commandBuffer, MTL::Textur
     encoder->setRenderPipelineState(fxaa_);
     encoder->setFragmentTexture(source, fxaaTexture_);
     encoder->setFragmentSamplerState(
-        metal_->sampler(MetalContext::Filter::Linear, MetalContext::Address::ClampToEdge),
+        metal_->sampler(MetalContext::Filter::Screen, MetalContext::Address::ClampToEdge),
         fxaaSampler_);
     encoder->setFragmentBytes(&push, sizeof(push), fxaaPush_);
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
