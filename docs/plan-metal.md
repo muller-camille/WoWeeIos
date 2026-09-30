@@ -404,11 +404,12 @@ MoltenVK presents on the display's refresh, so its rate lands on 60/n: 30.0 and 
 frame in 33 or 50 ms or less, not those exact times. Metal presents as soon as a frame is done.
 
 Memory: Metal wins everywhere, by 320-500 MB, graphics about half (e.g. 442 against 947 MB).
-Frame rate: level, except the Darnassus avenue, where MoltenVK is at least 20 against 16-17 -
-while drawing as many M2 instances (it reports more at the pond, 22696 against 12701). Where
-to look first: the M2 GPU cull and Hi-Z that Vulkan has and Metal does not (section 4), and
-the per-instance cost of Metal's M2 path. M5's exit - beat MoltenVK's frame rate as well as
-its memory - is not met at the avenue.
+Frame rate: not settled, and the avenue row is not a comparison. The Metal run there was
+teleported mid-session and kept the camera it had; the MoltenVK run logged in with the default
+one. Logged in the same way, Metal draws the avenue at ~35 fps (the skip cycle's "none").
+A fair comparison needs the same fresh login for both builds and MoltenVK unsynced (settings
+`vsync=0` gives IMMEDIATE) so its rate is not held to 60/n. Stopped there, at the user's word,
+on 2026-09-30: M5's work goes on without it.
 
 ## 6. How one renderer is ported
 
