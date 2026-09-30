@@ -915,8 +915,29 @@ bool Application::initialize() {
             // own firing.
             // Wire generic game events to addon dispatch
             gameHandler->setAddonEventCallback([this](const std::string& event, const std::vector<std::string>& args) {
-                if (addonManager_ && addonsLoaded_) {
-                    addonManager_->fireEvent(event, args);
+                if (!addonManager_ || !addonsLoaded_) return;
+                addonManager_->fireEvent(event, args);
+                // A unit event goes out under every name the unit has, as the
+                // real client sends it. The handlers name a unit once, by the
+                // first of player, target, focus and pet that matches - so with
+                // the player targeted, UNIT_HEALTH said "player" and never
+                // "target", and the target frame kept the health it opened
+                // with while the player frame beside it fell to zero.
+                if (args.empty() || event.compare(0, 5, "UNIT_") != 0) return;
+                const auto guidOf = [&](const std::string& token) -> uint64_t {
+                    if (token == "player") return gameHandler->getPlayerGuid();
+                    if (token == "target") return gameHandler->getTargetGuid();
+                    if (token == "focus") return gameHandler->getFocusGuid();
+                    if (token == "pet") return gameHandler->getPetGuid();
+                    return 0;
+                };
+                const uint64_t guid = guidOf(args[0]);
+                if (guid == 0) return;
+                for (const char* alias : {"player", "target", "focus", "pet"}) {
+                    if (args[0] == alias || guidOf(alias) != guid) continue;
+                    std::vector<std::string> aliased = args;
+                    aliased[0] = alias;
+                    addonManager_->fireEvent(event, aliased);
                 }
             });
             // How a keybinding reaches the frame that replaced this client's own
