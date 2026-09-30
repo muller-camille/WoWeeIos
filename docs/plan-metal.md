@@ -29,6 +29,18 @@ In order. What each one needs is noted, because the device work needs the Mac.
    MSAA", ~41 ms a frame, 1760 MB footprint. Still to look at by playing: the effects, grass,
    fog and sun shafts, FXAA, chunk seams up close, and a tree's shadow edge.
 
+   *Looked at on 2026-09-30,* from the Mac, on the local MaNGOS Two test server (`.tele`,
+   `.levelup`, `.learn all_myspells`; `game_tele` has WoweeN/E/S/W at Goldshire, one per
+   facing). Grass, volumetric fog: drawn, and about free at Goldshire. FXAA: drew dark specks
+   and outlines along every textured edge - it sampled with the shared anisotropic Linear
+   sampler inside divergent control flow; FXAA and FSR 1 now take a plain `Filter::Screen`
+   sampler and the fence is clean. Spell effects: Mark of the Wild's paw and glow, Healing
+   Touch's casting sparkle, the level-up achievements. Sun shafts: not seen - Goldshire's
+   canopy and the camera's downward pitch keep the sun out of frame. Seams and the shadow edge:
+   nothing wrong in any shot, none taken close enough to judge. On the way, two client bugs:
+   a same-map teleport precached a square of tiles whose corners were never unloaded (killed
+   at 2.8 GB in Goldshire; now the streamed circle), and took no facing (now it does).
+
 1. **Build and look at what the cloud session wrote.** First the build itself: the Metal compiler
    takes the regenerated `terrain.frag.metal`, and Xcode the new sources. Then each on the iPad:
    - *Terrain alpha masks.* The seam blur near a chunk's edge is baked into each map as it is
