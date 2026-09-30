@@ -63,6 +63,7 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
         assetManager_ = core::Application::getInstance().getAssetManager();
     }
 
+    requestAutoCreate(gameHandler);
     const auto& characters = gameHandler.getCharacters();
     if (characters.empty()) {
         renderNotice(gameHandler, screen.x, screen.y);
@@ -200,34 +201,11 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
     // testing on a device from the Mac.
     {
         static bool autoEntered = false;
-        static std::string autoCreatedName;
         if (!autoEntered && !characterSelected && std::getenv("WOWEE_AUTO_ENTER")) {
             if (std::getenv("WOWEE_AUTO_CREATE")) {
-                if (autoCreatedName.empty() && gameHandler.getState() ==
-                                                   game::WorldState::CHAR_LIST_RECEIVED) {
-                    // Letters only, as the server wants: a consonant-vowel run.
-                    static const char* kOnset[] = {"L", "Th", "S", "N", "M", "R", "F", "El",
-                                                   "Ar", "V", "Il", "Sh"};
-                    static const char* kVowel[] = {"a", "e", "i", "ae", "ia", "o", "y"};
-                    static const char* kCoda[] = {"n", "ra", "wen", "lis", "th", "ria", "dor",
-                                                  "sil", "nel"};
-                    std::mt19937 rng(static_cast<uint32_t>(std::random_device{}()));
-                    const auto pick = [&](const auto& list) {
-                        return std::string(list[rng() % std::size(list)]);
-                    };
-                    autoCreatedName = pick(kOnset) + pick(kVowel) + pick(kCoda) + pick(kVowel) +
-                                      pick(kCoda);
-                    if (autoCreatedName.size() > 12) autoCreatedName.resize(12);
-                    game::CharCreateData data;
-                    data.name = autoCreatedName;
-                    data.race = game::Race::NIGHT_ELF;
-                    data.characterClass = game::Class::DRUID;
-                    data.gender = game::Gender::FEMALE;
-                    LOG_WARNING("WOWEE_AUTO_CREATE: creating ", autoCreatedName);
-                    gameHandler.createCharacter(data);
-                }
+                // Asked for by requestAutoCreate(), before the list was drawn.
                 for (const auto& character : characters) {
-                    if (!autoCreatedName.empty() && character.name == autoCreatedName) {
+                    if (!autoCreatedName_.empty() && character.name == autoCreatedName_) {
                         autoEntered = true;
                         enterWorld(character);
                         break;
@@ -385,6 +363,33 @@ void CharacterScreen::render(game::GameHandler& gameHandler) {
     if (showAddonsWindow_) renderAddonsSheet(screen.x, screen.y);
 
     ui_.end();
+}
+
+void CharacterScreen::requestAutoCreate(game::GameHandler& gameHandler) {
+    if (!autoCreatedName_.empty() || characterSelected ||
+        !std::getenv("WOWEE_AUTO_ENTER") || !std::getenv("WOWEE_AUTO_CREATE") ||
+        gameHandler.getState() != game::WorldState::CHAR_LIST_RECEIVED) {
+        return;
+    }
+    // Letters only, as the server wants: a consonant-vowel run.
+    static const char* kOnset[] = {"L", "Th", "S", "N", "M", "R", "F", "El",
+                                   "Ar", "V", "Il", "Sh"};
+    static const char* kVowel[] = {"a", "e", "i", "ae", "ia", "o", "y"};
+    static const char* kCoda[] = {"n", "ra", "wen", "lis", "th", "ria", "dor",
+                                  "sil", "nel"};
+    std::mt19937 rng(static_cast<uint32_t>(std::random_device{}()));
+    const auto pick = [&](const auto& list) {
+        return std::string(list[rng() % std::size(list)]);
+    };
+    autoCreatedName_ = pick(kOnset) + pick(kVowel) + pick(kCoda) + pick(kVowel) + pick(kCoda);
+    if (autoCreatedName_.size() > 12) autoCreatedName_.resize(12);
+    game::CharCreateData data;
+    data.name = autoCreatedName_;
+    data.race = game::Race::NIGHT_ELF;
+    data.characterClass = game::Class::DRUID;
+    data.gender = game::Gender::FEMALE;
+    LOG_WARNING("WOWEE_AUTO_CREATE: creating ", autoCreatedName_);
+    gameHandler.createCharacter(data);
 }
 
 void CharacterScreen::renderNotice(game::GameHandler& gameHandler, float screenW,

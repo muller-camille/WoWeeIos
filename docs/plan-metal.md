@@ -98,7 +98,10 @@ In order. What each one needs is noted, because the device work needs the Mac.
    them, the renderer threw the whole layer's heights away and laid it flat at the lower level,
    under the pond bed. `liquidCornerHeights` (`water_surface_grid.hpp`) now replaces only the
    bad corners; `test_water_surface_grid` has two cases for it, to be run on Linux.
-6. Close M4: fps and memory at Goldshire and a capital, then the branch merges. The Linux
+6. Close M4: fps and memory at Goldshire and a capital, then the branch merges. **Darnassus,
+   2026-09-30** (local MaNGOS Two test server, `.tele Darnassus`, A14, MetalFX 0.67): 26-28 fps,
+   footprint 1684 MB of the ~2.9 GB ceiling (1182 MB headroom; 416 MB graphics, 598 MB
+   compressed), 29 tiles, 339 M2 models in 10717 instances, 68 characters. Goldshire still to do. The Linux
    client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
    `CharacterRenderer`'s Vulkan sink was fixed on the way). Of its 217 tests on 2026-09-29, in a
    Debug build, 214 passed. `shared_rules` and `settings_schema_consistency` fail only in Debug,

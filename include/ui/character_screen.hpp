@@ -103,6 +103,8 @@ private:
     uint64_t selectedCharacterGuid = 0;
     bool restoredLastCharacter = false;
     std::string newlyCreatedCharacterName;  // Auto-select this character if set
+    /// The druid WOWEE_AUTO_CREATE asked the server for, once; empty until then.
+    std::string autoCreatedName_;
 
     // Status
     std::string statusMessage;
@@ -128,6 +130,10 @@ private:
     /// or an account with no characters on this realm. One small sheet
     /// between them, since each is a sentence and a row of buttons.
     void renderNotice(game::GameHandler& gameHandler, float screenW, float screenH);
+    /// WOWEE_AUTO_ENTER with WOWEE_AUTO_CREATE: asks for a new Night Elf druid
+    /// with a random name, once. Called before the empty-list notice returns,
+    /// since an account with no characters yet is the one it is most for.
+    void requestAutoCreate(game::GameHandler& gameHandler);
     /// The picture, the name and everything known about whoever is selected.
     void renderDetails(game::GameHandler& gameHandler, const game::Character& character,
                        ImVec2 a, ImVec2 b);
