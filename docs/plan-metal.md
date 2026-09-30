@@ -101,7 +101,17 @@ In order. What each one needs is noted, because the device work needs the Mac.
 6. Close M4: fps and memory at Goldshire and a capital, then the branch merges. **Darnassus,
    2026-09-30** (local MaNGOS Two test server, `.tele Darnassus`, A14, MetalFX 0.67): 26-28 fps,
    footprint 1684 MB of the ~2.9 GB ceiling (1182 MB headroom; 416 MB graphics, 598 MB
-   compressed), 29 tiles, 339 M2 models in 10717 instances, 68 characters. Goldshire still to do. The Linux
+   compressed), 29 tiles, 339 M2 models in 10717 instances, 68 characters. **Goldshire,
+   2026-09-30**: 19-21 fps, footprint 2273 MB (593 MB headroom - the tightest yet; 611 MB
+   graphics, ~975 MB compressed), 1052 M2 models in ~34900 instances (529 visible, cull under
+   1 ms), 62 WMO models. Memory is freed on the teleport from Darnassus and plateaus, no leak.
+   GPU-bound and spread out (WOWEE_METAL_SKIP_CYCLE, real frame periods): no one pass is worth
+   more than ~2 fps; M2 and WMO together 21 -> 30 fps; everything but post-process 56 fps.
+   Post-process is MetalFX spatial 1581x1098 -> 2360x1640, ~5-6 ms of a ~52 ms Goldshire
+   frame. Its copy to the drawable is gone (MetalFX now writes the shared drawable directly,
+   -0.8 ms, same picture), but that moves Goldshire's fps within noise: the frame is the sum
+   of a dense scene. Next levers to measure: M2 draw distance for small doodads, and the
+   render scale. The Linux
    client `master`'s CI builds compiles and links (a GCC `-Wchanges-meaning` error in
    `CharacterRenderer`'s Vulkan sink was fixed on the way). Of its 217 tests on 2026-09-29, in a
    Debug build, 214 passed. `shared_rules` and `settings_schema_consistency` fail only in Debug,

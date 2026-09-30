@@ -5863,14 +5863,18 @@ void Renderer::renderFrameMetal() {
             }
             if (scaled && mtlScaler_) {
                 // Straight onto the drawable when it can take what the scaler
-                // writes - its usage, and private storage, which MetalFX asks
-                // of an output: no full-screen copy, and no texture of the
-                // screen's size to hold it. Otherwise into mtlUpscaled_, then
-                // copied. The log says once which it is.
+                // writes - its size and usage: no full-screen copy, and no
+                // texture of the screen's size to hold it. Otherwise into
+                // mtlUpscaled_, then copied. The log says once which it is.
+                //
+                // Not its storage. MetalFX's documentation asks for private
+                // storage of an output, and an iPad's drawables are shared,
+                // which sent every frame through the copy. Written to the
+                // shared drawable, the A14 draws the same picture 0.8 ms sooner
+                // at 2360x1640 (Goldshire, 2026-09-30).
                 const MTL::TextureUsage needed = mtlScaler_->outputTextureUsage();
                 const bool direct = drawableTexture->width() == screenW &&
                                     drawableTexture->height() == screenH &&
-                                    drawableTexture->storageMode() == MTL::StorageModePrivate &&
                                     (drawableTexture->usage() & needed) == needed;
                 if (!direct && (!mtlUpscaled_ || mtlUpscaled_->width() != screenW ||
                                 mtlUpscaled_->height() != screenH)) {
