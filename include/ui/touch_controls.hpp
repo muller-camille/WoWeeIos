@@ -40,6 +40,10 @@ public:
     /// is the wheel everywhere: it zooms the character preview there.
     void setInWorld(bool inWorld);
     [[nodiscard]] bool isInWorld() const { return inWorld_; }
+    /// The finger SDL turns into the mouse was taken by a thumb button or the
+    /// stick. SDL's own mouse state still has the button down - the game polls
+    /// it, not the events this class filters - so the world has to ask.
+    [[nodiscard]] bool pointerClaimed() const { return press_ == Press::Suppressed; }
 
     /// True while a thumb is on the stick, which is when the camera has to be
     /// held still.

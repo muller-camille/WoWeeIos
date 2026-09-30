@@ -1895,8 +1895,16 @@ void GameScreen::processTargetInput(game::GameHandler& gameHandler) {
     }
 
     // Left-click targeting: only on mouse-up if the mouse didn't drag (camera rotate)
-    // Record press position on mouse-down
-    if (!io.WantCaptureMouse && !frameXmlOwnsMouse() &&
+    // Record press position on mouse-down.
+    //
+    // Not a finger a thumb button took. SDL's mouse state has it down all the
+    // same, and a tap on the round Wrath button was a click on the ground
+    // under it: empty space, so the target went.
+    bool pointerClaimed = false;
+#ifdef WOWEE_MOBILE
+    pointerClaimed = ui::touchControls().pointerClaimed();
+#endif
+    if (!io.WantCaptureMouse && !frameXmlOwnsMouse() && !pointerClaimed &&
         input.isMouseButtonJustPressed(SDL_BUTTON_LEFT) && !input.isMouseButtonPressed(SDL_BUTTON_RIGHT)) {
         leftClickPressPos_ = input.getMousePosition();
         leftClickWasPress_ = true;
