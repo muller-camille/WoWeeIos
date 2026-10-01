@@ -17,6 +17,45 @@ it has been built by Xcode or seen on the iPad yet. What was checked: the regene
 manifest (`convert_shaders.py --check`), the Linux build and the alpha-map test, and every
 source with a Metal path parsed against metal-cpp by `tools/metal/syntax_check/check.sh`.
 
+## Where it stands (2026-09-30)
+
+M0-M4 are done and merged into `master` (c69e2936, ef139c3b). M5 is under way; M6 waits on
+the user's word, since it ends the desktop and Android builds. Testing runs from the Mac against
+a local MaNGOS Two server (`~/mangos`, GM commands for teleports and levels) - the sections
+below record each measurement.
+
+**M5, still to do, in order**
+1. The rest of the buildings' cost: ~7 fps at the Darnassus bank with parallax and normal maps
+   already off (`WOWEE_METAL_SKIP` wmo against wmopom,wmonormal).
+2. Local-light masks for the character shader, as terrain, M2 and WMO have.
+3. Argument buffers and an Instruments (Metal System Trace) pass, if the two above leave a
+   hot spot the skip switches cannot name.
+4. A fair frame-rate comparison with MoltenVK to close M5: same fresh login and view for both
+   builds, MoltenVK unsynced (`vsync=0`). Memory is already won (320-500 MB less).
+
+**Open bugs**
+- The camera sits inside geometry it should be pulled in front of (an awning at the Darnassus
+  bank). Deferred by the user; the most visible one left.
+- Night canopies are very dark under the tree (item 2 below); needs the original client to
+  compare with.
+- The undead's pale patch on the back (geoset 1501) not yet looked at from behind.
+- Sun shafts never seen working: needs open sky with the sun in view.
+- To confirm by touch on the iPad: the round action button keeps the target; a swimmer with
+  head and arms above water shows once; the pond as clear as before.
+
+**Beyond the plan - candidates, none started**
+- Touch play: a camera that never ends inside walls (above); a more forgiving tap-to-target
+  for small or half-hidden units; choosing which spells sit on the round buttons, or a second
+  ring; camera swipe and pinch options (invert, sensitivity); tap to loot, gather and open.
+- iPad: game controllers through Apple's GameController framework (gamepad_controls.cpp is a
+  start); hardware keyboard and trackpad; 120 Hz on ProMotion iPads; a 30 fps cap for battery
+  and heat; clean reconnect after the app goes to the background; settings synced by iCloud.
+- Getting it onto the device: importing the game data from Files instead of copying it with
+  Finder; TestFlight or a paid account, since free signing expires every seven days.
+- The test server: bake the navmesh (skipped, so creatures path simply); start it with the Mac.
+
+Recommended next after M5's first two items: the camera, then game controllers.
+
 ## Next steps (handoff, 2026-09-29, evening)
 
 In order. What each one needs is noted, because the device work needs the Mac.
